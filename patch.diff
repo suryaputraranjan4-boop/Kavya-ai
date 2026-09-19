@@ -1,0 +1,11 @@
+--- app/src/main/java/com/example/ai/KavyaAI.kt
++++ app/src/main/java/com/example/ai/KavyaAI.kt
+@@ -327,6 +327,8 @@
+                 } catch (e: HttpException) {
+                     lastError = e
+                     val code = e.code()
++                    val errBody = e.response()?.errorBody()?.string()
++                    Log.e(TAG, "HttpException $code from model $model: $errBody")
+                     Log.w(TAG, "HttpException $code from model $model on attempt $attempt: ${e.message()}")
+                     
+                     if (code == 429 || code == 503 || code == 500) {
