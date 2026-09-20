@@ -14,6 +14,11 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.example.data.AppDatabase
 import com.example.data.AutomationFailureDao
 import com.example.data.AutomationFailureEntity
+import com.example.memory.okf.OkfMemoryRepository
+import com.example.memory.okf.OkfMemoryTools
+import com.example.scraper.maps.GoogleMapsQueryParser
+import com.example.scraper.maps.GoogleMapsScraperClient
+import com.example.scraper.maps.ScrapeResult
 import com.example.services.KavyaAccessibilityService
 import com.example.state.KavyaStateManager
 import com.example.state.TaskState
@@ -49,6 +54,24 @@ class AndroidAgent(
 
     private val failureDao: AutomationFailureDao = AppDatabase.getDatabase(context).automationFailureDao()
     val workflowEngine: WorkflowEngine = WorkflowEngine(screenInspector, verificationEngine, TaskPlanner(appResolver))
+    val visualActionEngine: com.example.visual.VisualActionEngine = com.example.visual.VisualActionEngine(context)
+
+    /**
+     * Executes an end-to-end screen automation goal using the Kavya Visual Action Engine.
+     */
+    suspend fun executeVisualGoal(
+        goal: String,
+        onProgress: ((String) -> Unit)? = null
+    ): com.example.visual.VisualActionExecutionResult = withContext(Dispatchers.IO) {
+        visualActionEngine.executeGoal(goal, onProgress)
+    }
+
+    /**
+     * Immediately terminates pending visual action engine automation.
+     */
+    fun stopExecution(reason: String = "User requested stop") {
+        visualActionEngine.stopAutomation(reason)
+    }
 
     /**
      * Executes an end-to-end multi-step workflow using the WorkflowEngine:
@@ -255,8 +278,62 @@ class AndroidAgent(
             UniversalActionType.RESEARCH_WEB -> handleResearchWeb(step)
             UniversalActionType.GENERATE_IMAGE -> handleGenerateImage(step)
             UniversalActionType.SEMANTIC_SEARCH -> handleSemanticSearch(step)
+            UniversalActionType.GOOGLE_MAPS_SEARCH -> handleGoogleMapsSearch(step)
+            UniversalActionType.MEMORY_TOOL -> handleMemoryTool(step)
             else -> StepExecutionResult(step.id, true, step.actionType, "Action executed")
         }
+    }
+
+    private suspend fun handleGoogleMapsSearch(step: TaskStep): StepExecutionResult = withContext(Dispatchers.IO) {
+        val query = GoogleMapsQueryParser.parse(step.param)
+        val client = GoogleMapsScraperClient(context)
+        when (val res = client.searchBusinesses(query)) {
+            is ScrapeResult.Success -> {
+                val preview = res.businesses.take(5).joinToString("\n") { "• ${it.name} (${it.category}) - ⭐ ${it.rating} | ${it.phone}" }
+                StepExecutionResult(
+                    stepId = step.id,
+                    success = true,
+                    actionType = UniversalActionType.GOOGLE_MAPS_SEARCH,
+                    output = "Found ${res.businesses.size} businesses for '${query.toSearchTerm()}':\n$preview"
+                )
+            }
+            is ScrapeResult.EmptyResult -> {
+                StepExecutionResult(
+                    stepId = step.id,
+                    success = true,
+                    actionType = UniversalActionType.GOOGLE_MAPS_SEARCH,
+                    output = "No businesses found for '${query.toSearchTerm()}'"
+                )
+            }
+            is ScrapeResult.ServiceUnavailable -> {
+                StepExecutionResult(
+                    stepId = step.id,
+                    success = false,
+                    actionType = UniversalActionType.GOOGLE_MAPS_SEARCH,
+                    output = res.error
+                )
+            }
+            is ScrapeResult.Error -> {
+                StepExecutionResult(
+                    stepId = step.id,
+                    success = false,
+                    actionType = UniversalActionType.GOOGLE_MAPS_SEARCH,
+                    output = res.message
+                )
+            }
+        }
+    }
+
+    private suspend fun handleMemoryTool(step: TaskStep): StepExecutionResult = withContext(Dispatchers.IO) {
+        val repo = OkfMemoryRepository.getInstance(context)
+        val tools = OkfMemoryTools(repo)
+        val output = tools.memorySearch(step.param)
+        StepExecutionResult(
+            stepId = step.id,
+            success = true,
+            actionType = UniversalActionType.MEMORY_TOOL,
+            output = output
+        )
     }
 
     private suspend fun handleCloseApp(step: TaskStep): StepExecutionResult {
@@ -638,15 +715,23 @@ class AndroidAgent(
 
     private suspend fun handleSelectOrdinalResult(step: TaskStep): StepExecutionResult {
         val service = KavyaAccessibilityService.instance ?: return StepExecutionResult(step.id, false, UniversalActionType.SELECT, "Accessibility Service off")
-        val root = service.rootInActiveWindow ?: return StepExecutionResult(step.id, false, UniversalActionType.SELECT, "Screen is empty")
 
-        val targetNode = service.findOrdinalContentNode(root, step.ordinalIndex)
-            ?: screenInspector.findTargetNode("first_result", "FIRST_RESULT")
+        // Poll up to 3.5 seconds for dynamic web or app search results to render
+        var targetNode: AccessibilityNodeInfo? = null
+        for (attempt in 0..11) {
+            val root = service.rootInActiveWindow
+            if (root != null) {
+                targetNode = service.findOrdinalContentNode(root, step.ordinalIndex)
+                    ?: screenInspector.findTargetNode("first_result", "FIRST_RESULT")
+                if (targetNode != null) break
+            }
+            delay(300)
+        }
 
         if (targetNode != null) {
             val clicked = service.clickNode(targetNode)
             if (clicked) {
-                delay(150)
+                delay(250)
                 return StepExecutionResult(step.id, true, UniversalActionType.SELECT, "Result at index ${step.ordinalIndex} selected")
             }
         }
@@ -656,15 +741,23 @@ class AndroidAgent(
 
     private suspend fun handlePlayMedia(step: TaskStep): StepExecutionResult {
         val service = KavyaAccessibilityService.instance ?: return StepExecutionResult(step.id, false, UniversalActionType.PLAY, "Accessibility off")
-        val root = service.rootInActiveWindow
 
-        // Try ordinal selection first (e.g. first video)
-        val resultNode = service.findOrdinalContentNode(root, step.ordinalIndex)
-            ?: screenInspector.findTargetNode("Play", "PLAY_BUTTON")
+        // Poll up to 3.5 seconds for video cards or media items to render
+        var resultNode: AccessibilityNodeInfo? = null
+        for (attempt in 0..11) {
+            val root = service.rootInActiveWindow
+            if (root != null) {
+                resultNode = service.findOrdinalContentNode(root, step.ordinalIndex)
+                    ?: screenInspector.findTargetNode("Play", "PLAY_BUTTON")
+                if (resultNode != null) break
+            }
+            delay(300)
+        }
 
         if (resultNode != null) {
             val clicked = service.clickNode(resultNode)
             if (clicked) {
+                delay(250)
                 return StepExecutionResult(step.id, true, UniversalActionType.PLAY, "Playing media item")
             }
         }
@@ -927,20 +1020,26 @@ class AndroidAgent(
     }
 
     private suspend fun executeGeminiVisualFallback(actionType: UniversalActionType, param: String): StepExecutionResult? {
-        val service = KavyaAccessibilityService.instance ?: return null
-        val bitmap = service.captureScreenBitmap() ?: return null
-        
-        Log.d(TAG, "Triggering Gemini Visual Fallback for action: $actionType on '$param'")
-        val ai = com.example.ai.KavyaAI(context)
-        val prompt = "Analyze this Android screen. Identify the bounding box of the UI element that corresponds to the action: $actionType on parameter: '$param'. Return the center coordinates (x, y) as 'x,y' if found, otherwise return 'NOT_FOUND'."
-        
-        val result = ai.analyzeVisualUI(bitmap, prompt)
-        val coords = parseCoordinates(result)
-        if (coords != null) {
-             val clicked = service.clickByCoordinates(coords.first, coords.second)
-             return StepExecutionResult(-1, clicked, actionType, if(clicked) "Tapped via visual fallback at $coords" else "Failed to tap visual coordinates")
+        Log.d(TAG, "Triggering Kavya Visual Action Engine fallback for action: $actionType on '$param'")
+        val (width, height) = visualActionEngine.screenshotManager.getScreenDimensions()
+        val snapshot = visualActionEngine.screenObserver.observeScreen(captureVisual = true)
+        val screenshot = snapshot.screenshot ?: return null
+        val (base64Img, _) = visualActionEngine.screenshotManager.encodeToOptimizedBase64(screenshot, retainBitmap = false)
+        if (base64Img.isBlank()) return null
+
+        val (_, visionAction) = visualActionEngine.visionAnalyzer.analyzeScreenForAction(
+            base64Image = base64Img,
+            userGoal = "$actionType on $param",
+            currentApp = snapshot.foregroundPackage,
+            hierarchySummary = snapshot.visibleTextSummary
+        )
+
+        if (visionAction != null && visionAction.confidence >= 0.70f) {
+            val norm = com.example.visual.NormalizedCoordinates(visionAction.normalizedX, visionAction.normalizedY)
+            val (ok, detail) = visualActionEngine.touchController.performTap(visionAction.target, norm, width, height)
+            return StepExecutionResult(-1, ok, actionType, detail)
         }
-        return StepExecutionResult(-1, false, actionType, "Visual fallback could not find target: $result")
+        return StepExecutionResult(-1, false, actionType, "Visual fallback could not locate target: $param")
     }
 
     private fun parseCoordinates(response: String): Pair<Float, Float>? {
@@ -1031,6 +1130,8 @@ class AndroidAgent(
             "RESEARCH_WEB" -> UniversalActionType.RESEARCH_WEB
             "GENERATE_IMAGE" -> UniversalActionType.GENERATE_IMAGE
             "SEMANTIC_SEARCH" -> UniversalActionType.SEMANTIC_SEARCH
+            "GOOGLE_MAPS_SEARCH", "MAPS_SEARCH" -> UniversalActionType.GOOGLE_MAPS_SEARCH
+            "MEMORY_SEARCH", "MEMORY_TOOL", "MEMORY_CREATE" -> UniversalActionType.MEMORY_TOOL
             "GLOBAL_ACTION" -> {
                 when (action.rawParam.uppercase()) {
                     "BACK" -> UniversalActionType.BACK

@@ -23,6 +23,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import com.example.memory.okf.OkfCategory
+import com.example.memory.okf.OkfKnowledgeUnit
+import com.example.memory.okf.OkfMemoryRepository
+import com.example.scraper.maps.GoogleMapsScraperClient
+import com.example.scraper.maps.ScraperHealthStatus
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -115,6 +120,20 @@ fun AiApiHubScreen(navController: NavController) {
     // Accessibility Service State
     val isAccessibilityEnabled = com.example.services.KavyaAccessibilityService.instance != null
 
+    // Google Maps Scraper State
+    var mapsScraperUrlInput by remember { mutableStateOf(AppPreferences.getMapsScraperUrl(context)) }
+    var mapsScraperEnabled by remember { mutableStateOf(AppPreferences.isMapsScraperEnabled(context)) }
+    var mapsProxyHostInput by remember { mutableStateOf(AppPreferences.getMapsScraperProxyHost(context)) }
+    var mapsProxyPortInput by remember { mutableStateOf(if (AppPreferences.getMapsScraperProxyPort(context) > 0) AppPreferences.getMapsScraperProxyPort(context).toString() else "") }
+    var isMapsEditing by remember { mutableStateOf(false) }
+    var isMapsTesting by remember { mutableStateOf(false) }
+    var mapsTestStatus by remember { mutableStateOf<ScraperHealthStatus?>(null) }
+
+    // OKF Memory State
+    val okfRepo = remember { OkfMemoryRepository.getInstance(context) }
+    val okfUnits: List<OkfKnowledgeUnit> by okfRepo.unitsFlow.collectAsState(initial = emptyList())
+    var okfEnabled by remember { mutableStateOf(AppPreferences.isOkfMemoryEnabled(context)) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -196,6 +215,146 @@ fun AiApiHubScreen(navController: NavController) {
                                 color = TextSecondary
                             )
                         }
+                    }
+                }
+            }
+
+            // Local / No External API Diagnostics Section
+            item {
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
+                    borderColor = SuccessGreenGlow.copy(alpha = 0.35f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(SuccessGreenGlow.copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = SuccessGreenGlow,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Local / No External API Setup",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = "Zero external credentials or cloud subscriptions required for core local features",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(color = OutlineVariant.copy(alpha = 0.5f))
+
+                        // Diagnostics list
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color.Black.copy(alpha = 0.25f))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "OKF Memory",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = TextPrimary
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "✓ Local",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                        color = SuccessGreenGlow
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Maps Scraper",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = TextPrimary
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "✓ Local",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                        color = SuccessGreenGlow
+                                    )
+                                }
+                            }
+
+                            HorizontalDivider(color = OutlineVariant.copy(alpha = 0.3f))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "External Memory API",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                                Text(
+                                    text = "Not required",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                    color = AccentCyan
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Google Maps API Key",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                                Text(
+                                    text = "Not required",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                    color = AccentCyan
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = "• OKF Agent Memory operates locally with embedded Room + BM25 search without embedding APIs.\n• Google Maps Scraper Kit connects to your local container without requiring Google Cloud keys.",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp, lineHeight = 15.sp),
+                            color = TextTertiary
+                        )
                     }
                 }
             }
@@ -521,7 +680,341 @@ fun AiApiHubScreen(navController: NavController) {
             }
 
             // =========================================================================
-            // 5. SYSTEM STATUS & RECENT ACTIVITY
+            // 5. GOOGLE MAPS SCRAPER KIT (LOCAL & CONTAINERIZED ENGINE)
+            // =========================================================================
+            item {
+                Text(
+                    text = "Google Maps Scraper Kit",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = TextPrimary,
+                    modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+                )
+            }
+
+            item {
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
+                    borderColor = OutlineVariant
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(AccentCyan.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Place,
+                                        contentDescription = null,
+                                        tint = AccentCyan,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        "Local Scraper Service",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = TextPrimary
+                                    )
+                                    Text(
+                                        "Mahanaicoach Scraper Kit API",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                                        color = TextSecondary
+                                    )
+                                }
+                            }
+
+                            Switch(
+                                checked = mapsScraperEnabled,
+                                onCheckedChange = { isChecked ->
+                                    mapsScraperEnabled = isChecked
+                                    AppPreferences.setMapsScraperEnabled(context, isChecked)
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = AccentCyan
+                                )
+                            )
+                        }
+
+                        // Status Row
+                        val mapsStatus = when {
+                            !mapsScraperEnabled -> ConnectionStatus.DISABLED
+                            isMapsTesting -> ConnectionStatus.TESTING
+                            mapsTestStatus != null && mapsTestStatus!!.isHealthy -> ConnectionStatus.CONNECTED
+                            mapsTestStatus != null && !mapsTestStatus!!.isHealthy -> ConnectionStatus.ERROR
+                            else -> ConnectionStatus.CONFIGURED
+                        }
+                        StatusIndicatorRow(
+                            status = mapsStatus,
+                            note = mapsTestStatus?.let { if (it.isHealthy) "${it.latencyMs}ms latency" else "Offline" }
+                        )
+
+                        if (isMapsEditing) {
+                            OutlinedTextField(
+                                value = mapsScraperUrlInput,
+                                onValueChange = { mapsScraperUrlInput = it },
+                                label = { Text("Service URL (Local or Remote)") },
+                                placeholder = { Text("http://localhost:8080") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = mapsProxyHostInput,
+                                    onValueChange = { mapsProxyHostInput = it },
+                                    label = { Text("Proxy Host (Optional)") },
+                                    placeholder = { Text("127.0.0.1") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1.5f)
+                                )
+                                OutlinedTextField(
+                                    value = mapsProxyPortInput,
+                                    onValueChange = { mapsProxyPortInput = it },
+                                    label = { Text("Port") },
+                                    placeholder = { Text("8080") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(0.9f)
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(onClick = { isMapsEditing = false }) {
+                                    Text("Cancel", color = TextSecondary)
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        AppPreferences.setMapsScraperUrl(context, mapsScraperUrlInput)
+                                        AppPreferences.setMapsScraperProxyHost(context, mapsProxyHostInput)
+                                        AppPreferences.setMapsScraperProxyPort(context, mapsProxyPortInput.toIntOrNull() ?: 0)
+                                        isMapsEditing = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
+                                ) {
+                                    Text("Save Configuration", color = Color.Black)
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "URL: $mapsScraperUrlInput",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                                    color = TextTertiary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(onClick = { isMapsEditing = true }) {
+                                    Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit", tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+
+                        // Test Connection Button
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    isMapsTesting = true
+                                    val client = GoogleMapsScraperClient(context)
+                                    mapsTestStatus = client.checkHealth()
+                                    isMapsTesting = false
+                                }
+                            },
+                            enabled = !isMapsTesting && mapsScraperEnabled,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan.copy(alpha = 0.25f))
+                        ) {
+                            if (isMapsTesting) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = AccentCyan, strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Testing Service...", color = AccentCyan)
+                            } else {
+                                Icon(imageVector = Icons.Default.NetworkCheck, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Ping Scraper Service", color = AccentCyan)
+                            }
+                        }
+
+                        mapsTestStatus?.let { status ->
+                            Text(
+                                text = status.message,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                                color = if (status.isHealthy) SuccessGreenGlow else Error
+                            )
+                        }
+
+                        HorizontalDivider(color = OutlineVariant.copy(alpha = 0.4f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Google Maps API Key",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                            Text(
+                                text = "Not required (Local Scraping)",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                color = AccentCyan
+                            )
+                        }
+                    }
+                }
+            }
+
+            // =========================================================================
+            // 6. OKF AGENT MEMORY (GIT-NATIVE & BM25)
+            // =========================================================================
+            item {
+                Text(
+                    text = "OKF Agent Memory",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = TextPrimary,
+                    modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+                )
+            }
+
+            item {
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
+                    borderColor = OutlineVariant
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(AccentPurpleLight.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Storage,
+                                        contentDescription = null,
+                                        tint = AccentPurpleLight,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        "Git-Native Knowledge Units",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = TextPrimary
+                                    )
+                                    Text(
+                                        "BM25 Search-Before-Write Storage",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                                        color = TextSecondary
+                                    )
+                                }
+                            }
+
+                            Switch(
+                                checked = okfEnabled,
+                                onCheckedChange = { isChecked ->
+                                    okfEnabled = isChecked
+                                    AppPreferences.setOkfMemoryEnabled(context, isChecked)
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = AccentPurpleLight
+                                )
+                            )
+                        }
+
+                        StatusIndicatorRow(
+                            status = if (okfEnabled) ConnectionStatus.CONNECTED else ConnectionStatus.DISABLED,
+                            note = "${okfUnits.size} knowledge units indexed"
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            StatusMetricChip(
+                                label = "TOTAL UNITS",
+                                value = "${okfUnits.size}",
+                                color = AccentPurpleLight,
+                                modifier = Modifier.weight(1f)
+                            )
+                            StatusMetricChip(
+                                label = "FACTS",
+                                value = "${okfUnits.count { it.category.name == "FACT" }}",
+                                color = AccentCyan,
+                                modifier = Modifier.weight(1f)
+                            )
+                            StatusMetricChip(
+                                label = "DECISIONS",
+                                value = "${okfUnits.count { it.category.name == "DECISION" }}",
+                                color = SuccessGreenGlow,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        HorizontalDivider(color = OutlineVariant.copy(alpha = 0.4f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "External Memory API",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                            Text(
+                                text = "Not required (BM25 Local Engine)",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                color = AccentCyan
+                            )
+                        }
+                    }
+                }
+            }
+
+            // =========================================================================
+            // 7. SYSTEM STATUS & RECENT ACTIVITY
             // =========================================================================
             item {
                 Text(

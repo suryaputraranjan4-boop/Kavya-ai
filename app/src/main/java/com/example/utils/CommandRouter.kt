@@ -11,7 +11,10 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
 import com.example.services.KavyaAccessibilityService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 data class CommandExecutionResult(
@@ -87,6 +90,9 @@ class CommandRouter(private val context: Context) {
         if (parseCallCommand(input) != null) return true
         if (parseSmsCommand(input) != null) return true
 
+        // Ordinal website / video / search result selection (e.g. "open 2nd website", "3rd result", "dusri website kholo")
+        if (parseOrdinalSelectionCommand(input) != null) return true
+
         // Compound commands like "Open youtube and search hey"
         if (appResolver.parseCompoundCommand(input) != null) return true
 
@@ -132,6 +138,14 @@ class CommandRouter(private val context: Context) {
             val announcement = "Main ${sms.recipient} ko message bhej rahi hoon..."
             onBeforeExecute?.invoke(announcement)
             return handleSms(sms.recipient, sms.message)
+        }
+
+        // 0.2 Ordinal selection (website, video, result, link)
+        val ordinalCmd = parseOrdinalSelectionCommand(trimmed)
+        if (ordinalCmd != null) {
+            val (ordinalIndex, announcement) = ordinalCmd
+            onBeforeExecute?.invoke(announcement)
+            return handleSelectOrdinal(ordinalIndex, announcement)
         }
 
         // 1. Compound Search / Play / Type command
@@ -372,6 +386,9 @@ class CommandRouter(private val context: Context) {
         // 1. YouTube specialized deep search
         if (lowerApp.contains("youtube") || lowerApp == "yt") {
             val ytUri = Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
+            val isPlayRequest = compound.actionType.equals("PLAY", ignoreCase = true) ||
+                    isPlayOrOpenVideoIntent(query) ||
+                    isPlayOrOpenVideoIntent(compound.appName)
             try {
                 val ytIntent = Intent(Intent.ACTION_VIEW, ytUri).apply {
                     setPackage("com.google.android.youtube")
@@ -379,6 +396,10 @@ class CommandRouter(private val context: Context) {
                 }
                 if (context.packageManager.resolveActivity(ytIntent, 0) != null) {
                     context.startActivity(ytIntent)
+                    if (isPlayRequest) {
+                        triggerAutoPlayFirstVideo()
+                        return CommandExecutionResult("Main YouTube open karke video play kar rahi hoon...", true)
+                    }
                     return CommandExecutionResult("Main YouTube open kar rahi hoon aur '$query' search kar rahi hoon...", true)
                 } else {
                     // Fallback to browser YouTube search
@@ -386,6 +407,10 @@ class CommandRouter(private val context: Context) {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                     context.startActivity(browserYt)
+                    if (isPlayRequest) {
+                        triggerAutoPlayFirstVideo()
+                        return CommandExecutionResult("Main YouTube open karke video play kar rahi hoon...", true)
+                    }
                     return CommandExecutionResult("Main YouTube open kar rahi hoon aur '$query' search kar rahi hoon...", true)
                 }
             } catch (e: Exception) {
@@ -395,6 +420,10 @@ class CommandRouter(private val context: Context) {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                     context.startActivity(browserYt)
+                    if (isPlayRequest) {
+                        triggerAutoPlayFirstVideo()
+                        return CommandExecutionResult("Main YouTube open karke video play kar rahi hoon...", true)
+                    }
                     return CommandExecutionResult("Main YouTube open kar rahi hoon aur '$query' search kar rahi hoon...", true)
                 } catch (e2: Exception) {
                     Log.e(TAG, "YouTube browser fallback failed: ${e2.message}")
@@ -879,5 +908,143 @@ class CommandRouter(private val context: Context) {
             Log.e(TAG, "Search fallback failed: ${e.message}")
             CommandExecutionResult("Could not launch browser: ${e.message}", false)
         }
+    }
+
+    private fun triggerAutoPlayFirstVideo() {
+        CoroutineScope(Dispatchers.Default).launch {
+            delay(1300)
+            val service = KavyaAccessibilityService.instance
+            if (service != null) {
+                for (attempt in 0..12) {
+                    val root = service.rootInActiveWindow
+                    if (root != null) {
+                        val firstVideo = service.findOrdinalContentNode(root, 0)
+                        if (firstVideo != null) {
+                            service.clickNode(firstVideo)
+                            break
+                        }
+                    }
+                    delay(300)
+                }
+            }
+        }
+    }
+
+    private fun isPlayOrOpenVideoIntent(text: String): Boolean {
+        val lower = text.lowercase(Locale.ROOT)
+        return lower.contains("play") || lower.contains("chalao") || lower.contains("bajao") ||
+                lower.contains("sunao") || lower.contains("video open") || lower.contains("open video") ||
+                lower.contains("music") || lower.contains("gana") || lower.contains("gaana") ||
+                lower.contains("video") || lower.contains("khol kar") || lower.contains("open karke do") ||
+                lower.contains("open karo") || lower.contains("chala do") || lower.contains("play karo")
+    }
+
+    fun parseOrdinalSelectionCommand(input: String): Pair<Int, String>? {
+        val lower = input.trim().lowercase(Locale.ROOT)
+
+        val hasOrdinalKeyword = lower.contains("website") || lower.contains("result") ||
+                lower.contains("link") || lower.contains("video") || lower.contains("page") ||
+                lower.contains("kholo") || lower.contains("chalao") || lower.contains("open") ||
+                lower.contains("wali") || lower.contains("wala")
+
+        if (!hasOrdinalKeyword) return null
+
+        // 1st result
+        if (lower.contains("1st website") || lower.contains("first website") ||
+            lower.contains("1st result") || lower.contains("first result") ||
+            lower.contains("1st video") || lower.contains("first video") ||
+            lower.contains("1st link") || lower.contains("first link") ||
+            lower.contains("pehli website") || lower.contains("pehla video") ||
+            lower.contains("pahli website") || lower.contains("pehla result") ||
+            lower.contains("pehli wali") || lower.contains("pehla wala") ||
+            (lower.contains("website") && (lower.contains("first") || lower.contains("1st") || lower.contains("pehli")))
+        ) {
+            val isVideo = lower.contains("video") || lower.contains("play") || lower.contains("chalao")
+            val msg = if (isVideo) "Pehla video play kar rahi hoon..." else "Pehli website open kar rahi hoon..."
+            return Pair(0, msg)
+        }
+
+        // 2nd result
+        if (lower.contains("2nd website") || lower.contains("second website") ||
+            lower.contains("2nd result") || lower.contains("second result") ||
+            lower.contains("2nd video") || lower.contains("second video") ||
+            lower.contains("2nd link") || lower.contains("second link") ||
+            lower.contains("dusri website") || lower.contains("doosri website") ||
+            lower.contains("dusra video") || lower.contains("doosra video") ||
+            lower.contains("dusra result") || lower.contains("doosra result") ||
+            lower.contains("dusri wali") || lower.contains("dusra wala") ||
+            lower.contains("2nd or third website") ||
+            (lower.contains("website") && (lower.contains("second") || lower.contains("2nd") || lower.contains("dusri") || lower.contains("doosri")))
+        ) {
+            val isVideo = lower.contains("video") || lower.contains("play") || lower.contains("chalao")
+            val msg = if (isVideo) "Doosra video play kar rahi hoon..." else "Doosri website open kar rahi hoon..."
+            return Pair(1, msg)
+        }
+
+        // 3rd result
+        if (lower.contains("3rd website") || lower.contains("third website") ||
+            lower.contains("3rd result") || lower.contains("third result") ||
+            lower.contains("3rd video") || lower.contains("third video") ||
+            lower.contains("3rd link") || lower.contains("third link") ||
+            lower.contains("teesri website") || lower.contains("teesra video") ||
+            lower.contains("teesra result") || lower.contains("teesri wali") || lower.contains("teesra wala") ||
+            (lower.contains("website") && (lower.contains("third") || lower.contains("3rd") || lower.contains("teesri")))
+        ) {
+            val isVideo = lower.contains("video") || lower.contains("play") || lower.contains("chalao")
+            val msg = if (isVideo) "Teesra video play kar rahi hoon..." else "Teesri website open kar rahi hoon..."
+            return Pair(2, msg)
+        }
+
+        // 4th result
+        if (lower.contains("4th website") || lower.contains("fourth website") ||
+            lower.contains("4th result") || lower.contains("fourth result") ||
+            lower.contains("4th video") || lower.contains("fourth video") ||
+            lower.contains("chauthi website") || lower.contains("chautha video")
+        ) {
+            val isVideo = lower.contains("video") || lower.contains("play") || lower.contains("chalao")
+            val msg = if (isVideo) "Chautha video play kar rahi hoon..." else "Chauthi website open kar rahi hoon..."
+            return Pair(3, msg)
+        }
+
+        // Last result
+        if (lower.contains("last website") || lower.contains("aakhri website") ||
+            lower.contains("last result") || lower.contains("aakhri result") ||
+            lower.contains("last video") || lower.contains("aakhri video") ||
+            lower.contains("aakhri wali") || lower.contains("aakhri wala")
+        ) {
+            val isVideo = lower.contains("video") || lower.contains("play") || lower.contains("chalao")
+            val msg = if (isVideo) "Aakhri video play kar rahi hoon..." else "Aakhri result open kar rahi hoon..."
+            return Pair(-1, msg)
+        }
+
+        return null
+    }
+
+    private suspend fun handleSelectOrdinal(ordinalIndex: Int, announcement: String): CommandExecutionResult {
+        val service = KavyaAccessibilityService.instance
+            ?: return CommandExecutionResult("Accessibility Service enable nahi hai.", false)
+
+        for (attempt in 0..11) {
+            val root = service.rootInActiveWindow
+            if (root != null) {
+                val node = service.findOrdinalContentNode(root, ordinalIndex)
+                if (node != null) {
+                    val clicked = service.clickNode(node)
+                    if (clicked) {
+                        return CommandExecutionResult(announcement, true)
+                    }
+                }
+            }
+            delay(250)
+        }
+        val friendly = when (ordinalIndex) {
+            0 -> "pehla"
+            1 -> "doosra"
+            2 -> "teesra"
+            3 -> "chautha"
+            -1 -> "aakhri"
+            else -> "${ordinalIndex + 1}"
+        }
+        return CommandExecutionResult("Screen par $friendly result nahi mila.", false)
     }
 }

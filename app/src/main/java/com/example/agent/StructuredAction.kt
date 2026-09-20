@@ -251,6 +251,12 @@ object StructuredActionParser {
                 val v = parts.getOrNull(1)?.trim() ?: ""
                 StructuredAction(action = "SAVE_MEMORY", key = k, value = v, rawParam = param)
             }
+            "GOOGLE_MAPS_SEARCH", "MAPS_SEARCH", "SEARCH_MAPS" -> {
+                StructuredAction(action = "GOOGLE_MAPS_SEARCH", query = param, rawParam = param)
+            }
+            "MEMORY_TOOL", "MEMORY_SEARCH" -> {
+                StructuredAction(action = "MEMORY_TOOL", query = param, rawParam = param)
+            }
             else -> StructuredAction(action = normalizedType, rawParam = param)
         }
     }

@@ -43,6 +43,11 @@ object AppPreferences {
     private const val KEY_OPENROUTER_ENABLED = "key_openrouter_enabled"
     private const val KEY_HUGGINGFACE_ENABLED = "key_huggingface_enabled"
     private const val KEY_PUBLIC_APIS_ENABLED = "key_public_apis_enabled"
+    private const val KEY_MAPS_SCRAPER_URL = "key_maps_scraper_url"
+    private const val KEY_MAPS_SCRAPER_ENABLED = "key_maps_scraper_enabled"
+    private const val KEY_MAPS_SCRAPER_PROXY_HOST = "key_maps_scraper_proxy_host"
+    private const val KEY_MAPS_SCRAPER_PROXY_PORT = "key_maps_scraper_proxy_port"
+    private const val KEY_OKF_MEMORY_ENABLED = "key_okf_memory_enabled"
     private const val PREFIX_PROVIDER_STATUS = "provider_status_"
     private const val PREFIX_PROVIDER_COUNT = "provider_count_"
     private const val PREFIX_PROVIDER_LAST_SUCCESS = "provider_last_success_"
@@ -266,6 +271,46 @@ object AppPreferences {
 
     fun setPublicApisEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_PUBLIC_APIS_ENABLED, enabled).apply()
+    }
+
+    fun getMapsScraperUrl(context: Context): String {
+        return getPrefs(context).getString(KEY_MAPS_SCRAPER_URL, "http://localhost:8080") ?: "http://localhost:8080"
+    }
+
+    fun setMapsScraperUrl(context: Context, url: String) {
+        getPrefs(context).edit().putString(KEY_MAPS_SCRAPER_URL, url.trim()).apply()
+    }
+
+    fun isMapsScraperEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_MAPS_SCRAPER_ENABLED, true)
+    }
+
+    fun setMapsScraperEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_MAPS_SCRAPER_ENABLED, enabled).apply()
+    }
+
+    fun getMapsScraperProxyHost(context: Context): String {
+        return getPrefs(context).getString(KEY_MAPS_SCRAPER_PROXY_HOST, "") ?: ""
+    }
+
+    fun setMapsScraperProxyHost(context: Context, host: String) {
+        getPrefs(context).edit().putString(KEY_MAPS_SCRAPER_PROXY_HOST, host.trim()).apply()
+    }
+
+    fun getMapsScraperProxyPort(context: Context): Int {
+        return getPrefs(context).getInt(KEY_MAPS_SCRAPER_PROXY_PORT, 0)
+    }
+
+    fun setMapsScraperProxyPort(context: Context, port: Int) {
+        getPrefs(context).edit().putInt(KEY_MAPS_SCRAPER_PROXY_PORT, port).apply()
+    }
+
+    fun isOkfMemoryEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_OKF_MEMORY_ENABLED, true)
+    }
+
+    fun setOkfMemoryEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_OKF_MEMORY_ENABLED, enabled).apply()
     }
 
     fun getProviderStatus(context: Context, providerId: String): String {
@@ -642,6 +687,34 @@ object AppPreferences {
         } catch (e: Exception) {
             Pair(false, "Connection failed: ${e.localizedMessage ?: e.message}")
         }
+    }
+
+    private const val KEY_VISUAL_AUTOMATION_ENABLED = "key_visual_automation_enabled"
+    private const val KEY_VISUAL_AUTOMATION_MODE = "key_visual_automation_mode"
+    private const val KEY_CONFIDENCE_THRESHOLD = "key_confidence_threshold"
+
+    fun isVisualAutomationEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_VISUAL_AUTOMATION_ENABLED, true)
+    }
+
+    fun setVisualAutomationEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_VISUAL_AUTOMATION_ENABLED, enabled).apply()
+    }
+
+    fun getVisualAutomationMode(context: Context): String {
+        return getPrefs(context).getString(KEY_VISUAL_AUTOMATION_MODE, "AUTOMATIC_SAFE") ?: "AUTOMATIC_SAFE"
+    }
+
+    fun setVisualAutomationMode(context: Context, mode: String) {
+        getPrefs(context).edit().putString(KEY_VISUAL_AUTOMATION_MODE, mode).apply()
+    }
+
+    fun getConfidenceThreshold(context: Context): Float {
+        return getPrefs(context).getFloat(KEY_CONFIDENCE_THRESHOLD, 0.70f)
+    }
+
+    fun setConfidenceThreshold(context: Context, threshold: Float) {
+        getPrefs(context).edit().putFloat(KEY_CONFIDENCE_THRESHOLD, threshold).apply()
     }
 }
 

@@ -17,6 +17,15 @@ import com.example.data.AppDatabase
 import com.example.data.ChatEntity
 import com.example.data.MemoryEntity
 import com.example.data.MessageEntity
+import com.example.memory.okf.OkfCategory
+import com.example.memory.okf.OkfMemoryRepository
+import com.example.memory.okf.OkfMemoryTools
+import com.example.memory.okf.OkfProvenance
+import com.example.scraper.maps.GoogleMapsQueryParser
+import com.example.scraper.maps.GoogleMapsScraperClient
+import com.example.scraper.maps.MapsScraperJobManager
+import com.example.scraper.maps.ScrapeResult
+import com.example.scraper.maps.ScrapedBusiness
 import com.example.ui.components.VoiceState
 import com.example.utils.AppLaunchDiagnostic
 import com.example.utils.CommandRouter
@@ -102,15 +111,45 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     // Universal Agent & Memory Engines
     val memoryEngine = MemoryEngine(application)
+    val okfRepository: OkfMemoryRepository get() = memoryEngine.okfRepository
+    val okfTools: OkfMemoryTools get() = memoryEngine.okfTools
+    val mapsJobManager: MapsScraperJobManager = MapsScraperJobManager.getInstance(application)
+    val mapsScraperClient = GoogleMapsScraperClient(application)
     val contextEngine = ContextEngine()
     val screenInspector = ScreenInspector()
     val verificationEngine = VerificationEngine(screenInspector)
     val taskPlanner = TaskPlanner()
     val androidAgent = AndroidAgent(application, commandRouter.appResolver, contextEngine, screenInspector, verificationEngine)
+    val visualActionEngine = androidAgent.visualActionEngine
+    val visualEngineStatus = visualActionEngine.engineStatus
     val agentOrchestrator = com.example.ai.providers.AgentOrchestrator(
         accessibilityProvider = com.example.ai.providers.AndroidAccessibilityToolProvider(androidAgent)
     )
     val apiSystem = com.example.api.ApiSystem()
+
+    fun emergencyStop(reason: String = "User requested stop") {
+        androidAgent.stopExecution(reason)
+        _isProcessing.value = false
+        _agentActionStatus.value = "Action stopped."
+        _latestKavyaCaption.value = "रुक गई हूँ। Action रोक दिया गया है।"
+        com.example.state.KavyaStateManager.updateTaskState(com.example.state.TaskState.STOPPED, reason)
+        if (_autoSpeak.value) {
+            viewModelScope.launch {
+                voiceEngine.processAndSpeak("रुक गई हूँ। Action रोक दिया गया है।", enqueue = false)
+            }
+        }
+    }
+
+    private fun isVisualInteractionIntent(prompt: String): Boolean {
+        val lower = prompt.lowercase(java.util.Locale.ROOT).trim()
+        val visualKeywords = listOf(
+            "br start", "cs ranked", "free fire", "freefire", "start button", "game start",
+            "tap on", "click on", "dabaao", "dabao", "button दबाओ", "click करो", "tap करो",
+            "screen पर", "screen par", "dhundo", "ढूंढो", "खोलो और", "kholo aur",
+            "scroll down", "scroll up", "swipe up", "swipe down", "swipe left", "swipe right"
+        )
+        return visualKeywords.any { lower.contains(it) }
+    }
 
     // Proactive Conversational Engine
     val proactiveController = com.example.proactive.ProactiveController(
@@ -356,6 +395,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendMessage(text: String) {
         if (text.isBlank()) return
+
+        // Emergency Stop Voice Trigger (Hindi / English: stop, ruko, cancel, bas, etc.)
+        if (visualActionEngine.safetyController.isStopCommand(text)) {
+            emergencyStop("Voice stop command: $text")
+            return
+        }
         
         // Request Deduplication
         if (_isProcessing.value) {
@@ -576,6 +621,29 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     }
+
+                    // 2b. Check for explicit OKF Memory tool commands
+                    if (cleanResponse.isBlank()) {
+                        val memoryToolResponse = handleExplicitMemoryCommand(prompt)
+                        if (memoryToolResponse != null) {
+                            cleanResponse = memoryToolResponse
+                            if (_autoSpeak.value) {
+                                voiceEngine.processAndSpeak(cleanResponse, enqueue = true)
+                                alreadySpoken = true
+                            }
+                        }
+                    }
+
+                    // 2c. Check for Google Maps business research queries
+                    if (cleanResponse.isBlank() && isGoogleMapsQuery(prompt)) {
+                        val mapsResponse = handleGoogleMapsQuery(prompt)
+                        cleanResponse = mapsResponse
+                        if (_autoSpeak.value) {
+                            val shortSpoken = "Maine Google Maps par jaankari search kar li hai."
+                            voiceEngine.processAndSpeak(shortSpoken, enqueue = false)
+                            alreadySpoken = true
+                        }
+                    }
                 }
 
                 var apiContextStr = ""
@@ -592,7 +660,22 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                // 4. REMOVED TaskPlanner regex bypass. All complex plans are now handled by Gemini structured parsing.
+                // 4. Kavya Visual Action Engine execution check
+                if (!isFastChat && cleanResponse.isBlank() && isVisualInteractionIntent(prompt)) {
+                    val visualOutcome = androidAgent.executeVisualGoal(prompt) { milestoneText ->
+                        _agentActionStatus.value = milestoneText
+                        _latestKavyaCaption.value = milestoneText
+                        if (_autoSpeak.value) {
+                            voiceEngine.processAndSpeak(milestoneText, enqueue = false)
+                        }
+                    }
+                    _agentActionStatus.value = null
+                    cleanResponse = visualOutcome.message
+                    if (_autoSpeak.value && !alreadySpoken) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                }
 
                 // 5. Fallback to Gemini AI streaming with semantic memory retrieval
                 if (cleanResponse.isBlank()) {
@@ -739,6 +822,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 }
                                 "SAVE_MEMORY" -> com.example.agent.UniversalActionType.SAVE_MEMORY
+                                "GOOGLE_MAPS_SEARCH", "MAPS_SEARCH" -> com.example.agent.UniversalActionType.GOOGLE_MAPS_SEARCH
+                                "MEMORY_TOOL", "MEMORY_SEARCH" -> com.example.agent.UniversalActionType.MEMORY_TOOL
                                 else -> com.example.agent.UniversalActionType.SYSTEM_CONTROL
                             }
 
@@ -940,6 +1025,75 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopSpeaking() {
         voiceEngine.stop()
+    }
+
+    private fun isGoogleMapsQuery(prompt: String): Boolean {
+        val lower = prompt.lowercase(java.util.Locale.ROOT)
+        val hasMapKeyword = lower.contains("google map") || lower.contains("google maps") || lower.contains("maps pe") || lower.contains("maps par")
+        val hasBusinessSearch = (lower.contains("find") || lower.contains("search") || lower.contains("dhundo") || lower.contains("dhoondo") || lower.contains("batao") || lower.contains("nikalo")) &&
+            (lower.contains("cafe") || lower.contains("restaurant") || lower.contains("dentist") || lower.contains("hospital") ||
+             lower.contains("gym") || lower.contains("hotel") || lower.contains("bakery") || lower.contains("salon") ||
+             lower.contains("pharmacy") || lower.contains("clinic") || lower.contains("school") || lower.contains("shop") || lower.contains("store")) &&
+            (lower.contains(" in ") || lower.contains(" near ") || lower.contains(" me ") || lower.contains(" mein ") || lower.contains(" ke pass ") || lower.contains(" ke paas "))
+        return hasMapKeyword || hasBusinessSearch
+    }
+
+    private suspend fun handleGoogleMapsQuery(prompt: String): String {
+        val query = GoogleMapsQueryParser.parse(prompt)
+        _agentActionStatus.value = "Searching Google Maps for ${query.toSearchTerm()}..."
+        val result = mapsScraperClient.searchBusinesses(query)
+        _agentActionStatus.value = null
+        return when (result) {
+            is ScrapeResult.Success -> {
+                // Update persistent knowledge in OKF memory
+                okfRepository.createKnowledge(
+                    key = "last_maps_search",
+                    content = "Last Google Maps search was for '${query.toSearchTerm()}' finding ${result.businesses.size} locations.",
+                    category = OkfCategory.FACT,
+                    importance = 3
+                )
+                
+                val builder = StringBuilder()
+                builder.append("📍 **Google Maps Results: ${query.toSearchTerm()}**\n\n")
+                result.businesses.forEachIndexed { idx, biz ->
+                    builder.append("${idx + 1}. **${biz.name}**")
+                    if (biz.category.isNotBlank()) builder.append(" (${biz.category})")
+                    if (biz.rating > 0) builder.append(" • ⭐ ${biz.rating} (${biz.reviewCount} reviews)")
+                    builder.append("\n")
+                    if (biz.address.isNotBlank()) builder.append("   🏢 ${biz.address}\n")
+                    if (biz.phone.isNotBlank()) builder.append("   📞 ${biz.phone}\n")
+                    if (biz.website.isNotBlank()) builder.append("   🌐 ${biz.website}\n")
+                    builder.append("\n")
+                }
+                builder.toString().trim()
+            }
+            is ScrapeResult.EmptyResult -> {
+                "Google Maps par '${result.query}' ke liye koi vyavsay (business) nahi mila."
+            }
+            is ScrapeResult.ServiceUnavailable -> {
+                "Google Maps Scraper service abhi connect nahi ho pa rahi hai. Kripya sunishchit karein ki Docker container chal raha hai:\n`${result.serviceUrl}`\n\nCommand: `docker run -d -p 8080:8080 mahanaicoach/google-maps-scraper-kit`"
+            }
+            is ScrapeResult.Error -> {
+                "Google Maps search me error aayi: ${result.message}"
+            }
+        }
+    }
+
+    private suspend fun handleExplicitMemoryCommand(prompt: String): String? {
+        val lower = prompt.lowercase(java.util.Locale.ROOT).trim()
+        if (lower.startsWith("memory search ") || lower.startsWith("search memory ")) {
+            val q = prompt.substringAfter("memory ").substringAfter("search ").trim()
+            return okfTools.memorySearch(q)
+        }
+        if (lower == "memory list" || lower == "list memory" || lower == "list memories") {
+            return okfTools.memoryList()
+        }
+        return null
+    }
+
+    fun searchGoogleMaps(query: String, limit: Int = 15, onResult: ((ScrapeResult) -> Unit)? = null) {
+        val parsed = GoogleMapsQueryParser.parse(query).copy(limit = limit)
+        mapsJobManager.startSearchJob(parsed, onResult)
     }
 
     override fun onCleared() {

@@ -9,7 +9,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class TaskPlannerMultiStepTest {
 
     @Test
@@ -59,5 +62,60 @@ class TaskPlannerMultiStepTest {
         for (expected in expectedTools) {
             assertTrue("Registry must contain tool: $expected", tools.any { it.name == expected })
         }
+    }
+
+    @Test
+    fun testYouTubeOpenVideoCommandAddsPlayStep() {
+        val planner = TaskPlanner()
+        val contextEngine = ContextEngine()
+        val prompt = "youtube pe koi video open karke do"
+        
+        val plan = planner.createPlan(prompt, contextEngine)
+        assertNotNull("Plan should be generated for YouTube open video command", plan)
+        
+        // Must contain OPEN_APP for YouTube
+        val openAppStep = plan!!.steps.find { it.actionType == UniversalActionType.OPEN_APP }
+        assertNotNull("Must have OPEN_APP step", openAppStep)
+        assertTrue(openAppStep!!.targetAppOrUrl.lowercase().contains("youtube"))
+
+        // Must have PLAY step to open and play the video (not just search!)
+        val playStep = plan.steps.find { it.actionType == UniversalActionType.PLAY }
+        assertNotNull("Must have PLAY step to completely open the video", playStep)
+        assertEquals(0, playStep!!.ordinalIndex)
+    }
+
+    @Test
+    fun testOrdinalWebsiteSelectionParsing() {
+        val router = com.example.utils.CommandRouter(androidx.test.core.app.ApplicationProvider.getApplicationContext())
+        
+        // 2nd website
+        val second1 = router.parseOrdinalSelectionCommand("open 2nd website")
+        assertNotNull(second1)
+        assertEquals(1, second1!!.first)
+
+        val second2 = router.parseOrdinalSelectionCommand("open second website")
+        assertNotNull(second2)
+        assertEquals(1, second2!!.first)
+
+        val second3 = router.parseOrdinalSelectionCommand("dusri website kholo")
+        assertNotNull(second3)
+        assertEquals(1, second3!!.first)
+
+        val secondOrThird = router.parseOrdinalSelectionCommand("open 2nd or third website")
+        assertNotNull(secondOrThird)
+        assertEquals(1, secondOrThird!!.first)
+
+        // 3rd website
+        val third1 = router.parseOrdinalSelectionCommand("open 3rd website")
+        assertNotNull(third1)
+        assertEquals(2, third1!!.first)
+
+        val third2 = router.parseOrdinalSelectionCommand("open third website")
+        assertNotNull(third2)
+        assertEquals(2, third2!!.first)
+
+        val third3 = router.parseOrdinalSelectionCommand("teesri website kholo")
+        assertNotNull(third3)
+        assertEquals(2, third3!!.first)
     }
 }

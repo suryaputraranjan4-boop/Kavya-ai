@@ -1,6 +1,7 @@
 package com.example.services
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -23,6 +24,15 @@ class KavyaAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         Log.d(TAG, "Kavya Accessibility Service Connected")
         instance = this
+    }
+
+    private fun safeGetRootInActiveWindow(): AccessibilityNodeInfo? {
+        return try {
+            rootInActiveWindow
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to query rootInActiveWindow: ${e.message}")
+            null
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -61,7 +71,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun getForegroundPackage(): String {
-        val root = rootInActiveWindow
+        val root = safeGetRootInActiveWindow()
         val rootPkg = root?.packageName?.toString()
         if (!rootPkg.isNullOrBlank()) {
             currentForegroundPackage = rootPkg
@@ -87,7 +97,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun getScreenContext(): String {
-        val root = rootInActiveWindow ?: return "Cannot read screen. Root node is null (Screen off or accessibility not bound)."
+        val root = safeGetRootInActiveWindow() ?: return "Cannot read screen. Root node is null (Screen off or accessibility not bound)."
         val sb = StringBuilder()
         val pkg = root.packageName ?: currentForegroundPackage
         sb.append("Active Foreground App: $pkg\n")
@@ -100,7 +110,7 @@ class KavyaAccessibilityService : AccessibilityService() {
      * Extracts readable summary list of detected UI elements for automation debugging.
      */
     fun getVisibleElementSummaries(): List<String> {
-        val root = rootInActiveWindow ?: return listOf("Accessibility root node is null")
+        val root = safeGetRootInActiveWindow() ?: return listOf("Accessibility root node is null")
         val summaries = mutableListOf<String>()
         collectElementSummaries(root, summaries, 0, 35)
         return summaries
@@ -170,15 +180,25 @@ class KavyaAccessibilityService : AccessibilityService() {
     fun findNodeRecursively(node: AccessibilityNodeInfo?, targetText: String): AccessibilityNodeInfo? {
         if (node == null) return null
         val lowerTarget = targetText.lowercase(Locale.ROOT).trim()
+        if (lowerTarget.isEmpty()) return null
 
-        val text = node.text?.toString()?.trim()?.lowercase(Locale.ROOT)
-        val desc = node.contentDescription?.toString()?.trim()?.lowercase(Locale.ROOT)
-        val resId = node.viewIdResourceName?.substringAfterLast("/")?.lowercase(Locale.ROOT)
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        val isGiant = bounds.width() > 1000 && bounds.height() > 1800
 
-        if (text?.contains(lowerTarget) == true ||
-            desc?.contains(lowerTarget) == true ||
-            resId?.contains(lowerTarget) == true) {
-            return node
+        if (!isGiant && bounds.width() > 0 && bounds.height() > 0) {
+            val text = node.text?.toString()?.trim()?.lowercase(Locale.ROOT) ?: ""
+            val desc = node.contentDescription?.toString()?.trim()?.lowercase(Locale.ROOT) ?: ""
+            val resId = node.viewIdResourceName?.substringAfterLast("/")?.lowercase(Locale.ROOT) ?: ""
+
+            val wordPattern = Regex("\\b${Regex.escape(lowerTarget)}\\b")
+            val isMatch = text == lowerTarget || desc == lowerTarget || resId == lowerTarget ||
+                    wordPattern.containsMatchIn(text) || wordPattern.containsMatchIn(desc) ||
+                    (lowerTarget.length >= 4 && (text.contains(lowerTarget) || desc.contains(lowerTarget)))
+
+            if (isMatch) {
+                return node
+            }
         }
 
         for (i in 0 until node.childCount) {
@@ -192,7 +212,7 @@ class KavyaAccessibilityService : AccessibilityService() {
      * Finds the primary search bar or input field dynamically on screen.
      */
     fun findSearchField(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        val rootNode = root ?: rootInActiveWindow ?: return null
+        val rootNode = root ?: safeGetRootInActiveWindow() ?: return null
 
         // 1. Check currently focused input
         val focused = rootNode.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -237,39 +257,116 @@ class KavyaAccessibilityService : AccessibilityService() {
      * and selects by ordinal index (0 = 1st, 1 = 2nd, 2 = 3rd, -1 = last).
      */
     fun findOrdinalContentNode(root: AccessibilityNodeInfo?, ordinal: Int): AccessibilityNodeInfo? {
-        val rootNode = root ?: rootInActiveWindow ?: return null
-        val candidates = mutableListOf<AccessibilityNodeInfo>()
-        collectContentCandidates(rootNode, candidates, 0)
+        val rootNode = root ?: safeGetRootInActiveWindow() ?: return null
+        val rawCandidates = mutableListOf<OrdinalCandidate>()
+        collectContentCandidates(rootNode, rawCandidates, 0)
 
-        if (candidates.isEmpty()) return null
+        if (rawCandidates.isEmpty()) return null
+
+        // Deduplicate overlapping candidates (e.g. parent card container and child title text)
+        val deduplicated = mutableListOf<OrdinalCandidate>()
+        for (cand in rawCandidates) {
+            val duplicate = deduplicated.any { existing ->
+                val verticalDiff = Math.abs(existing.bounds.top - cand.bounds.top)
+                val horizontalDiff = Math.abs(existing.bounds.left - cand.bounds.left)
+                val heightDiff = Math.abs(existing.bounds.height() - cand.bounds.height())
+                // If they start at virtually the same position or one is contained in another
+                (verticalDiff < 40 && horizontalDiff < 40) ||
+                (cand.bounds.top >= existing.bounds.top && cand.bounds.bottom <= existing.bounds.bottom && heightDiff < 80)
+            }
+            if (!duplicate) {
+                deduplicated.add(cand)
+            }
+        }
+
+        // Sort candidates top-to-bottom so ordinal matches visual order on screen
+        deduplicated.sortWith(compareBy({ it.bounds.top }, { it.bounds.left }))
 
         return when {
-            ordinal == -1 -> candidates.lastOrNull()
-            ordinal in 0 until candidates.size -> candidates[ordinal]
-            else -> candidates.firstOrNull()
+            ordinal == -1 -> deduplicated.lastOrNull()?.node
+            ordinal in 0 until deduplicated.size -> deduplicated[ordinal].node
+            else -> deduplicated.firstOrNull()?.node
         }
     }
 
-    private fun collectContentCandidates(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>, depth: Int) {
-        if (node == null || list.size >= 15) return
+    private data class OrdinalCandidate(
+        val node: AccessibilityNodeInfo,
+        val bounds: Rect,
+        val text: String
+    )
 
+    private fun collectContentCandidates(node: AccessibilityNodeInfo?, list: MutableList<OrdinalCandidate>, depth: Int) {
+        if (node == null || depth > 15 || list.size >= 25) return
+
+        val b = Rect()
+        node.getBoundsInScreen(b)
+
+        // Ignore zero bounds, off-screen nodes, or nodes in status bar (< 80)
+        if (b.width() < 40 || b.height() < 25 || b.top < 80) {
+            for (i in 0 until node.childCount) {
+                collectContentCandidates(node.getChild(i), list, depth + 1)
+            }
+            return
+        }
+
+        val isGiant = b.width() > 1000 && b.height() > 1800
+        if (isGiant) {
+            // Container wrapper: do not add as candidate, but inspect children
+            for (i in 0 until node.childCount) {
+                collectContentCandidates(node.getChild(i), list, depth + 1)
+            }
+            return
+        }
+
+        val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
         val text = node.text?.toString()?.trim() ?: ""
         val desc = node.contentDescription?.toString()?.trim() ?: ""
-        val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
-        val combined = "$text $desc".lowercase(Locale.ROOT)
+        val lowerText = text.lowercase(Locale.ROOT)
+        val lowerDesc = desc.lowercase(Locale.ROOT)
 
-        // Filter out header, search bar, back button, nav tabs
-        val isHeaderOrNav = resId.contains("toolbar") || resId.contains("search") || resId.contains("nav") ||
-                resId.contains("tab") || resId.contains("header") || combined.contains("search") ||
-                combined.contains("menu") || combined.contains("filter") || combined.contains("navigate up")
+        // Filter out header, search bar, back button, nav tabs, clear query
+        val isHeaderOrNav = resId.contains("toolbar") || resId.contains("search_box") ||
+                resId.contains("search_src_text") || resId.contains("search_button") ||
+                resId.contains("nav_bar") || resId.contains("bottom_nav") ||
+                resId.contains("tab_layout") || resId.contains("filter_bar") ||
+                resId.contains("action_bar") ||
+                lowerText == "search" || lowerDesc == "search" ||
+                lowerText == "navigate up" || lowerDesc == "navigate up" ||
+                lowerText == "clear query" || lowerDesc == "clear query" ||
+                lowerText == "voice search" || lowerDesc == "voice search" ||
+                lowerText == "more options" || lowerDesc == "more options" ||
+                lowerText == "filter" || lowerDesc == "filter"
 
-        if (node.isClickable && !isHeaderOrNav && (text.length > 3 || desc.length > 5)) {
-            list.add(node)
+        if (!isHeaderOrNav) {
+            val subtreeText = getSubtreeText(node)
+            val isClickableSelf = node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+            val isClickableParent = node.parent?.isClickable == true || node.parent?.actionList?.any { it.id == AccessibilityNodeInfo.ACTION_CLICK } == true
+
+            if ((isClickableSelf || isClickableParent) && subtreeText.length >= 4) {
+                val targetNode = if (isClickableSelf) node else (node.parent ?: node)
+                list.add(OrdinalCandidate(targetNode, b, subtreeText))
+            }
         }
 
         for (i in 0 until node.childCount) {
             collectContentCandidates(node.getChild(i), list, depth + 1)
         }
+    }
+
+    private fun getSubtreeText(node: AccessibilityNodeInfo, maxDepth: Int = 3): String {
+        val sb = StringBuilder()
+        fun walk(curr: AccessibilityNodeInfo?, d: Int) {
+            if (curr == null || d > maxDepth) return
+            val t = curr.text?.toString()?.trim()
+            val cd = curr.contentDescription?.toString()?.trim()
+            if (!t.isNullOrEmpty()) sb.append(t).append(" ")
+            if (!cd.isNullOrEmpty() && cd != t) sb.append(cd).append(" ")
+            for (i in 0 until curr.childCount) {
+                walk(curr.getChild(i), d + 1)
+            }
+        }
+        walk(node, 0)
+        return sb.toString().trim()
     }
 
     fun clickByCoordinates(x: Float, y: Float): Boolean {
@@ -287,25 +384,60 @@ class KavyaAccessibilityService : AccessibilityService() {
     fun clickNode(node: AccessibilityNodeInfo?): Boolean {
         if (node == null) return false
         var current: AccessibilityNodeInfo? = node
-        while (current != null) {
-            if (current.isClickable) {
-                return current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        var depth = 0
+        while (current != null && depth < 3) {
+            val isActionClickable = current.isClickable || current.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+            if (isActionClickable) {
+                val b = Rect()
+                current.getBoundsInScreen(b)
+                val isGiant = b.width() > 1000 && b.height() > 1800
+                if (!isGiant && b.width() > 0 && b.height() > 0) {
+                    val clicked = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (clicked) return true
+                    // Fallback to simulated touch gesture at node center
+                    if (clickByCoordinates(b.centerX().toFloat(), b.centerY().toFloat())) {
+                        return true
+                    }
+                }
             }
             current = current.parent
+            depth++
         }
-        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val b = Rect()
+        node.getBoundsInScreen(b)
+        val isGiant = b.width() > 1000 && b.height() > 1800
+        if (!isGiant && b.width() > 0 && b.height() > 0) {
+            val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (clicked) return true
+            return clickByCoordinates(b.centerX().toFloat(), b.centerY().toFloat())
+        }
+        return false
     }
 
     fun longClickNode(node: AccessibilityNodeInfo?): Boolean {
         if (node == null) return false
         var current: AccessibilityNodeInfo? = node
-        while (current != null) {
+        var depth = 0
+        while (current != null && depth < 3) {
             if (current.isLongClickable) {
-                return current.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+                val b = Rect()
+                current.getBoundsInScreen(b)
+                val isGiant = b.width() > 1000 && b.height() > 1800
+                if (!isGiant && b.width() > 0 && b.height() > 0) {
+                    return current.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+                }
             }
             current = current.parent
+            depth++
         }
-        return node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+        val b = Rect()
+        node.getBoundsInScreen(b)
+        val isGiant = b.width() > 1000 && b.height() > 1800
+        return if (!isGiant && b.width() > 0 && b.height() > 0) {
+            node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+        } else {
+            false
+        }
     }
 
     fun typeInNode(node: AccessibilityNodeInfo?, textToType: String): Boolean {
@@ -357,13 +489,13 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun clickNodeByText(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = safeGetRootInActiveWindow() ?: return false
         val targetNode = findNodeRecursively(root, text) ?: return false
         return clickNode(targetNode)
     }
 
     fun typeInNodeByText(textToFind: String, textToType: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = safeGetRootInActiveWindow() ?: return false
         val targetNode = if (textToFind.isBlank() || textToFind.equals("search", true)) {
             findSearchField(root) ?: findNodeRecursively(root, "search")
         } else {
@@ -373,7 +505,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun typeInFocusedNode(textToType: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = safeGetRootInActiveWindow() ?: return false
         val focused = findFocusedEditableNode(root)
         return typeInNode(focused, textToType)
     }
@@ -389,7 +521,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun clickSearchOrSubmitButton(): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = safeGetRootInActiveWindow() ?: return false
         val searchNode = findSubmitButton(root, "Search")
             ?: findSubmitButton(root, "Go")
             ?: findSubmitButton(root, "Submit")
@@ -403,7 +535,7 @@ class KavyaAccessibilityService : AccessibilityService() {
      * typing the query, and submitting.
      */
     suspend fun performAppSearch(query: String): Boolean {
-        var root = rootInActiveWindow
+        var root = safeGetRootInActiveWindow()
         var targetField = findSearchField(root)
 
         // 1. If no editable field is immediately visible, look for a search icon or button to tap
@@ -412,7 +544,7 @@ class KavyaAccessibilityService : AccessibilityService() {
             if (searchBtn != null) {
                 clickNode(searchBtn)
                 kotlinx.coroutines.delay(350)
-                root = rootInActiveWindow
+                root = safeGetRootInActiveWindow()
                 targetField = findSearchField(root)
             }
         }
@@ -492,7 +624,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun scroll(direction: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = safeGetRootInActiveWindow() ?: return false
         val scrollableNode = findScrollableNode(root) ?: return false
 
         return if (direction.equals("FORWARD", true) || direction.equals("DOWN", true) || direction.equals("BOTTOM", true)) {

@@ -281,6 +281,10 @@ fun SettingsScreen(navController: NavController) {
                     SettingRow("Automations & Routines", "Multi-step shortcuts & actions", Icons.Default.AutoMode, AccentPurpleLight) {
                         navController.navigate("routines")
                     }
+                    HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
+                    SettingRow("Visual Action Engine 🎮", "Human-like screen control, games & emergency stop", Icons.Default.TouchApp, AccentCyan) {
+                        navController.navigate("visual_action_control")
+                    }
                 }
             }
 

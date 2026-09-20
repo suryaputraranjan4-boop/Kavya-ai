@@ -630,10 +630,18 @@ class AppResolver(private val context: Context) {
         // If the command is a multi-step task (e.g. "open youtube, search hi, and open the second video"),
         // yield to TaskPlanner / AndroidAgent so all steps execute in proper Observe-Decide-Execute sequence.
         if (lower.contains("second video") || lower.contains("2nd video") ||
+            lower.contains("third video") || lower.contains("3rd video") ||
             lower.contains("dusra video") || lower.contains("doosra video") ||
-            lower.contains("second result") || lower.contains("second link") ||
+            lower.contains("teesra video") || lower.contains("first video") ||
+            lower.contains("second website") || lower.contains("2nd website") ||
+            lower.contains("third website") || lower.contains("3rd website") ||
+            lower.contains("dusri website") || lower.contains("teesri website") ||
+            lower.contains("second result") || lower.contains("2nd result") ||
+            lower.contains("third result") || lower.contains("3rd result") ||
+            lower.contains("second link") || lower.contains("2nd link") ||
             lower.contains(", and open") || lower.contains(", then open") ||
-            lower.contains(" aur dusra") || lower.contains(" and open the")
+            lower.contains(" aur dusra") || lower.contains(" aur teesra") ||
+            lower.contains(" and open the") || lower.contains("2nd or third")
         ) {
             return null
         }
@@ -734,6 +742,16 @@ class AppResolver(private val context: Context) {
     fun isDirectAppLaunchQuery(input: String): Boolean {
         val trimmed = input.trim().lowercase(Locale.ROOT)
         if (trimmed.isEmpty()) return false
+
+        // If it's an ordinal website / video / result selection, do not treat as app launch
+        val isOrdinalSelection = trimmed.contains("website") || trimmed.contains("result") ||
+                trimmed.contains("video") || trimmed.contains("link") ||
+                trimmed.contains("2nd") || trimmed.contains("3rd") || trimmed.contains("1st") ||
+                trimmed.contains("second") || trimmed.contains("third") || trimmed.contains("first") ||
+                trimmed.contains("dusra") || trimmed.contains("dusri") || trimmed.contains("teesra") || trimmed.contains("teesri")
+        if (isOrdinalSelection && (trimmed.contains("website") || trimmed.contains("result") || trimmed.contains("video") || trimmed.contains("link") || trimmed.contains("or third"))) {
+            return false
+        }
 
         // If it's a compound command like "open youtube and search hey", do not treat as plain app launch
         if (parseCompoundCommand(input) != null) return false

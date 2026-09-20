@@ -57,7 +57,9 @@ enum class UniversalActionType {
     ANALYZE_IMAGE,
     RESEARCH_WEB,
     GENERATE_IMAGE,
-    SEMANTIC_SEARCH
+    SEMANTIC_SEARCH,
+    GOOGLE_MAPS_SEARCH,
+    MEMORY_TOOL
 }
 
 /**

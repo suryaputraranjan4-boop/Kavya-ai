@@ -177,8 +177,8 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                 )
             }
 
-            // Case A: Search query action (e.g., "Hi search करो", "search Minecraft", "comedy dhoondo")
-            if (isSearchClause(clauseLower)) {
+            // Case A: Search or Play/Open query action (e.g., "Hi search करो", "search Minecraft", "comedy dhoondo", "music play karke do", "video open karke do")
+            if (isSearchClause(clauseLower) || isPlayOrMediaClause(clauseLower)) {
                 val query = extractQueryFromClause(clause, currentTarget)
                 if (query.isNotBlank()) {
                     steps.add(
@@ -214,6 +214,38 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                             expectedResult = "Search submitted for $query"
                         )
                     )
+
+                    // If user requested to play music or open video, automatically add step to open the video!
+                    val isMediaIntent = isPlayOrMediaClause(clauseLower) || isPlayOrMediaClause(lower)
+                    val isMediaPlatform = currentTarget.equals("YouTube", true) || currentTarget.equals("Spotify", true) ||
+                            clauseLower.contains("video") || clauseLower.contains("music") || clauseLower.contains("gana")
+                    val hasExplicitLaterOrdinal = clauses.any { detectOrdinalSelection(it.lowercase(Locale.ROOT)) != null }
+
+                    if (isMediaIntent && isMediaPlatform && !hasExplicitLaterOrdinal) {
+                        steps.add(
+                            TaskStep(
+                                id = stepId++,
+                                actionType = UniversalActionType.PLAY,
+                                targetAppOrUrl = currentTarget,
+                                param = "ORDINAL_0",
+                                selectorType = SelectorType.ORDINAL_RESULT,
+                                ordinalIndex = 0,
+                                spokenAnnouncement = "Video open karke play kar rahi हूँ.",
+                                expectedOutcome = "Video playback started"
+                            )
+                        )
+                        universalIntents.add(
+                            UniversalIntent(
+                                target = currentTarget,
+                                targetCategory = currentCategory,
+                                action = UniversalActionType.PLAY,
+                                objectSelector = "content_result",
+                                ordinalIndex = 0,
+                                sequenceNumber = universalIntents.size + 1,
+                                expectedResult = "Video item opened for playback"
+                            )
+                        )
+                    }
                 }
             }
 
@@ -642,6 +674,23 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                 clauseLower.contains("look for")
     }
 
+    private fun isPlayOrMediaClause(clauseLower: String): Boolean {
+        return clauseLower.contains("play") ||
+                clauseLower.contains("chalao") ||
+                clauseLower.contains("bajao") ||
+                clauseLower.contains("sunao") ||
+                clauseLower.contains("video open") ||
+                clauseLower.contains("open video") ||
+                clauseLower.contains("open karke do") ||
+                clauseLower.contains("music") ||
+                clauseLower.contains("gana") ||
+                clauseLower.contains("gaana") ||
+                clauseLower.contains("video") ||
+                clauseLower.contains("khol kar") ||
+                clauseLower.contains("chala do") ||
+                clauseLower.contains("play karo")
+    }
+
     /**
      * Extracts search query text from clause.
      */
@@ -652,8 +701,9 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
         // Remove target name and common verb wrappers
         val removals = listOf(
             targetLower, "google", "youtube", "chrome", "instagram", "spotify", "whatsapp",
-            "kholo", "khol do", "khol ke", "khol kar", "kholkar", "open karke", "karke", "open", "launch", "start", "pe", "par", "me", "mein", "in", "on",
-            "search karo", "search kar", "search", "khojo", "dhoondo", "find", "look for", "chalao",
+            "kholo", "khol do", "khol ke", "khol kar", "kholkar", "open karke", "open karke do", "karke", "karke do", "open", "launch", "start", "pe", "par", "me", "mein", "in", "on",
+            "search karo", "search kar", "search", "khojo", "dhoondo", "find", "look for", "chalao", "play karo", "play", "bajao", "sunao",
+            "koi video", "koi music", "koi gaana", "koi gana", "koi song",
             "पर", "पे", "में", "के अंदर", "खोलें", "खोलो", "खोल दो", "खोल के", "खोल कर", "सर्च करो", "सर्च कर", "सर्च",
             "ढूंढो", "खोजो", "चलाओ", "प्ले करो", "लगाओ", "करो", "कर", "दो",
             "is", "isme", "ismein", "ispe", "this", "app", "website", "application", "usme", "usmein", "uspe",
@@ -686,7 +736,7 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
 
         query = query.replace("[,.!?;:\"]".toRegex(), " ").trim().replace("\\s+".toRegex(), " ")
 
-        return if (query.isNotBlank()) query else "Hi"
+        return if (query.isNotBlank()) query else "trending music"
     }
 
     /**
@@ -699,8 +749,13 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
             clauseLower.contains("पहला link") || clauseLower.contains("पहला video") ||
             clauseLower.contains("first website") || clauseLower.contains("first result") ||
             clauseLower.contains("first link") || clauseLower.contains("first video") ||
+            clauseLower.contains("1st website") || clauseLower.contains("1st result") ||
+            clauseLower.contains("1st link") || clauseLower.contains("1st video") ||
+            clauseLower.contains("pehli website") || clauseLower.contains("pehla video") ||
+            clauseLower.contains("pahli website") || clauseLower.contains("pehla result") ||
             clauseLower.contains("सबसे ऊपर वाला") || clauseLower.contains("top result") ||
-            clauseLower.contains("पहला वाला") || clauseLower.contains("पहली वाली") || clauseLower.contains("ऊपर वाला") || clauseLower.contains("पहला") || clauseLower.contains("first")
+            clauseLower.contains("पहला वाला") || clauseLower.contains("पहली वाली") || clauseLower.contains("ऊपर वाला") ||
+            clauseLower.contains("1st") || (clauseLower.contains("first") && (clauseLower.contains("result") || clauseLower.contains("open") || clauseLower.contains("website") || clauseLower.contains("video")))
         ) {
             val announcement = if (clauseLower.contains("video") || clauseLower.contains("chalao") || clauseLower.contains("play")) {
                 "पहला video चला रही हूँ."
@@ -715,33 +770,72 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
             clauseLower.contains("दूसरी link") || clauseLower.contains("दूसरा video") ||
             clauseLower.contains("second website") || clauseLower.contains("second result") ||
             clauseLower.contains("second link") || clauseLower.contains("second video") ||
-            clauseLower.contains("दूसरा वाला") || clauseLower.contains("दूसरी वाली") || clauseLower.contains("दूसरा") || clauseLower.contains("second")
+            clauseLower.contains("2nd website") || clauseLower.contains("2nd result") ||
+            clauseLower.contains("2nd link") || clauseLower.contains("2nd video") ||
+            clauseLower.contains("dusri website") || clauseLower.contains("doosri website") ||
+            clauseLower.contains("dusra video") || clauseLower.contains("doosra video") ||
+            clauseLower.contains("dusra result") || clauseLower.contains("doosra result") ||
+            clauseLower.contains("2nd or third website") || clauseLower.contains("2nd or third") ||
+            clauseLower.contains("दूसरा वाला") || clauseLower.contains("दूसरी वाली") ||
+            clauseLower.contains("2nd") || (clauseLower.contains("second") && (clauseLower.contains("result") || clauseLower.contains("open") || clauseLower.contains("website") || clauseLower.contains("video"))) ||
+            clauseLower.contains("dusra") || clauseLower.contains("dusri") || clauseLower.contains("doosra") || clauseLower.contains("doosri")
         ) {
-            return Pair(1, "दूसरा result खोल रही हूँ.")
+            val announcement = if (clauseLower.contains("video") || clauseLower.contains("chalao") || clauseLower.contains("play")) {
+                "दूसरा video चला रही हूँ."
+            } else {
+                "दूसरी website खोल रही हूँ."
+            }
+            return Pair(1, announcement)
         }
 
         // Third result
         if (clauseLower.contains("तीसरी website") || clauseLower.contains("तीसरा result") ||
             clauseLower.contains("तीसरी link") || clauseLower.contains("तीसरा video") ||
             clauseLower.contains("third website") || clauseLower.contains("third result") ||
-            clauseLower.contains("तीसरा वाला") || clauseLower.contains("तीसरी वाली") || clauseLower.contains("तीसरा") || clauseLower.contains("third")
+            clauseLower.contains("third link") || clauseLower.contains("third video") ||
+            clauseLower.contains("3rd website") || clauseLower.contains("3rd result") ||
+            clauseLower.contains("3rd link") || clauseLower.contains("3rd video") ||
+            clauseLower.contains("teesri website") || clauseLower.contains("teesra video") ||
+            clauseLower.contains("teesra result") ||
+            clauseLower.contains("तीसरा वाला") || clauseLower.contains("तीसरी वाली") ||
+            clauseLower.contains("3rd") || (clauseLower.contains("third") && (clauseLower.contains("result") || clauseLower.contains("open") || clauseLower.contains("website") || clauseLower.contains("video"))) ||
+            clauseLower.contains("teesra") || clauseLower.contains("teesri")
         ) {
-            return Pair(2, "तीसरा result खोल रही हूँ.")
+            val announcement = if (clauseLower.contains("video") || clauseLower.contains("chalao") || clauseLower.contains("play")) {
+                "तीसरा video चला रही हूँ."
+            } else {
+                "तीसरी website खोल रही हूँ."
+            }
+            return Pair(2, announcement)
         }
 
         // Fourth result
         if (clauseLower.contains("चौथी website") || clauseLower.contains("चौथा result") ||
             clauseLower.contains("चौथी link") || clauseLower.contains("चौथा video") ||
             clauseLower.contains("fourth website") || clauseLower.contains("fourth result") ||
-            clauseLower.contains("चौथा वाला") || clauseLower.contains("चौथी वाली") || clauseLower.contains("चौथा") || clauseLower.contains("fourth")
+            clauseLower.contains("4th website") || clauseLower.contains("4th result") ||
+            clauseLower.contains("4th video") || clauseLower.contains("chauthi website") ||
+            clauseLower.contains("chautha video") ||
+            clauseLower.contains("चौथा वाला") || clauseLower.contains("चौथी वाली") ||
+            clauseLower.contains("4th") || (clauseLower.contains("fourth") && (clauseLower.contains("result") || clauseLower.contains("open") || clauseLower.contains("website") || clauseLower.contains("video")))
         ) {
             return Pair(3, "चौथा result खोल रही हूँ.")
+        }
+
+        // Fifth result
+        if (clauseLower.contains("5th website") || clauseLower.contains("fifth website") ||
+            clauseLower.contains("5th result") || clauseLower.contains("fifth result") ||
+            clauseLower.contains("paanchwa") || clauseLower.contains("paanchwi") || clauseLower.contains("5th")
+        ) {
+            return Pair(4, "पाँचवाँ result खोल रही हूँ.")
         }
 
         // Last result
         if (clauseLower.contains("last result") || clauseLower.contains("आखिरी result") || clauseLower.contains("last link") ||
             clauseLower.contains("आखिरी website") || clauseLower.contains("last website") || clauseLower.contains("last video") ||
-            clauseLower.contains("आखिरी वाला") || clauseLower.contains("नीचे वाला") || clauseLower.contains("सबसे नीचे वाला") || clauseLower.contains("आखिरी") || clauseLower.contains("last")
+            clauseLower.contains("aakhri website") || clauseLower.contains("aakhri video") || clauseLower.contains("aakhri result") ||
+            clauseLower.contains("आखिरी वाला") || clauseLower.contains("नीचे वाला") || clauseLower.contains("सबसे नीचे वाला") ||
+            clauseLower.contains("aakhri") || (clauseLower.contains("last") && (clauseLower.contains("result") || clauseLower.contains("open") || clauseLower.contains("website") || clauseLower.contains("video")))
         ) {
             return Pair(-1, "आखिरी result खोल रही हूँ.")
         }

@@ -6,14 +6,23 @@ import com.example.data.AppDatabase
 import com.example.data.MemoryDao
 import com.example.data.MemoryEntity
 import com.example.data.MessageEntity
+import com.example.memory.okf.OkfCategory
+import com.example.memory.okf.OkfMemoryRepository
+import com.example.memory.okf.OkfMemoryTools
+import com.example.memory.okf.OkfProvenance
+import com.example.memory.okf.OkfStatus
+import com.example.utils.AppPreferences
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /**
  * Real Persistent Long-Term Memory Engine for Kavya.
- * Handles extraction, classification, persistence, semantic retrieval, and feedback learning.
+ * Powered by OKF Agent Memory (Git-native storage & local BM25 ranking)
+ * with Room Database dual-persistence for existing view compatibility.
  */
 class MemoryEngine(private val context: Context) {
 
@@ -22,6 +31,41 @@ class MemoryEngine(private val context: Context) {
     }
 
     private val memoryDao: MemoryDao = AppDatabase.getDatabase(context).memoryDao()
+    val okfRepository: OkfMemoryRepository = OkfMemoryRepository.getInstance(context)
+    val okfTools: OkfMemoryTools = OkfMemoryTools(okfRepository)
+
+    init {
+        // Asynchronously migrate existing Room records to OKF Git-native format if needed
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                migrateRoomRecordsToOkf()
+            } catch (e: Exception) {
+                Log.w(TAG, "Background Room -> OKF migration notice: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun migrateRoomRecordsToOkf() {
+        val roomMemories = memoryDao.getAllMemories()
+        if (roomMemories.isEmpty()) return
+
+        for (m in roomMemories) {
+            val existing = okfRepository.getKnowledge(m.key)
+            if (existing == null) {
+                okfRepository.createKnowledge(
+                    key = m.key,
+                    content = m.content,
+                    category = OkfCategory.fromString(m.category),
+                    importance = m.importance,
+                    provenance = OkfProvenance(
+                        source = "MIGRATION",
+                        author = "Kavya Room Migration",
+                        timestamp = m.createdAt
+                    )
+                )
+            }
+        }
+    }
 
     fun getAllMemoriesFlow(): Flow<List<MemoryEntity>> = memoryDao.getAllMemoriesFlow()
 
@@ -179,6 +223,30 @@ class MemoryEngine(private val context: Context) {
     ): List<MemoryEntity> = withContext(Dispatchers.IO) {
         val all = memoryDao.getAllMemories()
         if (all.isEmpty()) return@withContext emptyList()
+
+        // If OKF Memory is enabled, leverage local BM25 ranking
+        if (AppPreferences.isOkfMemoryEnabled(context)) {
+            val bm25Results = okfRepository.searchKnowledge(userQuery, topK = 6)
+            if (bm25Results.isNotEmpty()) {
+                val matchedEntities = mutableListOf<MemoryEntity>()
+                val now = System.currentTimeMillis()
+                for (scored in bm25Results) {
+                    val entity = all.firstOrNull { it.key.equals(scored.unit.key, ignoreCase = true) }
+                        ?: MemoryEntity(
+                            key = scored.unit.key,
+                            content = scored.unit.content,
+                            category = scored.unit.category.name,
+                            importance = scored.unit.importance,
+                            lastUsedAt = now
+                        )
+                    matchedEntities.add(entity)
+                    if (entity.id > 0) {
+                        memoryDao.updateLastUsed(entity.id, now)
+                    }
+                }
+                return@withContext matchedEntities
+            }
+        }
 
         val lowerQuery = userQuery.lowercase(Locale.ROOT)
         val tokens = lowerQuery.split(" ", ",", ".", "?", "!", "\n").filter { it.length > 2 }
@@ -417,19 +485,38 @@ class MemoryEngine(private val context: Context) {
     }
 
     suspend fun deleteMemoryById(id: Long) = withContext(Dispatchers.IO) {
+        val existing = memoryDao.getAllMemories().firstOrNull { it.id == id }
+        if (existing != null) {
+            okfRepository.deleteKnowledge(existing.key, permanent = false)
+        }
         memoryDao.deleteById(id)
     }
 
     suspend fun clearAll() = withContext(Dispatchers.IO) {
+        okfRepository.clearAll()
         memoryDao.clearAll()
     }
 
     suspend fun insertCustomMemory(key: String, content: String, category: String, importance: Int) = withContext(Dispatchers.IO) {
+        val cleanKey = key.trim()
+        val cleanContent = content.trim()
+        val cleanCategory = category.trim().uppercase(Locale.ROOT)
+        val cleanImportance = importance.coerceIn(1, 5)
+
+        // Search-Before-Write via OKF repository
+        okfRepository.createKnowledge(
+            key = cleanKey,
+            content = cleanContent,
+            category = OkfCategory.fromString(cleanCategory),
+            importance = cleanImportance,
+            provenance = OkfProvenance(source = "USER_EXPLICIT", author = "User")
+        )
+
         val entity = MemoryEntity(
-            key = key.trim(),
-            content = content.trim(),
-            category = category.trim().uppercase(Locale.ROOT),
-            importance = importance.coerceIn(1, 5),
+            key = cleanKey,
+            content = cleanContent,
+            category = cleanCategory,
+            importance = cleanImportance,
             createdAt = System.currentTimeMillis(),
             lastUsedAt = System.currentTimeMillis(),
             confidence = 1.0f,
@@ -439,6 +526,12 @@ class MemoryEngine(private val context: Context) {
     }
 
     suspend fun updateMemory(memory: MemoryEntity) = withContext(Dispatchers.IO) {
+        okfRepository.updateKnowledge(
+            idOrKey = memory.key,
+            content = memory.content,
+            category = OkfCategory.fromString(memory.category),
+            importance = memory.importance
+        )
         memoryDao.updateMemory(memory)
     }
 }

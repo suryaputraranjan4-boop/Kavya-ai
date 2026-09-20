@@ -10,8 +10,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.automirrored.filled.ScreenShare
 import androidx.compose.material.icons.filled.StopScreenShare
 import androidx.compose.material3.*
@@ -151,9 +153,19 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif
                     ),
                     color = Color.White.copy(alpha = 0.9f),
-                    modifier = Modifier.weight(1f).padding(end = 84.dp), // Balance the left icons
+                    modifier = Modifier.weight(1f),
                     textAlign = TextAlign.Center
                 )
+
+                // Right side: Visual Action Engine shortcut
+                IconButton(onClick = { navController.navigate("visual_action_control") }) {
+                    Icon(
+                        imageVector = Icons.Default.TouchApp,
+                        contentDescription = "Visual Screen Control",
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.weight(1f))
@@ -205,28 +217,33 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                // Real Task Machine & Voice status text
-                AnimatedVisibility(visible = true) {
-                    val statusText = when {
-                        globalState.taskState == com.example.state.TaskState.EXECUTING -> globalState.taskStateDetail ?: "Executing task..."
-                        globalState.taskState == com.example.state.TaskState.PLANNING -> "Planning steps..."
-                        globalState.taskState == com.example.state.TaskState.VERIFYING -> "Verifying outcome..."
-                        globalState.taskState == com.example.state.TaskState.COMPLETED -> "Completed"
-                        globalState.taskState == com.example.state.TaskState.FAILED -> globalState.taskStateDetail ?: "Task failed"
-                        voiceState == VoiceState.IDLE -> "Tap to talk with Kavya"
-                        voiceState == VoiceState.LISTENING -> "Listening..."
-                        voiceState == VoiceState.UNDERSTANDING -> "Understanding..."
-                        voiceState == VoiceState.THINKING -> "Thinking..."
-                        voiceState == VoiceState.EXECUTING -> "Executing..."
-                        voiceState == VoiceState.SPEAKING -> "Speaking..."
-                        voiceState == VoiceState.ERROR -> "Error. Tap to retry."
-                        else -> "Ready"
-                    }
+                // Dynamic, event-driven status text from current task state
+                val statusText: String? = when {
+                    agentActionStatus != null -> agentActionStatus
+                    globalState.taskState == com.example.state.TaskState.OPENING_APP -> globalState.taskStateDetail ?: "App open ho raha hai..."
+                    globalState.taskState == com.example.state.TaskState.LOOKING_AT_SCREEN -> "Screen scan kar rahi hoon..."
+                    globalState.taskState == com.example.state.TaskState.FINDING_TARGET -> "Target search: ${globalState.taskStateDetail ?: ""}"
+                    globalState.taskState == com.example.state.TaskState.PERFORMING_ACTION -> globalState.taskStateDetail ?: "Action execute ho raha hai..."
+                    globalState.taskState == com.example.state.TaskState.EXECUTING -> globalState.taskStateDetail
+                    globalState.taskState == com.example.state.TaskState.PLANNING -> globalState.taskStateDetail ?: "Task plan taiyaar kar rahi hoon..."
+                    globalState.taskState == com.example.state.TaskState.VERIFYING -> "Result verify ho raha hai..."
+                    globalState.taskState == com.example.state.TaskState.COMPLETED -> "Task complete ho gaya."
+                    globalState.taskState == com.example.state.TaskState.STOPPED -> "Action rok diya gaya hai."
+                    globalState.taskState == com.example.state.TaskState.FAILED -> globalState.taskStateDetail ?: "Task pura nahi ho paya."
+                    voiceState == VoiceState.LISTENING -> "Sun rahi hoon..."
+                    voiceState == VoiceState.UNDERSTANDING -> "Request analyze ho rahi hai..."
+                    voiceState == VoiceState.EXECUTING -> globalState.taskStateDetail
+                    voiceState == VoiceState.ERROR -> "Kuch gadbad hui. Retry karne ke liye tap karein."
+                    voiceState == VoiceState.IDLE -> "Tap to talk with Kavya"
+                    else -> null
+                }
+
+                AnimatedVisibility(visible = !statusText.isNullOrBlank()) {
                     Text(
-                        text = statusText,
+                        text = statusText ?: "",
                         style = MaterialTheme.typography.labelMedium.copy(
-                            color = Color.White.copy(alpha = 0.6f),
-                            letterSpacing = 1.sp,
+                            color = Color.White.copy(alpha = 0.7f),
+                            letterSpacing = 0.5.sp,
                             fontWeight = FontWeight.W400
                         ),
                         textAlign = TextAlign.Center,
@@ -277,26 +294,56 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             )
         }
 
-        // Live Action Status Pill
+        // Live Action Status Pill with Emergency Stop
         AnimatedVisibility(
-            visible = agentActionStatus != null,
+            visible = agentActionStatus != null || globalState.taskState in listOf(
+                com.example.state.TaskState.OPENING_APP,
+                com.example.state.TaskState.LOOKING_AT_SCREEN,
+                com.example.state.TaskState.FINDING_TARGET,
+                com.example.state.TaskState.PERFORMING_ACTION,
+                com.example.state.TaskState.EXECUTING,
+                com.example.state.TaskState.VERIFYING
+            ),
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 90.dp)
+                .padding(top = 80.dp)
         ) {
+            val statusDisplay = agentActionStatus ?: globalState.taskStateDetail ?: globalState.taskState.name
             Surface(
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
-                shape = CircleShape,
-                tonalElevation = 6.dp
+                color = SurfaceGlass.copy(alpha = 0.95f),
+                shape = RoundedCornerShape(24.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryLight.copy(alpha = 0.4f)),
+                tonalElevation = 8.dp
             ) {
-                Text(
-                    text = agentActionStatus ?: "",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        fontWeight = FontWeight.Medium
-                    ),
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = AccentCyan
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = statusDisplay,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            color = Color.White,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Button(
+                        onClick = { viewModel.emergencyStop("User tapped STOP") },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4444)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(26.dp)
+                    ) {
+                        Text("STOP", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
             }
         }
     }

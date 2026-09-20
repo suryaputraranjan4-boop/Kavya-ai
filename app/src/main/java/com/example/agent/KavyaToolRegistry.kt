@@ -8,6 +8,12 @@ import android.util.Log
 import com.example.ai.providers.HfSpecializedTask
 import com.example.ai.providers.HuggingFaceProvider
 import com.example.ai.providers.OpenRouterProvider
+import com.example.memory.okf.OkfMemoryRepository
+import com.example.memory.okf.OkfMemoryTools
+import com.example.scraper.maps.GoogleMapsQueryParser
+import com.example.scraper.maps.GoogleMapsScraperClient
+import com.example.scraper.maps.MapsScraperJobManager
+import com.example.scraper.maps.ScrapeResult
 import com.example.services.KavyaAccessibilityService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -56,7 +62,14 @@ object KavyaToolRegistry {
         ToolDefinition("analyze_image", "Performs computer vision analysis or image captioning on an image.", mapOf("image_path" to "Image file path or description")),
         ToolDefinition("research_web", "Executes multi-source deep research using OpenRouter engine.", mapOf("query" to "Research question or investigation topic")),
         ToolDefinition("generate_image", "Generates an image from a prompt via Hugging Face diffusion models.", mapOf("prompt" to "Visual description prompt")),
-        ToolDefinition("semantic_search", "Computes embeddings and semantic similarity for text search.", mapOf("query" to "Search query", "content" to "Target text content"))
+        ToolDefinition("semantic_search", "Computes embeddings and semantic similarity for text search.", mapOf("query" to "Search query", "content" to "Target text content")),
+        ToolDefinition("google_maps_search", "Searches Google Maps for local businesses, contacts, ratings, and websites via local scraper.", mapOf("query" to "Natural language search or business category and location", "limit" to "Maximum number of results")),
+        ToolDefinition("memory_search", "Searches OKF Agent Memory using BM25 local ranking.", mapOf("query" to "Search query or topic", "category" to "Optional category filter")),
+        ToolDefinition("memory_create", "Saves durable project decision or fact to OKF Memory with Search-Before-Write.", mapOf("key" to "Title / key", "content" to "Details", "category" to "Category")),
+        ToolDefinition("memory_show", "Retrieves a specific memory item by ID or key from OKF Memory.", mapOf("id" to "Memory ID or title key")),
+        ToolDefinition("memory_update", "Updates an existing memory item in OKF Memory.", mapOf("id" to "Memory ID or key", "content" to "New content")),
+        ToolDefinition("memory_delete", "Archives or deletes a memory item from OKF Memory.", mapOf("id" to "Memory ID or key")),
+        ToolDefinition("memory_list", "Lists stored knowledge units in OKF Memory.", mapOf("category" to "Optional category filter", "limit" to "Maximum count"))
     )
 
     /**
@@ -193,6 +206,102 @@ object KavyaToolRegistry {
                     val hf = HuggingFaceProvider()
                     val res = hf.executeSpecializedTask(HfSpecializedTask.EMBEDDINGS, textInput = query, context = context)
                     ToolExecutionResult(name, res.success, res.outputText, res.error)
+                }
+
+                "google_maps_search" -> {
+                    val rawQuery = parameters["query"] ?: parameters["search"] ?: parameters["location"] ?: ""
+                    val parsed = GoogleMapsQueryParser.parse(rawQuery)
+                    val limitParam = parameters["limit"]?.toIntOrNull()
+                    val finalQuery = if (limitParam != null) parsed.copy(limit = limitParam) else parsed
+
+                    val client = GoogleMapsScraperClient(context)
+                    when (val res = client.searchBusinesses(finalQuery)) {
+                        is ScrapeResult.Success -> {
+                            val array = org.json.JSONArray()
+                            res.businesses.forEach { array.put(it.toJsonObject()) }
+                            ToolExecutionResult(
+                                toolName = name,
+                                success = true,
+                                data = array.toString()
+                            )
+                        }
+                        is ScrapeResult.EmptyResult -> {
+                            ToolExecutionResult(
+                                toolName = name,
+                                success = true,
+                                data = "[]",
+                                error = "No businesses found for query: ${res.query}"
+                            )
+                        }
+                        is ScrapeResult.ServiceUnavailable -> {
+                            ToolExecutionResult(
+                                toolName = name,
+                                success = false,
+                                data = "",
+                                error = res.error
+                            )
+                        }
+                        is ScrapeResult.Error -> {
+                            ToolExecutionResult(
+                                toolName = name,
+                                success = false,
+                                data = "",
+                                error = res.message
+                            )
+                        }
+                    }
+                }
+
+                "memory_search" -> {
+                    val query = parameters["query"] ?: parameters["text"] ?: ""
+                    val category = parameters["category"]
+                    val limit = parameters["limit"]?.toIntOrNull() ?: 5
+                    val tools = OkfMemoryTools(OkfMemoryRepository.getInstance(context))
+                    val result = tools.memorySearch(query, category, limit)
+                    ToolExecutionResult(name, true, result)
+                }
+
+                "memory_create" -> {
+                    val key = parameters["key"] ?: parameters["title"] ?: ""
+                    val content = parameters["content"] ?: parameters["value"] ?: parameters["details"] ?: ""
+                    val category = parameters["category"] ?: "FACT"
+                    val tools = OkfMemoryTools(OkfMemoryRepository.getInstance(context))
+                    val result = tools.memoryCreate(key, content, category)
+                    ToolExecutionResult(name, true, result)
+                }
+
+                "memory_show" -> {
+                    val id = parameters["id"] ?: parameters["key"] ?: ""
+                    val tools = OkfMemoryTools(OkfMemoryRepository.getInstance(context))
+                    val result = tools.memoryShow(id)
+                    ToolExecutionResult(name, true, result)
+                }
+
+                "memory_update" -> {
+                    val id = parameters["id"] ?: parameters["key"] ?: ""
+                    val content = parameters["content"]
+                    val category = parameters["category"]
+                    val status = parameters["status"]
+                    val tools = OkfMemoryTools(OkfMemoryRepository.getInstance(context))
+                    val result = tools.memoryUpdate(id, content, category, status)
+                    ToolExecutionResult(name, true, result)
+                }
+
+                "memory_delete" -> {
+                    val id = parameters["id"] ?: parameters["key"] ?: ""
+                    val permanent = parameters["permanent"]?.toBooleanStrictOrNull() ?: false
+                    val tools = OkfMemoryTools(OkfMemoryRepository.getInstance(context))
+                    val result = tools.memoryDelete(id, permanent)
+                    ToolExecutionResult(name, true, result)
+                }
+
+                "memory_list" -> {
+                    val category = parameters["category"]
+                    val status = parameters["status"] ?: "ACTIVE"
+                    val limit = parameters["limit"]?.toIntOrNull() ?: 30
+                    val tools = OkfMemoryTools(OkfMemoryRepository.getInstance(context))
+                    val result = tools.memoryList(category, status, limit)
+                    ToolExecutionResult(name, true, result)
                 }
 
                 else -> ToolExecutionResult(name, false, "", "Unknown tool: $name")

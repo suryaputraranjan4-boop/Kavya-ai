@@ -57,5 +57,6 @@ fun AppNavGraph(
         composable("ai_api_hub") { AiApiHubScreen(navController) }
         composable("proactive_settings") { ProactiveSettingsScreen(navController, viewModel) }
         composable("debug_dashboard") { DebugDashboardScreen() }
+        composable("visual_action_control") { VisualActionControlScreen(navController, viewModel) }
     }
 }
