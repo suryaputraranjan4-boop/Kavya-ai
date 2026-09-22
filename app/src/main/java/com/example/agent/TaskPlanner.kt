@@ -283,8 +283,8 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                 )
             }
 
-            // Case B.1: Call / Message (e.g. "Rahul ko call karo", "Mom ko message karo hello")
-            val callMatch = Regex("""(.+?)\s+ko\s+call\s+karo""", RegexOption.IGNORE_CASE).find(clauseLower)
+            // Case B.1: Call / Message (e.g. "Rahul ko call karo", "Mom ko message karo hello", "मेरे दोस्त को यह message भेजो")
+            val callMatch = Regex("""(.+?)\s+(?:ko|को)\s+(?:call|फोन|कॉल)\s*(?:karo|lagao|करो|लगाओ)?""", RegexOption.IGNORE_CASE).find(clauseLower)
             if (callMatch != null) {
                 val contact = callMatch.groupValues[1].trim()
                 steps.add(
@@ -299,9 +299,9 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                 )
                 continue
             }
-            val msgMatch = Regex("""(.+?)\s+ko\s+message\s+karo\s+(.+)""", RegexOption.IGNORE_CASE).find(clauseLower)
-            val msgMatchBhejo = Regex("""(.+?)\s+ko\s+(.+?)\s+bhejo""", RegexOption.IGNORE_CASE).find(clauseLower)
-            val msgMatchDirect = Regex("""(?:message|msg)\s+([A-Za-z0-9_\u0900-\u097F]+)[:\s]+(.+)""", RegexOption.IGNORE_CASE).find(clause)
+            val msgMatch = Regex("""(.+?)\s+(?:ko|को)\s+(?:message|msg|मैसेज|संदेश)\s*(?:karo|bhejo|करो|भेजो)?\s+(.+)""", RegexOption.IGNORE_CASE).find(clauseLower)
+            val msgMatchBhejo = Regex("""(.+?)\s+(?:ko|को)\s+(.+?)\s+(?:bhejo|send\s+karo|भेजो)""", RegexOption.IGNORE_CASE).find(clauseLower)
+            val msgMatchDirect = Regex("""(?:message|msg|मैसेज)\s+([A-Za-z0-9_\u0900-\u097F]+)[:\s]+(.+)""", RegexOption.IGNORE_CASE).find(clause)
             val foundMsg = msgMatch ?: msgMatchBhejo ?: msgMatchDirect
             if (foundMsg != null) {
                 val contact = foundMsg.groupValues[1].trim()
@@ -675,8 +675,7 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
     }
 
     private fun isPlayOrMediaClause(clauseLower: String): Boolean {
-        return clauseLower.contains("play") ||
-                clauseLower.contains("chalao") ||
+        val hasMediaIndicator = clauseLower.contains("play") ||
                 clauseLower.contains("bajao") ||
                 clauseLower.contains("sunao") ||
                 clauseLower.contains("video open") ||
@@ -685,10 +684,13 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                 clauseLower.contains("music") ||
                 clauseLower.contains("gana") ||
                 clauseLower.contains("gaana") ||
+                clauseLower.contains("song") ||
                 clauseLower.contains("video") ||
-                clauseLower.contains("khol kar") ||
-                clauseLower.contains("chala do") ||
                 clauseLower.contains("play karo")
+        val isPlainChalaoWithoutMedia = (clauseLower.contains("chalao") || clauseLower.contains("chala do")) &&
+                !(clauseLower.contains("gana") || clauseLower.contains("gaana") || clauseLower.contains("song") || clauseLower.contains("video") || clauseLower.contains("music"))
+        if (isPlainChalaoWithoutMedia) return false
+        return hasMediaIndicator
     }
 
     /**
@@ -736,7 +738,7 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
 
         query = query.replace("[,.!?;:\"]".toRegex(), " ").trim().replace("\\s+".toRegex(), " ")
 
-        return if (query.isNotBlank()) query else "trending music"
+        return query
     }
 
     /**

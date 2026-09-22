@@ -410,10 +410,6 @@ object AppPreferences {
         }
     }
 
-    fun hasOverlayPermission(context: Context): Boolean {
-        return PermissionsManager.hasOverlayPermission(context)
-    }
-
     fun hasAccessibilityPermission(context: Context): Boolean {
         return PermissionsManager.isAccessibilityServiceEnabled(
             context,
@@ -716,6 +712,35 @@ object AppPreferences {
     fun setConfidenceThreshold(context: Context, threshold: Float) {
         getPrefs(context).edit().putFloat(KEY_CONFIDENCE_THRESHOLD, threshold).apply()
     }
+
+    private const val KEY_BACKGROUND_VOICE_ENABLED = "key_background_voice_enabled"
+    private const val KEY_MIC_LISTENING_ENABLED = "key_mic_listening_enabled"
+    private const val KEY_WAKE_GESTURE_ENABLED = "key_wake_gesture_enabled"
+    private const val KEY_SLEEP_GESTURE_ENABLED = "key_sleep_gesture_enabled"
+    private const val KEY_WAKE_SENSITIVITY = "key_wake_sensitivity"
+    private const val KEY_SLEEP_SENSITIVITY = "key_sleep_sensitivity"
+    private const val KEY_KAVYA_STATE = "key_kavya_state"
+
+    fun isBackgroundVoiceEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_BACKGROUND_VOICE_ENABLED, true)
+    fun setBackgroundVoiceEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_BACKGROUND_VOICE_ENABLED, enabled).apply()
+
+    fun isMicListeningEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_MIC_LISTENING_ENABLED, true)
+    fun setMicListeningEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_MIC_LISTENING_ENABLED, enabled).apply()
+
+    fun isWakeGestureEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_WAKE_GESTURE_ENABLED, true)
+    fun setWakeGestureEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_WAKE_GESTURE_ENABLED, enabled).apply()
+
+    fun isSleepGestureEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_SLEEP_GESTURE_ENABLED, true)
+    fun setSleepGestureEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_SLEEP_GESTURE_ENABLED, enabled).apply()
+
+    fun getWakeSensitivity(context: Context): Float = getPrefs(context).getFloat(KEY_WAKE_SENSITIVITY, 0.75f)
+    fun setWakeSensitivity(context: Context, value: Float) = getPrefs(context).edit().putFloat(KEY_WAKE_SENSITIVITY, value.coerceIn(0.1f, 1.0f)).apply()
+
+    fun getSleepSensitivity(context: Context): Float = getPrefs(context).getFloat(KEY_SLEEP_SENSITIVITY, 0.75f)
+    fun setSleepSensitivity(context: Context, value: Float) = getPrefs(context).edit().putFloat(KEY_SLEEP_SENSITIVITY, value.coerceIn(0.1f, 1.0f)).apply()
+
+    fun getKavyaState(context: Context): String = getPrefs(context).getString(KEY_KAVYA_STATE, "ACTIVE") ?: "ACTIVE"
+    fun setKavyaState(context: Context, state: String) = getPrefs(context).edit().putString(KEY_KAVYA_STATE, state).apply()
 }
 
 /**

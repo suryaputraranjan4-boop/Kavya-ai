@@ -77,6 +77,10 @@ fun KavyaSideMenu(
             navController.navigate("music") { launchSingleTop = true }
             scope.launch { drawerState.close() } 
         }
+        DrawerItem(Icons.Default.AutoGraph, "Kavya Evolution") { 
+            navController.navigate("evolution") { launchSingleTop = true }
+            scope.launch { drawerState.close() } 
+        }
         
         Spacer(modifier = Modifier.height(16.dp))
         Text(

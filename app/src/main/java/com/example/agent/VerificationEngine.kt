@@ -121,5 +121,63 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
             }
         }
     }
+
+    /**
+     * Verifies that WhatsApp chat or conversation screen is open.
+     */
+    suspend fun verifyWhatsAppChatOpen(recipient: String, timeoutMs: Long = 2000L): VerificationResult {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            val service = KavyaAccessibilityService.instance
+            val root = service?.rootInActiveWindow
+            val input = service?.findWhatsAppMessageInput(root)
+            val fgPkg = screenInspector.getCurrentForegroundPackage().lowercase()
+            val screenContext = screenInspector.getScreenContextString().lowercase()
+
+            if (fgPkg.contains("whatsapp") && (input != null || screenContext.contains("type a message") || screenContext.contains("message"))) {
+                return VerificationResult(
+                    passed = true,
+                    reason = "PASS: Conversation window is open with active message input",
+                    currentPackage = fgPkg
+                )
+            }
+            delay(150)
+        }
+        val currentPkg = screenInspector.getCurrentForegroundPackage()
+        return VerificationResult(
+            passed = false,
+            reason = "FAIL: Could not open WhatsApp chat screen for '$recipient'",
+            currentPackage = currentPkg
+        )
+    }
+
+    /**
+     * Verifies that an audio call is currently active or ringing.
+     */
+    suspend fun verifyCallActive(timeoutMs: Long = 2500L): VerificationResult {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            val fgPkg = screenInspector.getCurrentForegroundPackage().lowercase()
+            val screenContext = screenInspector.getScreenContextString().lowercase()
+            val isCallScreen = fgPkg.contains("telecom") || fgPkg.contains("incall") ||
+                    fgPkg.contains("dialer") || fgPkg.contains("phone") ||
+                    (fgPkg.contains("whatsapp") && (screenContext.contains("calling") || screenContext.contains("ringing") || screenContext.contains("call")))
+
+            if (isCallScreen) {
+                return VerificationResult(
+                    passed = true,
+                    reason = "PASS: Call screen verified active ($fgPkg)",
+                    currentPackage = fgPkg
+                )
+            }
+            delay(200)
+        }
+        val currentPkg = screenInspector.getCurrentForegroundPackage()
+        return VerificationResult(
+            passed = false,
+            reason = "FAIL: Call screen was not confirmed active (current: $currentPkg)",
+            currentPackage = currentPkg
+        )
+    }
 }
 

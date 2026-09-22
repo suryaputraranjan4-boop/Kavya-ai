@@ -56,6 +56,27 @@ class ApiRegistry {
             fallbackGroupId = "currency-core",
             description = "Free currency exchange rates."
         )
+        val githubApi = ApiMetadata(
+            apiId = "github-api-v3",
+            name = "GitHub REST API v3",
+            category = ApiCategory.UTILITY,
+            subcategory = ApiSubcategory.TRANSCRIPTION,
+            capabilities = listOf(ApiCapability.RETRIEVE, ApiCapability.ANALYZE),
+            tags = listOf("github", "git", "repositories", "code", "discovery"),
+            endpoint = "https://api.github.com/search/repositories",
+            method = HttpMethod.GET,
+            authType = AuthType.BEARER_TOKEN,
+            requiredParams = listOf(
+                ApiParameter("q", "string", true, "Search query")
+            ),
+            optionalParams = listOf(
+                ApiParameter("per_page", "integer", false, "Results per page")
+            ),
+            isFree = true,
+            priority = ApiPriority.P0_ESSENTIAL,
+            fallbackGroupId = "github-core",
+            description = "Real GitHub repository discovery and search API."
+        )
         val hfSpeech = ApiMetadata(
             apiId = "hf-whisper",
             name = "HuggingFace Whisper Speech Recognition",
@@ -96,6 +117,7 @@ class ApiRegistry {
         )
         _apis[openMeteo.apiId] = openMeteo
         _apis[frankfurter.apiId] = frankfurter
+        _apis[githubApi.apiId] = githubApi
         _apis[hfSpeech.apiId] = hfSpeech
         _apis[hfVision.apiId] = hfVision
         _apiFlow.value = _apis.values.toList()

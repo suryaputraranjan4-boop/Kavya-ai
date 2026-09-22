@@ -23,7 +23,7 @@ class TouchController(
 
     companion object {
         private const val TAG = "KavyaTouchController"
-        private const val NATURAL_PRE_DELAY_MS = 150L
+        private const val NATURAL_PRE_DELAY_MS = 40L
         private const val TAP_STROKE_DURATION_MS = 80L
         private const val LONG_PRESS_DURATION_MS = 600L
     }

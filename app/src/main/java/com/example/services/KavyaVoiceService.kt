@@ -47,9 +47,6 @@ import com.example.agent.MemoryEngine
 
 class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
 
-    private lateinit var windowManager: WindowManager
-    private var floatingView: ComposeView? = null
-    
     private var geminiLiveClient: GeminiLiveClient? = null
     
     private lateinit var router: CommandRouter
@@ -132,12 +129,34 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             }
         )
         
-        setupFloatingWindow()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+
+        if (com.example.utils.AppPreferences.isMicListeningEnabled(this) && com.example.utils.AppPreferences.getKavyaState(this) != "SLEEP") {
+            startListening()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = intent?.action
+        when (action) {
+            "ACTION_WAKE" -> {
+                com.example.utils.AppPreferences.setKavyaState(this, "ACTIVE")
+                voiceState = VoiceState.IDLE
+                if (com.example.utils.AppPreferences.isMicListeningEnabled(this)) {
+                    startListening()
+                }
+            }
+            "ACTION_SLEEP" -> {
+                com.example.utils.AppPreferences.setKavyaState(this, "SLEEP")
+                stopListening()
+            }
+            "ACTION_TOGGLE_MIC" -> {
+                val currentMic = com.example.utils.AppPreferences.isMicListeningEnabled(this)
+                com.example.utils.AppPreferences.setMicListeningEnabled(this, !currentMic)
+                if (!currentMic) startListening() else stopListening()
+            }
+        }
         return START_STICKY
     }
 
@@ -183,82 +202,9 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             .build()
     }
 
-    private fun setupFloatingWindow() {
-        if (!android.provider.Settings.canDrawOverlays(this)) {
-            Log.w(TAG, "Overlay permission not granted, skipping floating window setup")
-            return
-        }
-
-        try {
-            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-            
-            val density = resources.displayMetrics.density
-            val sizePx = (96 * density).toInt()
-
-            val composeView = ComposeView(this).apply {
-                setContent {
-                    MyApplicationTheme {
-                        KavyaVoiceOrb(
-                            state = voiceState,
-                            onClick = {
-                                if (isListening) {
-                                    stopListening()
-                                } else {
-                                    startListening()
-                                }
-                            },
-                            modifier = Modifier.padding(4.dp),
-                            baseSize = 80.dp
-                        )
-                    }
-                }
-            }
-            
-            composeView.setViewTreeLifecycleOwner(this)
-            composeView.setViewTreeSavedStateRegistryOwner(this)
-            composeView.setViewTreeViewModelStoreOwner(this)
-            
-            floatingView = composeView
-
-            val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            }
-
-            val params = WindowManager.LayoutParams(
-                sizePx,
-                sizePx,
-                layoutFlag,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                        WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-                PixelFormat.TRANSLUCENT
-            )
-
-            params.gravity = Gravity.BOTTOM or Gravity.END
-            params.x = (16 * density).toInt()
-            params.y = (100 * density).toInt()
-
-            windowManager.addView(floatingView, params)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to setup floating window: ${e.message}")
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         geminiLiveClient?.stopSession()
-        floatingView?.let {
-            try {
-                if (::windowManager.isInitialized) {
-                    windowManager.removeView(it)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error removing floating view: ${e.message}")
-            }
-        }
     }
 }

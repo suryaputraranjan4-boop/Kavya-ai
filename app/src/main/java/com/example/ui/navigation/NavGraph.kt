@@ -17,9 +17,7 @@ fun AppNavGraph(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val startDestination = androidx.compose.runtime.remember {
-        if (!com.example.utils.AppPreferences.isApiSetupCompleted(context) && !com.example.utils.AppPreferences.hasConfiguredApiKey(context)) {
-            "setup_kavya"
-        } else if (com.example.utils.AppPreferences.isOnboardingCompleted(context)) {
+        if (com.example.utils.AppPreferences.isOnboardingCompleted(context)) {
             "home"
         } else {
             "onboarding"
@@ -43,6 +41,7 @@ fun AppNavGraph(
         composable("routines") { RoutinesScreen(navController, viewModel) }
         composable("music") { MusicScreen(navController, viewModel) }
         composable("memory") { MemoryScreen(navController, viewModel) }
+        composable("evolution") { EvolutionScreen(navController) }
         
         // Settings Sub-screens
         composable("permissions") { PermissionsScreen(navController) }

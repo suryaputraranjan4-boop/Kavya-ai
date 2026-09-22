@@ -106,12 +106,6 @@ class AndroidAgent(
             )
             KavyaStateManager.updateTaskState(TaskState.EXECUTING, "Step ${step.id}/${plan.steps.size}: ${step.actionType}")
 
-            // Announce milestone in natural conversational tone
-            if (step.spokenAnnouncement.isNotBlank() && onSpeakProgress != null) {
-                onSpeakProgress(step.spokenAnnouncement)
-                delay(200)
-            }
-
             val screenPerceptionBefore = screenInspector.inspectScreen()
             KavyaStateManager.updateTaskState(TaskState.EXECUTING, "Executing step ${step.id}")
             val stepResult = executeAtomicStep(step)
@@ -125,6 +119,11 @@ class AndroidAgent(
             if (stepResult.diagnostic != null) {
                 completedDiagnostics.add(stepResult.diagnostic)
                 DiagnosticEngine.recordAppLaunch(stepResult.diagnostic)
+            }
+
+            // If milestone succeeded and multi-step plan, notify progress
+            if (stepResult.success && step.spokenAnnouncement.isNotBlank() && onSpeakProgress != null && plan.steps.size > 1 && step.id < plan.steps.size) {
+                onSpeakProgress(step.spokenAnnouncement)
             }
 
             // Create structured debug log
@@ -200,7 +199,7 @@ class AndroidAgent(
             }
 
             completedSteps++
-            delay(400) // Settle delay between consecutive UI steps
+            delay(80) // Fast settle delay between consecutive UI steps
         }
 
         DiagnosticEngine.updateLiveState(AgentLiveState.COMPLETED, "Completed ${plan.steps.size} steps", plan.targetAppName)
@@ -219,9 +218,18 @@ class AndroidAgent(
             )
         )
 
+        val verifiedMessage = if (plan.steps.size == 1 && plan.steps.first().actionType == UniversalActionType.OPEN_APP) {
+            val isHindi = plan.originalPrompt.any { it in '\u0900'..'\u097F' } ||
+                    plan.originalPrompt.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("jao") }
+            if (isHindi) "${plan.targetAppName} खुल गया।" else "Opened ${plan.targetAppName}."
+        } else {
+            val isHindi = plan.originalPrompt.any { it in '\u0900'..'\u097F' }
+            if (isHindi) "Task पूरा हो गया।" else "Done."
+        }
+
         return@withContext TaskExecutionOutcome(
             success = true,
-            finalSpokenMessage = "Done.",
+            finalSpokenMessage = verifiedMessage,
             completedStepsCount = completedSteps,
             totalStepsCount = plan.steps.size,
             diagnostics = completedDiagnostics,
@@ -257,9 +265,21 @@ class AndroidAgent(
             UniversalActionType.SWIPE -> handleScroll(step.param)
             UniversalActionType.CHESS_MOVE -> handleChessMove(step.param)
             UniversalActionType.CALL,
-            UniversalActionType.MAKE_PHONE_CALL -> handlePhoneCall(step)
+            UniversalActionType.MAKE_PHONE_CALL -> {
+                if (step.targetAppOrUrl.equals("WhatsApp", ignoreCase = true)) {
+                    handleWhatsAppCall(step)
+                } else {
+                    handlePhoneCall(step)
+                }
+            }
             UniversalActionType.MAKE_WHATSAPP_CALL -> handleWhatsAppCall(step)
-            UniversalActionType.SEND_MESSAGE,
+            UniversalActionType.SEND_MESSAGE -> {
+                if (step.targetAppOrUrl.equals("WhatsApp", ignoreCase = true)) {
+                    handleWhatsAppMessage(step)
+                } else {
+                    handleSms(step)
+                }
+            }
             UniversalActionType.SEND_SMS -> handleSms(step)
             UniversalActionType.SEND_WHATSAPP_MESSAGE -> handleWhatsAppMessage(step)
             UniversalActionType.SEND_EMAIL -> handleEmail(step)
@@ -786,47 +806,131 @@ class AndroidAgent(
     }
 
     private suspend fun handlePhoneCall(step: TaskStep): StepExecutionResult {
-        val contactName = step.recipient.ifBlank { step.param }
+        val target = step.recipient.ifBlank { step.param }.trim()
+        screenInspector.logStep("Initiating real phone call to '$target'")
+
+        val isPhoneNumber = target.all { it.isDigit() || it == '+' || it == ' ' || it == '-' } && target.filter { it.isDigit() }.length >= 3
+        if (isPhoneNumber) {
+            val cleanNumber = target.filter { it.isDigit() || it == '+' }
+            val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$cleanNumber")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            return try {
+                context.startActivity(intent)
+                delay(400)
+                val callVerif = verificationEngine.verifyCallActive()
+                StepExecutionResult(step.id, callVerif.passed, UniversalActionType.MAKE_PHONE_CALL, if (callVerif.passed) "Calling $cleanNumber" else "Call verify nahi hui.")
+            } catch (e: SecurityException) {
+                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleanNumber")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(dialIntent)
+                StepExecutionResult(step.id, true, UniversalActionType.MAKE_PHONE_CALL, "Dialer opened for $cleanNumber")
+            } catch (e: Exception) {
+                StepExecutionResult(step.id, false, UniversalActionType.MAKE_PHONE_CALL, "Phone call start failed: ${e.message}")
+            }
+        }
+
+        // Target is Contact Name
         val intent = Intent(Intent.ACTION_DIAL).apply {
             data = Uri.parse("tel:")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         try {
             context.startActivity(intent)
-            delay(200)
+            delay(400)
             val service = KavyaAccessibilityService.instance
             if (service != null) {
-                service.typeInNodeByText("Search", contactName) || service.typeInNodeByText("Search contacts", contactName)
-                delay(100)
-                service.clickNodeByText(contactName)
-                delay(100)
-                service.clickNodeByText("Call") || service.clickNodeByText("Dial")
+                service.typeInNodeByText("Search", target) || service.typeInNodeByText("Search contacts", target)
+                delay(300)
+                val root = service.rootInActiveWindow
+                val contactNode = if (root != null) screenInspector.findContactNode(root, target) else null
+                if (contactNode != null) {
+                    service.clickNode(contactNode)
+                    delay(300)
+                    val callBtn = service.findAudioCallButton(service.rootInActiveWindow)
+                        ?: service.findNodeRecursively(service.rootInActiveWindow, "Call")
+                    if (callBtn != null) {
+                        service.clickNode(callBtn)
+                        delay(300)
+                    }
+                }
             }
-            return StepExecutionResult(step.id, true, UniversalActionType.MAKE_PHONE_CALL, "Calling $contactName")
+            val callVerif = verificationEngine.verifyCallActive()
+            return StepExecutionResult(step.id, callVerif.passed, UniversalActionType.MAKE_PHONE_CALL, if (callVerif.passed) "Calling $target" else "Dialer opened for $target")
         } catch(e: Exception) {
-            return StepExecutionResult(step.id, false, UniversalActionType.MAKE_PHONE_CALL, "Could not start call intent")
+            return StepExecutionResult(step.id, false, UniversalActionType.MAKE_PHONE_CALL, "Could not start call: ${e.message}")
         }
     }
 
     private suspend fun handleWhatsAppCall(step: TaskStep): StepExecutionResult {
-        val contactName = step.recipient.ifBlank { step.param }
-        val intent = appResolver.validateAndPrepareLaunch(InstalledApp("WhatsApp", "com.whatsapp", null, "whatsapp"))
-        if (intent != null) {
-            context.startActivity(intent)
-            delay(500)
-            val service = KavyaAccessibilityService.instance
-            if (service != null) {
-                service.clickNodeByText("Search")
-                delay(100)
-                service.typeInFocusedNode(contactName)
-                delay(200)
-                service.clickNodeByText(contactName)
-                delay(200)
-                service.clickNodeByText("Voice call") || service.clickNodeByText("Call")
-            }
-            return StepExecutionResult(step.id, true, UniversalActionType.MAKE_WHATSAPP_CALL, "WhatsApp calling $contactName")
+        val contactName = step.recipient.ifBlank { step.param }.trim()
+        screenInspector.logStep("Initiating real WhatsApp audio call to '$contactName'")
+
+        val launchResult = handleOpenApp("WhatsApp")
+        if (!launchResult.success) {
+            return StepExecutionResult(step.id, false, UniversalActionType.MAKE_WHATSAPP_CALL, "WhatsApp open nahi ho paya: ${launchResult.output}")
         }
-        return StepExecutionResult(step.id, false, UniversalActionType.MAKE_WHATSAPP_CALL, "WhatsApp is not installed")
+
+        val service = KavyaAccessibilityService.instance
+        if (service == null) {
+            return StepExecutionResult(step.id, false, UniversalActionType.MAKE_WHATSAPP_CALL, "Accessibility service active nahi hai.")
+        }
+
+        delay(400)
+        var root = service.rootInActiveWindow
+
+        // Check if audio call button is directly accessible on screen
+        var callBtn = service.findAudioCallButton(root)
+
+        if (callBtn == null) {
+            val searchBtn = service.findNodeRecursively(root, "Search")
+                ?: service.findNodeRecursively(root, "खोजें")
+                ?: screenInspector.findTargetNode("search")
+
+            if (searchBtn != null) {
+                service.clickNode(searchBtn)
+                delay(250)
+            }
+
+            service.typeInFocusedNode(contactName) || service.typeInNodeByText("Search…", contactName)
+            delay(500)
+
+            root = service.rootInActiveWindow
+            val contactNode = if (root != null) screenInspector.findContactNode(root, contactName) else null
+            if (contactNode != null) {
+                service.clickNode(contactNode)
+                delay(400)
+            } else {
+                return StepExecutionResult(step.id, false, UniversalActionType.MAKE_WHATSAPP_CALL, "WhatsApp par contact '$contactName' nahi mila.")
+            }
+
+            // Check if profile popup dialog opened
+            root = service.rootInActiveWindow
+            if (service.isWhatsAppProfileDialogVisible(root)) {
+                val popupCallIcon = service.getWhatsAppProfileDialogAction(root, "call")
+                if (popupCallIcon != null) {
+                    service.clickNode(popupCallIcon)
+                    delay(400)
+                    val callVerif = verificationEngine.verifyCallActive()
+                    return StepExecutionResult(step.id, callVerif.passed, UniversalActionType.MAKE_WHATSAPP_CALL, if (callVerif.passed) "WhatsApp calling $contactName" else "Call screen verify nahi hui.")
+                }
+            }
+
+            root = service.rootInActiveWindow
+            callBtn = service.findAudioCallButton(root)
+        }
+
+        if (callBtn != null) {
+            val clicked = service.clickNode(callBtn)
+            if (clicked) {
+                delay(400)
+                val callVerif = verificationEngine.verifyCallActive()
+                return StepExecutionResult(step.id, callVerif.passed, UniversalActionType.MAKE_WHATSAPP_CALL, if (callVerif.passed) "WhatsApp calling $contactName" else "Call start nahi ho payi.")
+            }
+        }
+
+        return StepExecutionResult(step.id, false, UniversalActionType.MAKE_WHATSAPP_CALL, "WhatsApp audio call button locate nahi hua.")
     }
 
     private suspend fun handleSms(step: TaskStep): StepExecutionResult {
@@ -862,28 +966,106 @@ class AndroidAgent(
     }
 
     private suspend fun handleWhatsAppMessage(step: TaskStep): StepExecutionResult {
-        val contactName = step.recipient.ifBlank { step.param }
-        val messageText = step.messageText
-        
-        val intent = appResolver.validateAndPrepareLaunch(InstalledApp("WhatsApp", "com.whatsapp", null, "whatsapp"))
-        if (intent != null) {
-            context.startActivity(intent)
-            delay(500)
-            val service = KavyaAccessibilityService.instance
-            if (service != null) {
-                service.clickNodeByText("Search")
-                delay(100)
-                service.typeInFocusedNode(contactName)
-                delay(200)
-                service.clickNodeByText(contactName)
-                delay(200)
-                service.typeInNodeByText("Message", messageText)
-                delay(100)
-                service.clickNodeByText("Send")
-            }
-            return StepExecutionResult(step.id, true, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Sent WhatsApp message to $contactName")
+        var contactName = step.recipient
+        var messageText = step.messageText
+        if (contactName.isBlank() && step.param.contains("||")) {
+            val parts = step.param.split("||", limit = 2)
+            contactName = parts.getOrNull(0)?.trim() ?: ""
+            messageText = parts.getOrNull(1)?.trim() ?: ""
         }
-        return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp is not installed")
+        if (contactName.isBlank() && step.param.contains(":")) {
+            val parts = step.param.split(":", limit = 2)
+            contactName = parts.getOrNull(0)?.trim() ?: ""
+            messageText = parts.getOrNull(1)?.trim() ?: ""
+        }
+        if (contactName.isBlank()) contactName = step.param.trim()
+        if (messageText.isBlank()) messageText = "Hello"
+
+        screenInspector.logStep("Initiating real WhatsApp message to '$contactName': '$messageText'")
+
+        val launchResult = handleOpenApp("WhatsApp")
+        if (!launchResult.success) {
+            return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp open nahi ho paya: ${launchResult.output}")
+        }
+
+        val service = KavyaAccessibilityService.instance
+        if (service == null) {
+            return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Accessibility service active nahi hai, automation sambhav nahi hai.")
+        }
+
+        delay(400)
+
+        // 1. Check if chat input is already visible
+        var root = service.rootInActiveWindow
+        var msgInput = service.findWhatsAppMessageInput(root)
+
+        if (msgInput == null) {
+            val searchBtn = service.findNodeRecursively(root, "Search")
+                ?: service.findNodeRecursively(root, "खोजें")
+                ?: screenInspector.findTargetNode("search")
+
+            if (searchBtn != null) {
+                service.clickNode(searchBtn)
+                delay(250)
+            }
+
+            service.typeInFocusedNode(contactName) || service.typeInNodeByText("Search…", contactName) || service.typeInNodeByText("Search", contactName)
+            delay(500)
+
+            root = service.rootInActiveWindow
+            val contactNode = if (root != null) screenInspector.findContactNode(root, contactName) else null
+            if (contactNode != null) {
+                service.clickNode(contactNode)
+                delay(400)
+            } else {
+                return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp par contact '$contactName' nahi mila.")
+            }
+
+            // Check if profile photo popup dialog opened
+            root = service.rootInActiveWindow
+            if (service.isWhatsAppProfileDialogVisible(root)) {
+                val chatIcon = service.getWhatsAppProfileDialogAction(root, "message")
+                if (chatIcon != null) {
+                    service.clickNode(chatIcon)
+                    delay(300)
+                }
+            }
+
+            val chatVerif = verificationEngine.verifyWhatsAppChatOpen(contactName, timeoutMs = 2500L)
+            if (!chatVerif.passed) {
+                return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Chat window open nahi ho saki: ${chatVerif.reason}")
+            }
+        }
+
+        // 2. Type message into input
+        root = service.rootInActiveWindow
+        msgInput = service.findWhatsAppMessageInput(root)
+        if (msgInput != null) {
+            val typed = service.typeInNode(msgInput, messageText)
+            if (!typed) {
+                service.typeInFocusedNode(messageText)
+            }
+            delay(200)
+        } else {
+            return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Message input field nahi mila.")
+        }
+
+        // 3. Click Send
+        root = service.rootInActiveWindow
+        val sendBtn = service.findNodeRecursively(root, "Send")
+            ?: service.findNodeRecursively(root, "भेजें")
+            ?: screenInspector.findTargetNode("Send")
+
+        if (sendBtn != null) {
+            val clickedSend = service.clickNode(sendBtn)
+            if (clickedSend) {
+                delay(300)
+                screenInspector.logStep("WhatsApp message sent verified for $contactName")
+                return StepExecutionResult(step.id, true, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp par $contactName ko message bhej diya gaya hai.")
+            }
+        }
+
+        return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Send button press nahi ho paya.")
     }
 
     private suspend fun handleEmail(step: TaskStep): StepExecutionResult {

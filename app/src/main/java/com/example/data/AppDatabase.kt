@@ -10,15 +10,19 @@ import androidx.room.RoomDatabase
         ChatEntity::class,
         MessageEntity::class,
         MemoryEntity::class,
-        AutomationFailureEntity::class
+        AutomationFailureEntity::class,
+        com.example.evolution.EvolutionHistoryEntity::class,
+        com.example.evolution.EvolutionReportEntity::class,
+        com.example.evolution.EvolutionUpgradeEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
     abstract fun memoryDao(): MemoryDao
     abstract fun automationFailureDao(): AutomationFailureDao
+    abstract fun evolutionDao(): com.example.evolution.EvolutionDao
 
     companion object {
         @Volatile

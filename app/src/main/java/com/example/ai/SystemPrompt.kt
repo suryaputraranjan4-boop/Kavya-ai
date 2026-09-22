@@ -13,8 +13,9 @@ object SystemPrompt {
         }
         val memoryBlock = if (memoryContext.isNotBlank()) {
             """
-            USER MEMORY & PREFERENCES (Persistent):
+            USER MEMORY, PERSONALITY & PREFERENCES (Persistent Room DB + OKF Git-Native + BM25):
             $memoryContext
+            - CRITICAL: Always adopt the user's saved Personality & Tone preferences (e.g. friendly, polite, casual, Hinglish, concise, etc.) in every response.
             ------------------------------------
             """.trimIndent()
         } else {

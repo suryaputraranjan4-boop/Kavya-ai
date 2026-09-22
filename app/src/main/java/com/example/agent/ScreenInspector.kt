@@ -84,6 +84,17 @@ class ScreenInspector {
         )
     }
 
+    private val _debugTrace = mutableListOf<String>()
+    val debugTrace: List<String> get() = _debugTrace.toList()
+
+    fun logStep(stepInfo: String) {
+        android.util.Log.d("ScreenInspector", "[DeterministicAutomation] $stepInfo")
+        synchronized(_debugTrace) {
+            if (_debugTrace.size >= 30) _debugTrace.removeAt(0)
+            _debugTrace.add("[${System.currentTimeMillis() % 100000}] $stepInfo")
+        }
+    }
+
     /**
      * Finds the corresponding accessible node for a task step using semantic UI analysis.
      */
@@ -91,9 +102,11 @@ class ScreenInspector {
         val service = KavyaAccessibilityService.instance ?: return null
         val root = service.rootInActiveWindow ?: return null
 
-        return when (step.selectorType) {
+        logStep("InspectScreen for Step ${step.id} (${step.actionType}) target='${step.targetAppOrUrl}' param='${step.param}'")
+
+        val targetNode = when (step.selectorType) {
             SelectorType.SEARCH_FIELD, SelectorType.URL_BAR -> {
-                service.findSearchField(root) ?: findNodeByTextOrDesc(root, "search")
+                service.findSearchField(root) ?: findNodeByTextOrDesc(root, "search", rejectAvatarsAndMic = true)
             }
             SelectorType.ORDINAL_RESULT -> {
                 service.findOrdinalContentNode(root, step.ordinalIndex) ?: findFirstSearchResultNode(root)
@@ -114,6 +127,9 @@ class ScreenInspector {
                 findTargetNode(step.param, preferredType = null)
             }
         }
+
+        logStep("Target node for ${step.param}: ${if (targetNode != null) "FOUND (${targetNode.className})" else "NOT FOUND"}")
+        return targetNode
     }
 
     /**
@@ -129,7 +145,7 @@ class ScreenInspector {
         val lowerQuery = targetQuery.lowercase(Locale.ROOT).trim()
 
         if (preferredType == "EDITABLE" || lowerQuery == "search" || lowerQuery == "searchbar" || lowerQuery == "search bar") {
-            return service.findSearchField(root) ?: findNodeByTextOrDesc(root, "search")
+            return service.findSearchField(root) ?: findNodeByTextOrDesc(root, "search", rejectAvatarsAndMic = true)
         }
 
         if (preferredType == "FIRST_RESULT" || lowerQuery == "first_result" || lowerQuery == "first result" || lowerQuery == "pehli website" || lowerQuery == "pehla video") {
@@ -144,7 +160,11 @@ class ScreenInspector {
             return findReelsControlNode(root)
         }
 
-        return findNodeByTextOrDesc(root, targetQuery)
+        if (preferredType == "AUDIO_CALL" || lowerQuery.contains("voice call") || lowerQuery.contains("audio call")) {
+            return service.findAudioCallButton(root)
+        }
+
+        return findNodeByTextOrDesc(root, targetQuery, rejectAvatarsAndMic = false)
     }
 
     private fun findPlayControlNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -166,27 +186,77 @@ class ScreenInspector {
     }
 
     private fun findSubmitControlNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        return findNodeByTextOrDesc(root, "Search")
-            ?: findNodeByTextOrDesc(root, "Go")
-            ?: findNodeByTextOrDesc(root, "Submit")
-            ?: findNodeByTextOrDesc(root, "Send")
+        return findNodeByTextOrDesc(root, "Search", rejectAvatarsAndMic = true)
+            ?: findNodeByTextOrDesc(root, "Go", rejectAvatarsAndMic = true)
+            ?: findNodeByTextOrDesc(root, "Submit", rejectAvatarsAndMic = true)
+            ?: findNodeByTextOrDesc(root, "Send", rejectAvatarsAndMic = true)
     }
 
-    private fun findContactNode(root: AccessibilityNodeInfo, contactName: String): AccessibilityNodeInfo? {
-        if (contactName.isNotBlank()) {
-            val direct = findNodeByTextOrDesc(root, contactName)
-            if (direct != null) return direct
+    /**
+     * Deterministic Contact Finder:
+     * Strictly avoids avatar/profile pictures, and selects the contact name row or parent clickable item.
+     */
+    fun findContactNode(root: AccessibilityNodeInfo, contactName: String): AccessibilityNodeInfo? {
+        val cleanName = contactName.lowercase(Locale.ROOT).trim()
+        if (cleanName.isBlank()) return findFirstSearchResultNode(root)
+
+        val candidate = findContactTextNode(root, cleanName)
+        if (candidate != null) {
+            // Find clickable container or return candidate if clickable
+            var curr: AccessibilityNodeInfo? = candidate
+            while (curr != null) {
+                val resId = curr.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+                val isAvatar = resId.contains("avatar") || resId.contains("photo") || resId.contains("picture")
+                if (!isAvatar && curr.isClickable) {
+                    return curr
+                }
+                curr = curr.parent
+            }
+            return candidate
         }
+
         return findFirstSearchResultNode(root)
     }
 
-    private fun findNodeByTextOrDesc(node: AccessibilityNodeInfo?, target: String): AccessibilityNodeInfo? {
+    private fun findContactTextNode(node: AccessibilityNodeInfo?, targetName: String): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val text = node.text?.toString()?.lowercase(Locale.ROOT)?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT)?.trim() ?: ""
+        val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+
+        // NEVER target avatar/photo for contact selection
+        val isAvatar = resId.contains("avatar") || resId.contains("photo") || resId.contains("picture") ||
+                desc.contains("photo") || desc.contains("profile")
+
+        if (!isAvatar && (text.contains(targetName) || (desc.contains(targetName) && !desc.contains("photo")))) {
+            return node
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = findContactTextNode(node.getChild(i), targetName)
+            if (child != null) return child
+        }
+        return null
+    }
+
+    private fun findNodeByTextOrDesc(
+        node: AccessibilityNodeInfo?,
+        target: String,
+        rejectAvatarsAndMic: Boolean = false
+    ): AccessibilityNodeInfo? {
         if (node == null) return null
         val lowerTarget = target.lowercase(Locale.ROOT).trim()
 
         val text = node.text?.toString()?.lowercase(Locale.ROOT)?.trim()
         val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT)?.trim()
         val resId = node.viewIdResourceName?.substringAfterLast("/")?.lowercase(Locale.ROOT)
+
+        if (rejectAvatarsAndMic) {
+            val isMicOrAvatar = desc?.contains("voice") == true || desc?.contains("mic") == true ||
+                    resId?.contains("voice") == true || resId?.contains("mic") == true ||
+                    resId?.contains("avatar") == true || resId?.contains("photo") == true
+            if (isMicOrAvatar) return null
+        }
 
         if (text?.contains(lowerTarget) == true ||
             desc?.contains(lowerTarget) == true ||
@@ -195,7 +265,7 @@ class ScreenInspector {
         }
 
         for (i in 0 until node.childCount) {
-            val child = findNodeByTextOrDesc(node.getChild(i), target)
+            val child = findNodeByTextOrDesc(node.getChild(i), target, rejectAvatarsAndMic)
             if (child != null) return child
         }
         return null

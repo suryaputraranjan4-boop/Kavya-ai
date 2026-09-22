@@ -19,6 +19,22 @@ class KavyaVoiceEngine(
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeSpeechJob: Job? = null
+    private var androidTts: android.speech.tts.TextToSpeech? = null
+
+    init {
+        try {
+            androidTts = android.speech.tts.TextToSpeech(context.applicationContext) { status ->
+                if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                    val result = androidTts?.setLanguage(Locale("hi", "IN"))
+                    if (result == android.speech.tts.TextToSpeech.LANG_MISSING_DATA || result == android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED) {
+                        androidTts?.language = Locale.getDefault()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to init Android TTS fallback: ${e.message}")
+        }
+    }
 
     fun processAndSpeak(rawText: String, enqueue: Boolean = false): SpeechAnalysisResult {
         val analysis = analyzeSpeech(rawText)
@@ -75,8 +91,16 @@ class KavyaVoiceEngine(
             }
             
             if (!geminiSuccess) {
+                Log.w(TAG, "Falling back to Android TTS for guaranteed speech output.")
                 withContext(Dispatchers.Main) {
                     geminiPlayer?.notifyCaption(cleanText)
+                    try {
+                        androidTts?.setPitch(1.02f)
+                        androidTts?.setSpeechRate(1.0f)
+                        androidTts?.speak(cleanText, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "KAVYA_TTS_${System.currentTimeMillis()}")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Android TTS fallback failed: ${e.message}")
+                    }
                 }
             }
         }
@@ -92,6 +116,9 @@ class KavyaVoiceEngine(
     fun stop() {
         activeSpeechJob?.cancel()
         geminiPlayer?.stop()
+        try {
+            androidTts?.stop()
+        } catch (e: Exception) {}
         Log.d(TAG, "VOICE_PLAYBACK_INTERRUPTED")
     }
 
@@ -151,6 +178,10 @@ class KavyaVoiceEngine(
     fun cleanText(text: String): String {
         var clean = text.replace(SENTIMENT_TAG_REGEX, "")
         clean = com.example.agent.StructuredActionParser.stripActions(clean)
+        clean = clean.replace("```[a-zA-Z]*\\s*[\\s\\S]*?```".toRegex(), "")
+        clean = clean.replace("\\{[^}]*\\}".toRegex(), "")
+        clean = clean.replace("\\[[^\\]]*\\]".toRegex(), "")
+        clean = clean.replace("(?i)\\bjson\\b".toRegex(), "")
         clean = clean.replace("[*#_~`]+".toRegex(), "")
         return clean.trim()
     }

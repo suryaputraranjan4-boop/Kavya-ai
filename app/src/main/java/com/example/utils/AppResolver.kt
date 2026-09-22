@@ -101,13 +101,14 @@ class AppResolver(private val context: Context) {
                 .trim()
 
             val prefixRegex = listOf(
-                "^can you please (open|launch|start|run)\\s+".toRegex(RegexOption.IGNORE_CASE),
-                "^can you (open|launch|start|run)\\s+".toRegex(RegexOption.IGNORE_CASE),
-                "^please (open|launch|start|run)\\s+".toRegex(RegexOption.IGNORE_CASE),
+                "^can you please (open|launch|start|run|go to)\\s+".toRegex(RegexOption.IGNORE_CASE),
+                "^can you (open|launch|start|run|go to)\\s+".toRegex(RegexOption.IGNORE_CASE),
+                "^please (open|launch|start|run|go to)\\s+".toRegex(RegexOption.IGNORE_CASE),
+                "^(go to|navigate to|take me to)\\s+(the\\s+)?".toRegex(RegexOption.IGNORE_CASE),
                 "^(open|launch|start|run)\\s+the\\s+".toRegex(RegexOption.IGNORE_CASE),
                 "^(open|launch|start|run)\\s+".toRegex(RegexOption.IGNORE_CASE),
                 "^(khol do|khol|kholo|chalao|chalaye|chalado|start karo|start kar|open karo|open kar)\\s+".toRegex(RegexOption.IGNORE_CASE),
-                "^(खोलो|खोलिए|खोल|चलाओ|चालू करो|चालू कर)\\s+".toRegex(RegexOption.IGNORE_CASE)
+                "^(खोलो|खोलिए|खोल|चलाओ|चालू करो|चालू कर|जाओ|ले चलो)\\s+".toRegex(RegexOption.IGNORE_CASE)
             )
 
             for (pattern in prefixRegex) {
@@ -115,8 +116,8 @@ class AppResolver(private val context: Context) {
             }
 
             val suffixRegex = listOf(
-                "\\s+(khol do|khol|kholo|chalao|chalaye|chalado|start karo|start kar|open karo|open kar)$".toRegex(RegexOption.IGNORE_CASE),
-                "\\s+(खोलो|खोलिए|खोल|चलाओ|चालू करो|चालू कर)$".toRegex(RegexOption.IGNORE_CASE),
+                "\\s+(?:par\\s+jao|pe\\s+jao|me\\s+jao|mein\\s+jao|jao|par\\s+le\\s+chalo|pe\\s+le\\s+chalo|le\\s+chalo|khol do|khol|kholo|chalao|chalaye|chalado|start karo|start kar|open karo|open kar)$".toRegex(RegexOption.IGNORE_CASE),
+                "\\s+(?:पर\\s+जाओ|पे\\s+जाओ|में\\s+जाओ|जाओ|ले\\s+चलो|खोलो|खोलिए|खोल|चलाओ|चालू करो|चालू कर)$".toRegex(RegexOption.IGNORE_CASE),
                 "\\s+(application|app|एप|ऐप)$".toRegex(RegexOption.IGNORE_CASE),
                 "[.?!]+$".toRegex()
             )
@@ -299,7 +300,13 @@ class AppResolver(private val context: Context) {
 
             // ChatGPT
             "chatgpt" to listOf("com.openai.chatgpt", "chatgpt"),
-            "चैटजीपीटी" to listOf("com.openai.chatgpt", "chatgpt")
+            "चैटजीपीटी" to listOf("com.openai.chatgpt", "chatgpt"),
+
+            // YouTube Create
+            "yt create" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create", "yt create"),
+            "youtube create" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create"),
+            "वाईटी क्रिएट" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create"),
+            "यूट्यूब क्रिएट" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create")
         )
     }
 
@@ -674,16 +681,16 @@ class AppResolver(private val context: Context) {
             return CompoundCommand(appName = match.groupValues[2].trim(), searchQuery = match.groupValues[1].trim(), actionType = "PLAY")
         }
 
-        // Pattern 3: Hinglish/Hindi: "youtube me hey search karo", "youtube par comedy chalao", "google ke andar wikipedia kholo"
-        val hinglishSearchRegex = "^(.+?)\\s+(?:me|par|pe|mein|ke\\s+andar|पर|पे|में|के\\s+अंदर)\\s+(.+?)\\s+(?:search\\s+karo|search\\s+khol|khol\\s+do|chalao|dhoondo|kholo|open\\s+karo|सर्च\\s+करो|चलाओ|ढूंढो|खोलो|search\\s+करो|open\\s+करो|search\\s+kar)$".toRegex(RegexOption.IGNORE_CASE)
+        // Pattern 3: Hinglish/Hindi: "youtube me hey search karo", "youtube par comedy dhoondo"
+        val hinglishSearchRegex = "^(.+?)\\s+(?:me|par|pe|mein|ke\\s+andar|पर|पे|में|के\\s+अंदर)\\s+(.+?)\\s+(?:search\\s+karo|search\\s+kar|dhoondo|khojo|सर्च\\s+करो|ढूंढो|खोजो|search\\s+करो)$".toRegex(RegexOption.IGNORE_CASE)
         hinglishSearchRegex.find(trimmed)?.let { match ->
             val app = match.groupValues[1].trim()
             val query = match.groupValues[2].trim()
             return CompoundCommand(appName = app, searchQuery = query, actionType = "SEARCH")
         }
 
-        // Pattern 4: "google par search karo xyz", "youtube pe chalao xyz"
-        val hinglishPrefixRegex = "^(.+?)\\s+(?:me|par|pe|mein|ke\\s+andar|पर|पे|में|के\\s+अंदर)\\s+(?:search\\s+karo|search\\s+kar|dhoondo|chalao|play\\s+karo|kholo|सर्च\\s+करो|ढूंढो|चलाओ|प्ले\\s+करो|खोलो|search\\s+करो|open\\s+करो)\\s+(.+)$".toRegex(RegexOption.IGNORE_CASE)
+        // Pattern 4: "google par search karo xyz", "youtube pe dhoondo xyz"
+        val hinglishPrefixRegex = "^(.+?)\\s+(?:me|par|pe|mein|ke\\s+andar|पर|पे|में|के\\s+अंदर)\\s+(?:search\\s+karo|search\\s+kar|dhoondo|khojo|सर्च\\s+करो|ढूंढो|खोजो|search\\s+करो)\\s+(.+)$".toRegex(RegexOption.IGNORE_CASE)
         hinglishPrefixRegex.find(trimmed)?.let { match ->
             val app = match.groupValues[1].trim()
             val query = match.groupValues[2].trim()
@@ -759,11 +766,19 @@ class AppResolver(private val context: Context) {
         // Check common patterns
         if (trimmed.startsWith("open ") || trimmed.startsWith("launch ") ||
             trimmed.startsWith("start ") || trimmed.startsWith("run ") ||
+            trimmed.startsWith("go to ") || trimmed.startsWith("navigate to ") ||
             trimmed.endsWith(" kholo") || trimmed.endsWith(" khol do") ||
             trimmed.endsWith(" open karo") || trimmed.endsWith(" open kar") ||
             trimmed.endsWith(" chalao") || trimmed.endsWith(" chalaye") ||
+            trimmed.endsWith(" par jao") || trimmed.endsWith(" pe jao") ||
+            trimmed.endsWith(" me jao") || trimmed.endsWith(" mein jao") ||
+            trimmed.endsWith(" jao") || trimmed.endsWith(" le chalo") ||
             trimmed.endsWith(" खोलो") || trimmed.endsWith(" चालू करो") ||
-            trimmed.startsWith("खोलो ") || trimmed.startsWith("चालू करो ")
+            trimmed.endsWith(" पर जाओ") || trimmed.endsWith(" पे जाओ") ||
+            trimmed.endsWith(" में जाओ") || trimmed.endsWith(" जाओ") ||
+            trimmed.endsWith(" ले चलो") ||
+            trimmed.startsWith("खोलो ") || trimmed.startsWith("चालू करो ") ||
+            trimmed.startsWith("जाओ ") || trimmed.startsWith("ले चलो ")
         ) {
             return true
         }

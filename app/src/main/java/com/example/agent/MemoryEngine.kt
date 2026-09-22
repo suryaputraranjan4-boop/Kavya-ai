@@ -454,6 +454,9 @@ class MemoryEngine(private val context: Context) {
     private fun classifyFact(fact: String): MemoryTuple {
         val lower = fact.lowercase(Locale.ROOT)
         return when {
+            lower.contains("friendly") || lower.contains("tone") || lower.contains("personality") || lower.contains("polite") || lower.contains("formal") || lower.contains("casual") || lower.contains("behavior") || lower.contains("dostana") || lower.contains("pyar se") -> {
+                MemoryTuple("Personality & Tone", fact, "PERSONALITY", 5)
+            }
             lower.contains("hinglish") || lower.contains("hindi") || lower.contains("english") || lower.contains("language") -> {
                 MemoryTuple("Language Preference", fact, "PREFERENCE", 4)
             }
@@ -474,7 +477,10 @@ class MemoryEngine(private val context: Context) {
     }
 
     private fun extractAutomaticPreference(lower: String, original: String): MemoryTuple? {
-        // Automatic preference candidate identification
+        // Automatic personality & preference candidate identification
+        if (lower.contains("friendly") || lower.contains("dostana") || lower.contains("talk politely") || lower.contains("be casual") || lower.contains("tone") || lower.contains("personality") || lower.contains("aise bolo")) {
+            return MemoryTuple("Personality & Tone", original, "PERSONALITY", 5)
+        }
         if (lower.contains("always reply in hinglish") || (lower.contains("hinglish mein bolo") && !lower.contains("remember"))) {
             return MemoryTuple("Language Preference", "User frequently prefers Hinglish responses.", "PREFERENCE", 3)
         }
@@ -533,6 +539,34 @@ class MemoryEngine(private val context: Context) {
             importance = memory.importance
         )
         memoryDao.updateMemory(memory)
+    }
+
+    suspend fun autoLearnTaskProgress(userPrompt: String, aiResponse: String) = withContext(Dispatchers.IO) {
+        val lower = userPrompt.lowercase(Locale.ROOT)
+        if (lower.contains("create") || lower.contains("add") || lower.contains("implement") || lower.contains("build") || lower.contains("fix") || lower.contains("feature") || lower.contains("bana") || lower.contains("joda")) {
+            val taskKey = "project_task_" + System.currentTimeMillis()
+            val summary = "Task: $userPrompt | Outcome: Completed/Processed successfully."
+            val existing = memoryDao.getAllMemories().filter { it.content.contains(userPrompt, ignoreCase = true) }
+            if (existing.isEmpty()) {
+                val entity = MemoryEntity(
+                    key = taskKey,
+                    content = summary,
+                    category = "PROJECT_PROGRESS",
+                    importance = 4,
+                    sourceConversation = userPrompt,
+                    confidence = 0.9f,
+                    userConfirmed = false
+                )
+                memoryDao.insertMemory(entity)
+                okfRepository.createKnowledge(
+                    key = taskKey,
+                    content = summary,
+                    category = OkfCategory.fromString("PROJECT_PROGRESS"),
+                    importance = 4,
+                    provenance = OkfProvenance(source = "AUTO_LEARN", author = "Kavya AGI Engine")
+                )
+            }
+        }
     }
 }
 

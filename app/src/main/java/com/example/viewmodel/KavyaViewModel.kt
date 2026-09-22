@@ -4,6 +4,12 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.agent.ActionEvent
+import com.example.agent.ActionEventBus
+import com.example.agent.CommandCategory
+import com.example.agent.ExecutionPhase
+import com.example.agent.TaskExecutionContext
+import com.example.agent.UserCommandClassifier
 import com.example.agent.AndroidAgent
 import com.example.agent.ContextEngine
 import com.example.agent.DiagnosticEngine
@@ -34,6 +40,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.util.UUID
 
 data class ChatMessage(
@@ -126,6 +133,22 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         accessibilityProvider = com.example.ai.providers.AndroidAccessibilityToolProvider(androidAgent)
     )
     val apiSystem = com.example.api.ApiSystem()
+
+    private val recentAssistantResponses = mutableListOf<String>()
+
+    private fun checkAndFilterRepetition(response: String): String {
+        val trimmed = response.trim()
+        if (trimmed.isBlank()) return trimmed
+        if (recentAssistantResponses.any { it.equals(trimmed, ignoreCase = true) }) {
+            val varied = "$trimmed (Let's proceed to the next step or explore a different aspect of this task.)"
+            recentAssistantResponses.add(varied)
+            if (recentAssistantResponses.size > 5) recentAssistantResponses.removeAt(0)
+            return varied
+        }
+        recentAssistantResponses.add(trimmed)
+        if (recentAssistantResponses.size > 5) recentAssistantResponses.removeAt(0)
+        return trimmed
+    }
 
     fun emergencyStop(reason: String = "User requested stop") {
         androidAgent.stopExecution(reason)
@@ -574,8 +597,220 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 var launchDiagnostic: AppLaunchDiagnostic? = null
                 var executionResultStr = ""
 
-                // 0a. REMOVED Direct Device & App Launch bypass.
-                // We now force all requests through the LLM for structured intent parsing.
+                // 0a. Primary Source: Direct User Command Classification & Verified Device Execution
+                val classified = UserCommandClassifier.classify(prompt, commandRouter.appResolver)
+
+                if (classified.isMultiStep && classified.steps.isNotEmpty()) {
+                    val firstStep = classified.steps[0]
+                    val secondStep = classified.steps.getOrNull(1)
+
+                    val appTarget = classified.targetApp ?: firstStep.targetApp ?: ""
+                    val taskCtx = ActionEventBus.startNewTask(prompt, CommandCategory.OPEN_APP, appTarget)
+                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
+                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PLANNED, ActionEvent.TaskPlanned(taskCtx, classified.steps.size))
+
+                    val resolution = commandRouter.appResolver.resolve(appTarget)
+                    if (resolution.confidence == com.example.utils.MatchConfidence.NONE) {
+                        cleanResponse = "I couldn't find that app: '$appTarget'."
+                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "App not installed", cleanResponse))
+                    } else {
+                        val matched = resolution.matchedApp!!
+                        val launchResult = commandRouter.launchSpecificApp(matched)
+                        launchDiagnostic = launchResult.diagnostic
+
+                        if (!launchResult.success) {
+                            cleanResponse = launchResult.output
+                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Launch failed", cleanResponse))
+                        } else {
+                            delay(400)
+                            if (secondStep != null) {
+                                when (secondStep.category) {
+                                    CommandCategory.PLAY_MEDIA -> {
+                                        val mediaQuery = secondStep.query ?: secondStep.param ?: ""
+                                        val mediaResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, mediaQuery, "PLAY"))
+                                        cleanResponse = if (mediaResult.success) {
+                                            "$appTarget par $mediaQuery play kar diya hai."
+                                        } else {
+                                            mediaResult.output
+                                        }
+                                    }
+                                    CommandCategory.SEARCH_IN_APP -> {
+                                        val searchQ = secondStep.query ?: secondStep.param ?: ""
+                                        val searchResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, searchQ, "SEARCH"))
+                                        cleanResponse = if (searchResult.success) {
+                                            "$appTarget par $searchQ search kar diya hai."
+                                        } else {
+                                            searchResult.output
+                                        }
+                                    }
+                                    CommandCategory.SEND_MESSAGE -> {
+                                        val rawParam = secondStep.param ?: ""
+                                        val stepObj = com.example.agent.TaskStep(
+                                            id = 2,
+                                            actionType = if (appTarget.contains("WhatsApp", ignoreCase = true)) com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE else com.example.agent.UniversalActionType.SEND_MESSAGE,
+                                            targetAppOrUrl = appTarget,
+                                            param = rawParam
+                                        )
+                                        val agentRes = androidAgent.executeAtomicStep(stepObj)
+                                        cleanResponse = agentRes.output
+                                    }
+                                    CommandCategory.CALL -> {
+                                        val rawParam = secondStep.param ?: ""
+                                        val stepObj = com.example.agent.TaskStep(
+                                            id = 2,
+                                            actionType = if (appTarget.contains("WhatsApp", ignoreCase = true)) com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL else com.example.agent.UniversalActionType.MAKE_PHONE_CALL,
+                                            targetAppOrUrl = appTarget,
+                                            param = rawParam
+                                        )
+                                        val agentRes = androidAgent.executeAtomicStep(stepObj)
+                                        cleanResponse = agentRes.output
+                                    }
+                                    else -> {
+                                        cleanResponse = launchResult.output
+                                    }
+                                }
+                            } else {
+                                cleanResponse = launchResult.output
+                            }
+                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
+                        }
+                    }
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (classified.category == CommandCategory.OPEN_APP && !classified.targetApp.isNullOrBlank()) {
+                    val appTarget = classified.targetApp
+                    val taskCtx = ActionEventBus.startNewTask(prompt, CommandCategory.OPEN_APP, appTarget)
+                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
+                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PLANNED, ActionEvent.TaskPlanned(taskCtx, 1))
+
+                    val resolution = commandRouter.appResolver.resolve(appTarget)
+                    if (resolution.confidence == com.example.utils.MatchConfidence.NONE) {
+                        val failMsg = "I couldn't find that app: '$appTarget'."
+                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "App not installed", failMsg))
+                        cleanResponse = failMsg
+                        launchDiagnostic = AppLaunchDiagnostic(
+                            requestedApp = appTarget,
+                            resolvedApp = "None",
+                            packageName = "None",
+                            launchIntent = "None",
+                            confidence = "NONE",
+                            foregroundBefore = screenInspector.getCurrentForegroundPackage(),
+                            foregroundAfter = "Unchanged",
+                            verification = "FAIL - App not found"
+                        )
+                    } else if (resolution.confidence == com.example.utils.MatchConfidence.AMBIGUOUS) {
+                        isAmbiguous = true
+                        candidateApps = resolution.candidateApps
+                        val disambiguateMsg = "Which app would you like to open? Found: ${candidateApps.joinToString(", ") { it.appName }}"
+                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.BLOCKED, ActionEvent.ActionBlocked(taskCtx, "Ambiguous app selection", disambiguateMsg))
+                        cleanResponse = disambiguateMsg
+                    } else {
+                        val matched = resolution.matchedApp!!
+                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.EXECUTING, ActionEvent.ActionStarted(taskCtx, "Launching ${matched.appName}"))
+                        val execResult = commandRouter.launchSpecificApp(matched)
+                        launchDiagnostic = execResult.diagnostic
+                        if (execResult.success) {
+                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, matched.packageName, execResult.output))
+                            cleanResponse = execResult.output
+                        } else {
+                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Launch failed", execResult.output))
+                            cleanResponse = execResult.output
+                        }
+                    }
+
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (classified.category == CommandCategory.SEARCH_IN_APP && !classified.targetApp.isNullOrBlank()) {
+                    val appTarget = classified.targetApp
+                    val query = classified.query ?: ""
+                    if (query.isBlank()) {
+                        cleanResponse = "$appTarget me kya search karna hai?"
+                        if (_autoSpeak.value) {
+                            voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                            alreadySpoken = true
+                        }
+                    } else {
+                        val taskCtx = ActionEventBus.startNewTask(prompt, CommandCategory.SEARCH_IN_APP, appTarget, query)
+                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
+                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.EXECUTING, ActionEvent.ActionStarted(taskCtx, "Searching $query on $appTarget"))
+                        val searchResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, query, "SEARCH"))
+                        launchDiagnostic = searchResult.diagnostic
+                        if (searchResult.success) {
+                            val isHindi = prompt.any { it in '\u0900'..'\u097F' } || prompt.lowercase(java.util.Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("dhoondo") || it.contains("search") }
+                            cleanResponse = if (isHindi) "$appTarget par $query search kar diya hai." else "Searched for '$query' on $appTarget."
+                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
+                        } else {
+                            cleanResponse = searchResult.output
+                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Search failed", cleanResponse))
+                        }
+                        if (_autoSpeak.value) {
+                            voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                            alreadySpoken = true
+                        }
+                    }
+                } else if (classified.category == CommandCategory.PLAY_MEDIA && !classified.targetApp.isNullOrBlank()) {
+                    val appTarget = classified.targetApp
+                    val query = classified.query ?: ""
+                    val taskCtx = ActionEventBus.startNewTask(prompt, CommandCategory.PLAY_MEDIA, appTarget, query)
+                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
+                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.EXECUTING, ActionEvent.ActionStarted(taskCtx, "Playing $query on $appTarget"))
+                    val mediaResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, query, "PLAY"))
+                    launchDiagnostic = mediaResult.diagnostic
+                    if (mediaResult.success) {
+                        val isHindi = prompt.any { it in '\u0900'..'\u097F' }
+                        cleanResponse = if (isHindi) "$appTarget par $query play kar diya hai." else "Playing '$query' on $appTarget."
+                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
+                    } else {
+                        cleanResponse = mediaResult.output
+                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Play failed", cleanResponse))
+                    }
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (classified.category == CommandCategory.CALL) {
+                    val target = classified.actionParam ?: ""
+                    val isWhatsApp = prompt.contains("WhatsApp", ignoreCase = true) || prompt.contains("व्हाट्सएप", ignoreCase = true)
+                    val stepObj = com.example.agent.TaskStep(
+                        id = 1,
+                        actionType = if (isWhatsApp) com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL else com.example.agent.UniversalActionType.MAKE_PHONE_CALL,
+                        targetAppOrUrl = if (isWhatsApp) "WhatsApp" else "Phone",
+                        param = target
+                    )
+                    val execRes = androidAgent.executeAtomicStep(stepObj)
+                    cleanResponse = execRes.output
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (classified.category == CommandCategory.SEND_MESSAGE) {
+                    val rawParam = classified.actionParam ?: ""
+                    val isWhatsApp = prompt.contains("WhatsApp", ignoreCase = true) || prompt.contains("व्हाट्सएप", ignoreCase = true)
+                    val stepObj = com.example.agent.TaskStep(
+                        id = 1,
+                        actionType = if (isWhatsApp) com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE else com.example.agent.UniversalActionType.SEND_SMS,
+                        targetAppOrUrl = if (isWhatsApp) "WhatsApp" else "Messages",
+                        param = rawParam
+                    )
+                    val execRes = androidAgent.executeAtomicStep(stepObj)
+                    cleanResponse = execRes.output
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (classified.category == CommandCategory.SYSTEM_ACTION) {
+                    val sysResult = commandRouter.executeDirectUserCommand(prompt)
+                    cleanResponse = sysResult.output
+                    launchDiagnostic = sysResult.diagnostic
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                }
 
                 // 0b. Fast Local Assistant Engine (instant math, time, date, common greetings)
                 if (cleanResponse.isBlank()) {
@@ -951,6 +1186,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         alreadySpoken = true
                     }
                 }
+                
+                cleanResponse = checkAndFilterRepetition(cleanResponse)
+                memoryEngine.autoLearnTaskProgress(prompt, cleanResponse)
                 
                 val isErrorResponse = cleanResponse.startsWith("Unable to connect") || cleanResponse.startsWith("Gemini API Key is not configured")
                 com.example.state.KavyaStateManager.setGeminiState(if (isErrorResponse) "ERROR" else "SUCCESS")

@@ -360,6 +360,17 @@ class GeminiLiveClient(
     @SuppressLint("MissingPermission")
     private fun startRecording() {
         if (isRecording) return
+        val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) {
+            Log.e(TAG, "RECORD_AUDIO permission not granted!")
+            onStateChange("ERROR")
+            return
+        }
+
         val minSize = AudioRecord.getMinBufferSize(SAMPLE_RATE_IN, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         try {
             // Need permission check in production, assuming granted for now

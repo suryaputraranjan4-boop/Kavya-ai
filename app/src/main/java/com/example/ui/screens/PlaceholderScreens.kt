@@ -266,7 +266,7 @@ fun SettingsScreen(navController: NavController) {
                         navController.navigate("ai_api_hub")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
-                    SettingRow("Permissions & Service Status", "Overlay, Accessibility & Audio", Icons.Default.Security, SuccessGreen) {
+                    SettingRow("Permissions & Service Status", "Accessibility & Audio", Icons.Default.Security, SuccessGreen) {
                         navController.navigate("permissions")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
@@ -1059,11 +1059,148 @@ fun MemoryScreen(navController: NavController, viewModel: KavyaViewModel) {
         ) {
             Spacer(modifier = Modifier.height(4.dp))
             
+            // Aesthetic Neural Core & Personality Hub Card
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(Primary.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Memory, contentDescription = null, tint = PrimaryLight, modifier = Modifier.size(18.dp))
+                            }
+                            Text(
+                                text = "Kavya Neural Core",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp),
+                                color = TextPrimary
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = Primary.copy(alpha = 0.15f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Primary.copy(alpha = 0.4f))
+                        ) {
+                            Text(
+                                text = "Active 4-Tier Hub",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                                color = PrimaryLight
+                            )
+                        }
+                    }
+
+                    // Tech Stack Badges
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("Room DB", "OKF Git Sync", "BM25 Index").forEach { badge ->
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = SurfaceGlass,
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
+                                ) {
+                                    Text(
+                                        text = badge,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                                        color = TextSecondary
+                                    )
+                                }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("Auto-Learn", "ChatGPT Personality").forEach { badge ->
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = SurfaceGlass,
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
+                                ) {
+                                    Text(
+                                        text = badge,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                                        color = TextSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Divider(color = GlassBorder, thickness = 1.dp)
+
+                    // Personality Presets
+                    Text(
+                        text = "ChatGPT-Style Personality & Tone Presets",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold, fontSize = 12.sp),
+                        color = TextPrimary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    viewModel.memoryEngine.insertCustomMemory(
+                                        "Personality & Tone",
+                                        "User prefers a friendly, casual, and warm tone in all responses.",
+                                        "PERSONALITY",
+                                        5
+                                    )
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                            modifier = Modifier.weight(1f).height(34.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Friendly Tone", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = androidx.compose.ui.graphics.Color.White)
+                        }
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    viewModel.memoryEngine.insertCustomMemory(
+                                        "Language & Style",
+                                        "User prefers fluent Hinglish responses with professional insight.",
+                                        "PREFERENCE",
+                                        4
+                                    )
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
+                            modifier = Modifier.weight(1f).height(34.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
+                        ) {
+                            Text("Fluent Hinglish", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                        }
+                    }
+                }
+            }
+            
             // Search Bar
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Search memories, facts, preferences...", fontSize = 13.sp, color = TextTertiary) },
+                placeholder = { Text("Search memories, personality, facts...", fontSize = 13.sp, color = TextTertiary) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp)) },
                 trailingIcon = {
                     if (searchQuery.isNotBlank()) {
@@ -1082,7 +1219,7 @@ fun MemoryScreen(navController: NavController, viewModel: KavyaViewModel) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                listOf("ALL", "PREFERENCE", "IMPORTANT", "CRITICAL", "CONTEXT").forEach { cat ->
+                listOf("ALL", "PERSONALITY", "PREFERENCE", "IMPORTANT", "CRITICAL", "CONTEXT").forEach { cat ->
                     val isSelected = selectedCategory == cat
                     FilterChip(
                         selected = isSelected,

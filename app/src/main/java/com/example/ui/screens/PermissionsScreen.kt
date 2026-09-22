@@ -43,13 +43,11 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
     val context = LocalContext.current
     var micGranted by remember { mutableStateOf(AppPreferences.hasMicrophonePermission(context)) }
     var notifGranted by remember { mutableStateOf(AppPreferences.hasNotificationPermission(context)) }
-    var overlayGranted by remember { mutableStateOf(PermissionsManager.hasOverlayPermission(context)) }
     var accessibilityGranted by remember { mutableStateOf(PermissionsManager.isAccessibilityServiceEnabled(context, KavyaAccessibilityService::class.java)) }
 
     fun refreshAll() {
         micGranted = AppPreferences.hasMicrophonePermission(context)
         notifGranted = AppPreferences.hasNotificationPermission(context)
-        overlayGranted = PermissionsManager.hasOverlayPermission(context)
         accessibilityGranted = PermissionsManager.isAccessibilityServiceEnabled(context, KavyaAccessibilityService::class.java)
     }
 
@@ -102,16 +100,6 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
                     description = "Displays live companion status and action feedback.",
                     isGranted = notifGranted,
                     onClick = { permissionState.launchMultiplePermissionRequest() }
-                )
-            }
-
-            item {
-                PermissionGlassCard(
-                    icon = Icons.AutoMirrored.Filled.OpenInNew,
-                    title = "Display Over Other Apps",
-                    description = "Enables Kavya's floating companion orb overlay across any application.",
-                    isGranted = overlayGranted,
-                    onClick = { PermissionsManager.requestOverlayPermission(context) }
                 )
             }
 

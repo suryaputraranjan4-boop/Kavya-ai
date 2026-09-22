@@ -46,7 +46,6 @@ import kotlinx.coroutines.launch
 @Composable
 fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val context = LocalContext.current
-    var overlayGranted by remember { mutableStateOf(PermissionsManager.hasOverlayPermission(context)) }
     var accessibilityGranted by remember { mutableStateOf(PermissionsManager.isAccessibilityServiceEnabled(context, KavyaAccessibilityService::class.java)) }
     
     val permissionsToRequest = mutableListOf(Manifest.permission.RECORD_AUDIO)
@@ -54,7 +53,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
         permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
     }
     val permissionState = rememberMultiplePermissionsState(permissionsToRequest)
-    val canStart = overlayGranted && accessibilityGranted && permissionState.allPermissionsGranted
+    val canStart = accessibilityGranted && permissionState.allPermissionsGranted
     
     val voiceState by viewModel.voiceState.collectAsState()
     val emotionState by viewModel.emotionState.collectAsState()
@@ -144,18 +143,41 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     }
                 }
                 
-                // Center: Title
-                Text(
-                    text = "Kavya",
-                    style = MaterialTheme.typography.headlineLarge.copy(
-                        fontWeight = FontWeight.W300,
-                        letterSpacing = 4.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif
-                    ),
-                    color = Color.White.copy(alpha = 0.9f),
-                    modifier = Modifier.weight(1f),
-                    textAlign = TextAlign.Center
-                )
+                // Center: Title & System Status
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = "KAVYA",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.W300,
+                            letterSpacing = 6.sp,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif
+                        ),
+                        color = Color.White.copy(alpha = 0.95f),
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(if (canStart) Color(0xFF10B981) else Color(0xFFFFB020))
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (canStart) "SYSTEM READY" else "SETUP REQUIRED",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 9.sp,
+                                letterSpacing = 1.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = Color.White.copy(alpha = 0.45f)
+                        )
+                    }
+                }
 
                 // Right side: Visual Action Engine shortcut
                 IconButton(onClick = { navController.navigate("visual_action_control") }) {
@@ -261,7 +283,36 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(32.dp))
+            // Quick Action Capsules
+            val suggestions = listOf("YouTube खोलो", "WhatsApp खोलो", "Google पर सर्च करो", "Torch ON", "Settings")
+            androidx.compose.foundation.lazy.LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(suggestions.size) { idx ->
+                    val sug = suggestions[idx]
+                    Surface(
+                        color = Color.White.copy(alpha = 0.05f),
+                        shape = RoundedCornerShape(20.dp),
+                        border = androidx.compose.foundation.BorderStroke(0.5.dp, Color.White.copy(alpha = 0.15f)),
+                        modifier = Modifier.clickable { viewModel.sendMessage(sug) }
+                    ) {
+                        Text(
+                            text = sug,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = Color.White.copy(alpha = 0.8f),
+                                letterSpacing = 0.4.sp,
+                                fontWeight = FontWeight.Normal
+                            ),
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             // BOTTOM: Chat Input
             ChatBar(

@@ -229,6 +229,18 @@ class KavyaAccessibilityService : AccessibilityService() {
         val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
         val className = node.className?.toString()?.lowercase(Locale.ROOT) ?: ""
 
+        // EXPLICIT FILTER: Never return microphone, voice search, clear query, or profile avatar as search field!
+        val isForbiddenSearchControl = resId.contains("voice") || resId.contains("mic") || resId.contains("clear") ||
+                desc.contains("voice") || desc.contains("mic") || desc.contains("speak") || desc.contains("clear") ||
+                desc.contains("search with your voice") || text.contains("clear") || resId.contains("avatar") || resId.contains("photo")
+        if (isForbiddenSearchControl) {
+            for (i in 0 until node.childCount) {
+                val child = findFirstMatchingSearchNode(node.getChild(i))
+                if (child != null) return child
+            }
+            return null
+        }
+
         val isSearchHint = text.contains("search") || text.contains("khoje") || text.contains("type url") || text.contains("find")
         val isSearchRes = resId.contains("search") || resId.contains("query") || resId.contains("input") || resId.contains("url_bar")
         val isSearchDesc = desc.contains("search") || desc.contains("find") || desc.contains("magnify")
@@ -237,7 +249,7 @@ class KavyaAccessibilityService : AccessibilityService() {
             return node
         }
 
-        if (node.isClickable && (isSearchRes || isSearchDesc || isSearchHint) && !className.contains("button")) {
+        if (node.isClickable && (isSearchRes || isSearchDesc || isSearchHint) && !className.contains("button") && !className.contains("imageview")) {
             return node
         }
 
@@ -324,7 +336,10 @@ class KavyaAccessibilityService : AccessibilityService() {
         val lowerText = text.lowercase(Locale.ROOT)
         val lowerDesc = desc.lowercase(Locale.ROOT)
 
-        // Filter out header, search bar, back button, nav tabs, clear query
+        // Filter out header, search bar, back button, nav tabs, clear query, and avatar / photo icons!
+        val isAvatarOrPhoto = resId.contains("avatar") || resId.contains("photo") || resId.contains("picture") ||
+                resId.contains("contact_photo") || desc.contains("profile photo") || desc.contains("avatar") ||
+                desc.contains("photo")
         val isHeaderOrNav = resId.contains("toolbar") || resId.contains("search_box") ||
                 resId.contains("search_src_text") || resId.contains("search_button") ||
                 resId.contains("nav_bar") || resId.contains("bottom_nav") ||
@@ -334,15 +349,21 @@ class KavyaAccessibilityService : AccessibilityService() {
                 lowerText == "navigate up" || lowerDesc == "navigate up" ||
                 lowerText == "clear query" || lowerDesc == "clear query" ||
                 lowerText == "voice search" || lowerDesc == "voice search" ||
+                lowerText.contains("search with your voice") || lowerDesc.contains("search with your voice") ||
                 lowerText == "more options" || lowerDesc == "more options" ||
-                lowerText == "filter" || lowerDesc == "filter"
+                lowerText == "filter" || lowerDesc == "filter" ||
+                isAvatarOrPhoto
 
-        if (!isHeaderOrNav) {
+        // Bounds validation: In music/video apps like Spotify/YouTube, content items are typically below the search bar (b.top > 200)
+        // and above bottom navigation tabs (b.bottom < 2050)
+        val isPositionValid = b.top >= 180 && b.bottom <= 2100
+
+        if (!isHeaderOrNav && isPositionValid) {
             val subtreeText = getSubtreeText(node)
             val isClickableSelf = node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
             val isClickableParent = node.parent?.isClickable == true || node.parent?.actionList?.any { it.id == AccessibilityNodeInfo.ACTION_CLICK } == true
 
-            if ((isClickableSelf || isClickableParent) && subtreeText.length >= 4) {
+            if ((isClickableSelf || isClickableParent) && subtreeText.length >= 3) {
                 val targetNode = if (isClickableSelf) node else (node.parent ?: node)
                 list.add(OrdinalCandidate(targetNode, b, subtreeText))
             }
@@ -582,6 +603,18 @@ class KavyaAccessibilityService : AccessibilityService() {
         val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
         val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
 
+        // EXPLICIT FILTER: Do not select voice search / microphone or clear button
+        val isVoiceOrClear = desc.contains("voice") || desc.contains("mic") || desc.contains("speak") ||
+                resId.contains("voice") || resId.contains("mic") || desc.contains("search with your voice") ||
+                desc.contains("clear") || resId.contains("clear")
+        if (isVoiceOrClear) {
+            for (i in 0 until node.childCount) {
+                val child = findSearchButtonOrIcon(node.getChild(i))
+                if (child != null) return child
+            }
+            return null
+        }
+
         val isSearchHint = desc.contains("search") || desc.contains("खोजें") || desc.contains("find") ||
                 text.contains("search") || text.contains("खोजें") || text.contains("find") ||
                 resId.contains("search") || resId.contains("action_search") || resId.contains("menu_search") || resId.contains("btn_search")
@@ -597,7 +630,7 @@ class KavyaAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findSubmitButton(node: AccessibilityNodeInfo?, targetText: String): AccessibilityNodeInfo? {
+    fun findSubmitButton(node: AccessibilityNodeInfo?, targetText: String = "Submit"): AccessibilityNodeInfo? {
         if (node == null) return null
         val lowerTarget = targetText.lowercase(Locale.ROOT).trim()
 
@@ -605,6 +638,18 @@ class KavyaAccessibilityService : AccessibilityService() {
         val desc = node.contentDescription?.toString()?.trim()?.lowercase(Locale.ROOT)
         val resId = node.viewIdResourceName?.substringAfterLast("/")?.lowercase(Locale.ROOT)
         val className = node.className?.toString()?.lowercase(Locale.ROOT) ?: ""
+
+        // Filter out microphone / voice buttons from submit buttons
+        val isVoice = desc?.contains("voice") == true || desc?.contains("mic") == true ||
+                resId?.contains("voice") == true || resId?.contains("mic") == true ||
+                desc?.contains("search with your voice") == true
+        if (isVoice) {
+            for (i in 0 until node.childCount) {
+                val child = findSubmitButton(node.getChild(i), targetText)
+                if (child != null) return child
+            }
+            return null
+        }
 
         val matchesTarget = text?.contains(lowerTarget) == true || desc?.contains(lowerTarget) == true || resId?.contains(lowerTarget) == true
         
@@ -618,6 +663,107 @@ class KavyaAccessibilityService : AccessibilityService() {
 
         for (i in 0 until node.childCount) {
             val child = findSubmitButton(node.getChild(i), targetText)
+            if (child != null) return child
+        }
+        return null
+    }
+
+    /**
+     * Finds WhatsApp or messaging editable input field.
+     */
+    fun findWhatsAppMessageInput(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        val rootNode = root ?: safeGetRootInActiveWindow() ?: return null
+        return findWhatsAppMessageInputRecursive(rootNode)
+    }
+
+    private fun findWhatsAppMessageInputRecursive(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        if (node.isEditable) {
+            val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+            val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
+            val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
+            val isMsgInput = resId.contains("entry") || resId.contains("input") || resId.contains("caption") ||
+                    resId.contains("message") || desc.contains("message") || text.contains("message") ||
+                    desc.contains("type a message") || text.contains("type a message")
+            if (isMsgInput || resId.contains("conversation")) {
+                return node
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = findWhatsAppMessageInputRecursive(node.getChild(i))
+            if (child != null) return child
+        }
+        // Fallback: return any editable node that is not a search box
+        if (node.isEditable && !(node.viewIdResourceName?.contains("search", true) == true)) {
+            return node
+        }
+        return null
+    }
+
+    /**
+     * Checks if WhatsApp profile photo preview popup / quick contact dialog is currently showing.
+     */
+    fun isWhatsAppProfileDialogVisible(root: AccessibilityNodeInfo?): Boolean {
+        val rootNode = root ?: safeGetRootInActiveWindow() ?: return false
+        val screenContext = getScreenContext().lowercase(Locale.ROOT)
+        return (screenContext.contains("view profile") || screenContext.contains("profile photo")) &&
+                (screenContext.contains("message") || screenContext.contains("audio call") || screenContext.contains("voice call"))
+    }
+
+    /**
+     * Finds action button (Message or Voice Call) inside WhatsApp Quick Contact popup dialog.
+     */
+    fun getWhatsAppProfileDialogAction(root: AccessibilityNodeInfo?, actionType: String): AccessibilityNodeInfo? {
+        val rootNode = root ?: safeGetRootInActiveWindow() ?: return null
+        val target = actionType.lowercase(Locale.ROOT)
+        return findWhatsAppDialogActionRecursive(rootNode, target)
+    }
+
+    private fun findWhatsAppDialogActionRecursive(node: AccessibilityNodeInfo?, target: String): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
+        val isMatch = if (target.contains("call") || target.contains("voice")) {
+            (resId.contains("call") || desc.contains("call") || desc.contains("voice call") || desc.contains("audio call")) &&
+                    !resId.contains("video") && !desc.contains("video")
+        } else {
+            resId.contains("message") || desc.contains("message") || resId.contains("conversation") || desc.contains("chat")
+        }
+        if (isMatch && (node.isClickable || node.parent?.isClickable == true)) {
+            return if (node.isClickable) node else node.parent
+        }
+        for (i in 0 until node.childCount) {
+            val child = findWhatsAppDialogActionRecursive(node.getChild(i), target)
+            if (child != null) return child
+        }
+        return null
+    }
+
+    /**
+     * Finds audio / voice call button specifically, explicitly excluding video call buttons.
+     */
+    fun findAudioCallButton(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        val rootNode = root ?: safeGetRootInActiveWindow() ?: return null
+        return findAudioCallButtonRecursive(rootNode)
+    }
+
+    private fun findAudioCallButtonRecursive(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
+
+        val isVideo = resId.contains("video") || desc.contains("video") || text.contains("video")
+        if (!isVideo) {
+            val isAudioCall = resId.contains("voice_call") || resId.contains("call_btn") || resId.contains("dial") ||
+                    desc == "voice call" || desc == "audio call" || desc == "call" || desc == "phone" ||
+                    text == "call" || text == "voice call" || text == "audio call"
+            if (isAudioCall && (node.isClickable || node.parent?.isClickable == true)) {
+                return if (node.isClickable) node else node.parent
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = findAudioCallButtonRecursive(node.getChild(i))
             if (child != null) return child
         }
         return null

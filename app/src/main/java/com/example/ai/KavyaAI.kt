@@ -213,8 +213,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
         // Official Gemini models supporting audio modality generation
         private val AUDIO_MODEL_TIERS = listOf(
-            "gemini-2.5-flash-preview-tts",
-            "gemini-2.5-flash-native-audio-preview-12-2025"
+            "gemini-flash-lite-latest",
+            "gemini-flash-latest",
+            "gemini-2.5-flash",
+            "gemini-3.5-flash"
         )
 
         private val modelCooldowns = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -523,7 +525,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 val openRouterBackup = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
                 if (openRouterBackup != null) return@withContext openRouterBackup
 
-                return@withContext "Gemini API key is not configured. Please configure your API key in Settings -> AI API Hub."
+                return@withContext "AI model is currently unavailable."
             }
 
             // Consult OpenRouter as Gemini's secondary AI partner when task is complex
@@ -680,29 +682,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         } finally {
             com.example.api.QuotaManager.instance.releaseQuota(requestId)
         }
-        // Graceful fallback with intelligent device assistance when cloud AI is throttled
-        return@withContext when {
-            lastError is HttpException && (lastError as HttpException).code() == 429 -> {
-                LocalAssistantEngine.getHighTrafficFallbackResponse(prompt)
-            }
-            lastError is HttpException && (lastError as HttpException).code() == 503 -> {
-                LocalAssistantEngine.getHighTrafficFallbackResponse(prompt)
-            }
-            lastError is HttpException && ((lastError as HttpException).code() == 400 || (lastError as HttpException).code() == 404) -> {
-                val errBody = (lastError as HttpException).response()?.errorBody()?.string() ?: ""
-                "[sad] There seems to be a model compatibility issue. Please check your Gemini configuration. Details: " + errBody
-            }
-            lastError is HttpException && (lastError as HttpException).code() == 403 -> {
-                "[sad] It looks like there's an authentication issue with the Gemini API key."
-            }
-            lastError is IOException -> {
-                val localAnswer = LocalAssistantEngine.handleFastQuery(prompt)
-                localAnswer ?: "[sad] I couldn't reach the network. Please check your internet connection and try again."
-            }
-            else -> {
-                LocalAssistantEngine.getHighTrafficFallbackResponse(prompt)
-            }
-        }
+        return@withContext "AI model is currently unavailable."
     }
 
     suspend fun generateSpeechAudio(

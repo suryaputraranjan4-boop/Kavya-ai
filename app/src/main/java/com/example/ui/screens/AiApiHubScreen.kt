@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -134,6 +135,15 @@ fun AiApiHubScreen(navController: NavController) {
     val okfUnits: List<OkfKnowledgeUnit> by okfRepo.unitsFlow.collectAsState(initial = emptyList())
     var okfEnabled by remember { mutableStateOf(AppPreferences.isOkfMemoryEnabled(context)) }
 
+    // Background Voice & Gesture State
+    var backgroundVoiceEnabled by remember { mutableStateOf(AppPreferences.isBackgroundVoiceEnabled(context)) }
+    var micListeningEnabled by remember { mutableStateOf(AppPreferences.isMicListeningEnabled(context)) }
+    var wakeGestureEnabled by remember { mutableStateOf(AppPreferences.isWakeGestureEnabled(context)) }
+    var sleepGestureEnabled by remember { mutableStateOf(AppPreferences.isSleepGestureEnabled(context)) }
+    var wakeSensitivity by remember { mutableStateOf(AppPreferences.getWakeSensitivity(context)) }
+    var sleepSensitivity by remember { mutableStateOf(AppPreferences.getSleepSensitivity(context)) }
+    var kavyaState by remember { mutableStateOf(AppPreferences.getKavyaState(context)) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -214,6 +224,199 @@ fun AiApiHubScreen(navController: NavController) {
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, lineHeight = 16.sp),
                                 color = TextSecondary
                             )
+                        }
+                    }
+                }
+            }
+
+            // Voice & Background Service Controls Card
+            item {
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
+                    borderColor = SuccessGreen.copy(alpha = 0.4f)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Mic,
+                                    contentDescription = null,
+                                    tint = SuccessGreen,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    "Voice & Background Service",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = TextPrimary
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = when (kavyaState) {
+                                    "ACTIVE" -> SuccessGreen.copy(alpha = 0.2f)
+                                    "SLEEP" -> Color.Red.copy(alpha = 0.2f)
+                                    else -> AccentPurpleLight.copy(alpha = 0.2f)
+                                },
+                                modifier = Modifier.padding(4.dp)
+                            ) {
+                                Text(
+                                    text = "State: $kavyaState",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = when (kavyaState) {
+                                        "ACTIVE" -> SuccessGreen
+                                        "SLEEP" -> Color.Red
+                                        else -> AccentPurpleLight
+                                    },
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            "Kavya runs in the background with persistent notification when you leave the app, keeping voice interaction alive.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Toggles
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Background Voice Service", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                            Switch(
+                                checked = backgroundVoiceEnabled,
+                                onCheckedChange = {
+                                    backgroundVoiceEnabled = it
+                                    AppPreferences.setBackgroundVoiceEnabled(context, it)
+                                    if (it) {
+                                        val intent = Intent(context, com.example.services.KavyaVoiceService::class.java)
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                            context.startForegroundService(intent)
+                                        } else {
+                                            context.startService(intent)
+                                        }
+                                    } else {
+                                        context.stopService(Intent(context, com.example.services.KavyaVoiceService::class.java))
+                                    }
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = SuccessGreen)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Microphone Listening (Mic Active)", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                            Switch(
+                                checked = micListeningEnabled,
+                                onCheckedChange = {
+                                    micListeningEnabled = it
+                                    AppPreferences.setMicListeningEnabled(context, it)
+                                    val intent = Intent(context, com.example.services.KavyaVoiceService::class.java).apply {
+                                        action = "ACTION_TOGGLE_MIC"
+                                    }
+                                    context.startService(intent)
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = SuccessGreen)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Wake Gesture Enabled", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                            Switch(
+                                checked = wakeGestureEnabled,
+                                onCheckedChange = {
+                                    wakeGestureEnabled = it
+                                    AppPreferences.setWakeGestureEnabled(context, it)
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = SuccessGreen)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Sleep Gesture Enabled", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                            Switch(
+                                checked = sleepGestureEnabled,
+                                onCheckedChange = {
+                                    sleepGestureEnabled = it
+                                    AppPreferences.setSleepGestureEnabled(context, it)
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = SuccessGreen)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Wake Sensitivity: ${(wakeSensitivity * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                        Slider(
+                            value = wakeSensitivity,
+                            onValueChange = {
+                                wakeSensitivity = it
+                                AppPreferences.setWakeSensitivity(context, it)
+                            },
+                            valueRange = 0.1f..1f
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Sleep Sensitivity: ${(sleepSensitivity * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                        Slider(
+                            value = sleepSensitivity,
+                            onValueChange = {
+                                sleepSensitivity = it
+                                AppPreferences.setSleepSensitivity(context, it)
+                            },
+                            valueRange = 0.1f..1f
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    kavyaState = "ACTIVE"
+                                    AppPreferences.setKavyaState(context, "ACTIVE")
+                                    val intent = Intent(context, com.example.services.KavyaVoiceService::class.java).apply { action = "ACTION_WAKE" }
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
+                            ) {
+                                Text("Wake Up / Active")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    kavyaState = "SLEEP"
+                                    AppPreferences.setKavyaState(context, "SLEEP")
+                                    val intent = Intent(context, com.example.services.KavyaVoiceService::class.java).apply { action = "ACTION_SLEEP" }
+                                    context.startService(intent)
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Sleep / Idle")
+                            }
                         }
                     }
                 }

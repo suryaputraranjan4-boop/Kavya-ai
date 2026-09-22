@@ -140,7 +140,7 @@ class WorkflowEngine(
                 context.startActivity(intent)
                 true
             } else false
-            delay(1500)
+            delay(300)
             val perception = observe(step.expectedPackage ?: targetPkg)
             return WorkflowStepExecutionResult(
                 success = launched,
@@ -191,10 +191,25 @@ class WorkflowEngine(
             UniversalActionType.HOME -> {
                 service.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
             }
+            UniversalActionType.PLAY -> {
+                val root = service.rootInActiveWindow
+                val playBtn = if (root != null) screenInspector.findTargetNode("play", "PLAY_BUTTON") else null
+                if (playBtn != null) service.clickNode(playBtn) else service.clickNodeByText("play")
+            }
+            UniversalActionType.CALL, UniversalActionType.MAKE_PHONE_CALL, UniversalActionType.MAKE_WHATSAPP_CALL -> {
+                val root = service.rootInActiveWindow
+                val callBtn = if (root != null) service.findAudioCallButton(root) else null
+                if (callBtn != null) service.clickNode(callBtn) else (service.clickNodeByText("Call") || service.clickNodeByText("Voice call"))
+            }
+            UniversalActionType.SEND_MESSAGE, UniversalActionType.SEND_SMS, UniversalActionType.SEND_WHATSAPP_MESSAGE -> {
+                val root = service.rootInActiveWindow
+                val sendBtn = if (root != null) service.findSubmitButton(root, "Send") else null
+                if (sendBtn != null) service.clickNode(sendBtn) else (service.clickNodeByText("Send") || service.clickNodeByText("भेजें"))
+            }
             else -> false
         }
 
-        delay(1000)
+        delay(200)
         val perception = observe(step.expectedPackage)
         return WorkflowStepExecutionResult(
             success = success,
@@ -247,9 +262,8 @@ class WorkflowEngine(
         Log.w(TAG, "RECOVER: Attempting recovery for step '${step.description}'. Reason: $failureReason")
         val service = KavyaAccessibilityService.instance ?: return false
 
-        // Strategy A: Slight scroll to reveal obscured element
         service.scroll("forward")
-        delay(800)
+        delay(200)
 
         // Strategy B: Re-attempt target search with relaxed query
         val targetQuery = step.target
@@ -260,7 +274,7 @@ class WorkflowEngine(
 
         // Strategy C: Fallback to global back if stuck in wrong modal
         service.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
-        delay(500)
+        delay(150)
         return false
     }
 

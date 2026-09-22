@@ -76,9 +76,9 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = if (isScreenSharing) "Live Screen Share Active" else "Kavya AI Companion ✨",
+                                text = if (isScreenSharing) "Screen Share Active" else "Ready",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                color = if (isScreenSharing) SuccessGreenGlow else PrimaryLight
+                                color = if (isScreenSharing) SuccessGreenGlow else TextSecondary
                             )
                         }
                     }
@@ -169,7 +169,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "Live Screen Share Active • Kavya is observing ✨",
+                                "Screen Share Active • Observing",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                                 color = SuccessGreenGlow
                             )

@@ -127,16 +127,12 @@ class CommandRouter(private val context: Context) {
         // 0. Call action
         val callTarget = parseCallCommand(trimmed)
         if (callTarget != null) {
-            val announcement = "Main $callTarget ko phone mila rahi hoon..."
-            onBeforeExecute?.invoke(announcement)
             return handleCall(callTarget)
         }
 
         // 0.1 SMS / Message action
         val sms = parseSmsCommand(trimmed)
         if (sms != null) {
-            val announcement = "Main ${sms.recipient} ko message bhej rahi hoon..."
-            onBeforeExecute?.invoke(announcement)
             return handleSms(sms.recipient, sms.message)
         }
 
@@ -144,34 +140,23 @@ class CommandRouter(private val context: Context) {
         val ordinalCmd = parseOrdinalSelectionCommand(trimmed)
         if (ordinalCmd != null) {
             val (ordinalIndex, announcement) = ordinalCmd
-            onBeforeExecute?.invoke(announcement)
             return handleSelectOrdinal(ordinalIndex, announcement)
         }
 
         // 1. Compound Search / Play / Type command
         val compound = appResolver.parseCompoundCommand(trimmed)
         if (compound != null) {
-            val announcement = if (compound.appName.equals("Google", ignoreCase = true)) {
-                "Main Google par '${compound.searchQuery}' search kar rahi hoon..."
-            } else {
-                "Main ${compound.appName} open kar rahi hoon aur '${compound.searchQuery}' search kar rahi hoon..."
-            }
-            onBeforeExecute?.invoke(announcement)
             return handleCompoundCommand(compound)
         }
 
         // 2. Screenshot
         if (lower.contains("screenshot") || lower.contains("screen shot")) {
-            val announcement = "Main screen ka screenshot le rahi hoon..."
-            onBeforeExecute?.invoke(announcement)
             return handleTakeScreenshot()
         }
 
         // 3. Torch / Flashlight
         if (lower.contains("flashlight") || lower.contains("torch")) {
             val turnOn = !lower.contains("off") && !lower.contains("band")
-            val announcement = if (turnOn) "Main flashlight on kar rahi hoon..." else "Main flashlight band kar rahi hoon..."
-            onBeforeExecute?.invoke(announcement)
             return handleTorch(turnOn)
         }
 
@@ -236,8 +221,6 @@ class CommandRouter(private val context: Context) {
         // Default direct path: App Resolution
         val extractedAppName = appResolver.extractAppNameFromNaturalLanguage(trimmed)
         val targetApp = if (extractedAppName.isNotBlank()) extractedAppName else trimmed
-        val announcement = "Main $targetApp open kar rahi hoon..."
-        onBeforeExecute?.invoke(announcement)
         return handleOpenApp(targetApp)
     }
 
@@ -297,18 +280,15 @@ class CommandRouter(private val context: Context) {
                     }
                 }
                 "SEARCH_WEB" -> {
-                    onBeforeExecute?.invoke("Main Google par '$actionParam' search kar rahi hoon...")
                     handleSearchWeb(actionParam)
                 }
                 "CALL", "PHONE" -> {
-                    onBeforeExecute?.invoke("Main $actionParam ko phone mila rahi hoon...")
                     handleCall(actionParam)
                 }
                 "SMS", "MESSAGE" -> {
                     val parts = actionParam.split(":", limit = 2)
                     val recip = parts.getOrNull(0) ?: actionParam
                     val msg = parts.getOrNull(1) ?: "Hello"
-                    onBeforeExecute?.invoke("Main $recip ko message bhej rahi hoon...")
                     handleSms(recip, msg)
                 }
                 "SCREENSHOT" -> handleTakeScreenshot()
@@ -776,7 +756,10 @@ class CommandRouter(private val context: Context) {
                 )
                 lastDiagnostic = diag
                 Log.d(TAG, "Successfully launched and verified ${app.appName} ($fgAfter)")
-                CommandExecutionResult("Main ${app.appName} open kar rahi hoon...", true, diagnostic = diag)
+                val isHindiOrHinglish = requestedName.any { it in '\u0900'..'\u097F' } ||
+                    requestedName.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("jao") }
+                val successMsg = if (isHindiOrHinglish) "${app.appName} खुल गया।" else "Opened ${app.appName}."
+                CommandExecutionResult(successMsg, true, diagnostic = diag)
             } else {
                 val diag = AppLaunchDiagnostic(
                     requestedApp = requestedName,
@@ -790,7 +773,10 @@ class CommandRouter(private val context: Context) {
                 )
                 lastDiagnostic = diag
                 Log.e(TAG, "Foreground verification mismatch: expected ${app.packageName}, got $fgAfter")
-                CommandExecutionResult("Failed to open ${app.appName}: Foreground app did not switch.", false, diagnostic = diag)
+                val isHindiOrHinglish = requestedName.any { it in '\u0900'..'\u097F' } ||
+                    requestedName.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("jao") }
+                val failMsg = if (isHindiOrHinglish) "${app.appName} open नहीं हो पाया।" else "Failed to open ${app.appName}."
+                CommandExecutionResult(failMsg, false, diagnostic = diag)
             }
         } catch (e: Exception) {
             val diag = AppLaunchDiagnostic(

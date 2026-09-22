@@ -69,13 +69,11 @@ fun OnboardingScreen(
     // Permission tracking states
     var micGranted by remember { mutableStateOf(AppPreferences.hasMicrophonePermission(context)) }
     var notifGranted by remember { mutableStateOf(AppPreferences.hasNotificationPermission(context)) }
-    var overlayGranted by remember { mutableStateOf(AppPreferences.hasOverlayPermission(context)) }
     var accessGranted by remember { mutableStateOf(AppPreferences.hasAccessibilityPermission(context)) }
 
     fun refreshPermissions() {
         micGranted = AppPreferences.hasMicrophonePermission(context)
         notifGranted = AppPreferences.hasNotificationPermission(context)
-        overlayGranted = AppPreferences.hasOverlayPermission(context)
         accessGranted = AppPreferences.hasAccessibilityPermission(context)
     }
 
@@ -127,7 +125,13 @@ fun OnboardingScreen(
                 onBack = {
                     if (currentStep > 1) currentStep -= 1
                 },
-                canGoBack = currentStep in 2..4
+                canGoBack = currentStep in 2..4,
+                onSkip = {
+                    AppPreferences.setOnboardingCompleted(context, true)
+                    navController.navigate("home") {
+                        popUpTo("onboarding") { inclusive = true }
+                    }
+                }
             )
 
             // Animated Step Content Transition
@@ -188,13 +192,9 @@ fun OnboardingScreen(
                     3 -> Step3Permissions(
                         micGranted = micGranted,
                         notifGranted = notifGranted,
-                        overlayGranted = overlayGranted,
                         accessGranted = accessGranted,
                         onRequestRuntimePermissions = {
                             multiplePermissionsState.launchMultiplePermissionRequest()
-                        },
-                        onRequestOverlay = {
-                            PermissionsManager.requestOverlayPermission(context)
                         },
                         onRequestAccessibility = {
                             PermissionsManager.requestAccessibilityPermission(context)
@@ -206,7 +206,6 @@ fun OnboardingScreen(
                         hasApiKey = AppPreferences.hasAnyApiKey(context) || apiKeyInput.isNotBlank(),
                         micGranted = micGranted,
                         notifGranted = notifGranted,
-                        overlayGranted = overlayGranted,
                         accessGranted = accessGranted,
                         onContinue = { currentStep = 5 }
                     )
@@ -233,7 +232,8 @@ fun OnboardingScreen(
 private fun OnboardingTopBar(
     currentStep: Int,
     onBack: () -> Unit,
-    canGoBack: Boolean
+    canGoBack: Boolean,
+    onSkip: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -294,13 +294,16 @@ private fun OnboardingTopBar(
             }
         }
 
-        Text(
-            text = "Step $currentStep/5",
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
-            color = TextSecondary,
-            modifier = Modifier.width(48.dp),
-            textAlign = TextAlign.End
-        )
+        TextButton(
+            onClick = onSkip,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = "Skip",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = PrimaryLight
+            )
+        }
     }
 }
 
@@ -703,10 +706,8 @@ private fun Step2ApiKeySetup(
 private fun Step3Permissions(
     micGranted: Boolean,
     notifGranted: Boolean,
-    overlayGranted: Boolean,
     accessGranted: Boolean,
     onRequestRuntimePermissions: () -> Unit,
-    onRequestOverlay: () -> Unit,
     onRequestAccessibility: () -> Unit,
     onRefresh: () -> Unit,
     onContinue: () -> Unit
@@ -725,7 +726,7 @@ private fun Step3Permissions(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Kavya requires device permissions to hear voice commands, show companion overlay, and perceive screen UI.",
+                text = "Kavya requires device permissions to hear voice commands and perceive screen UI.",
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
                 color = TextSecondary
             )
@@ -757,24 +758,11 @@ private fun Step3Permissions(
             )
         }
 
-        // 3. Overlay Permission
-        item {
-            PermissionSetupCard(
-                icon = Icons.AutoMirrored.Filled.OpenInNew,
-                title = "3. Floating Companion Overlay",
-                description = "Allows Kavya's interactive orb to float gently over any app for instant universal access.",
-                isGranted = overlayGranted,
-                isRequired = false,
-                actionLabel = "Enable Overlay Permission",
-                onAction = onRequestOverlay
-            )
-        }
-
-        // 4. Accessibility Service
+        // 3. Accessibility Service
         item {
             PermissionSetupCard(
                 icon = Icons.Default.Accessibility,
-                title = "4. Accessibility & Vision Service",
+                title = "3. Accessibility & Vision Service",
                 description = "Allows Kavya to inspect on-screen UI nodes, read visible text, and assist navigation for you.",
                 isGranted = accessGranted,
                 isRequired = false,
@@ -889,11 +877,10 @@ private fun Step4Dashboard(
     hasApiKey: Boolean,
     micGranted: Boolean,
     notifGranted: Boolean,
-    overlayGranted: Boolean,
     accessGranted: Boolean,
     onContinue: () -> Unit
 ) {
-    val totalReady = listOf(hasApiKey, micGranted, notifGranted, overlayGranted, accessGranted).count { it }
+    val totalReady = listOf(hasApiKey, micGranted, notifGranted, accessGranted).count { it }
 
     LazyColumn(
         modifier = Modifier
@@ -944,7 +931,7 @@ private fun Step4Dashboard(
                             color = TextPrimary
                         )
                         Text(
-                            "$totalReady of 5 capabilities configured",
+                            "$totalReady of 4 capabilities configured",
                             style = MaterialTheme.typography.bodySmall,
                             color = if (totalReady >= 2) SuccessGreenGlow else TextSecondary
                         )
@@ -970,8 +957,6 @@ private fun Step4Dashboard(
                 SummaryItemRow("Microphone Audio", "Voice recognition & conversational input", micGranted, Icons.Default.Mic)
                 HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 6.dp))
                 SummaryItemRow("Notification Alerts", "Background companion feedback", notifGranted, Icons.Default.Notifications)
-                HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 6.dp))
-                SummaryItemRow("Floating Companion Overlay", "Display orb over any app", overlayGranted, Icons.AutoMirrored.Filled.OpenInNew)
                 HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 6.dp))
                 SummaryItemRow("Accessibility & Vision Service", "Inspect and understand screen elements", accessGranted, Icons.Default.Accessibility)
             }
