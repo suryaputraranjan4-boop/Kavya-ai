@@ -1000,25 +1000,41 @@ class AndroidAgent(
         var msgInput = service.findWhatsAppMessageInput(root)
 
         if (msgInput == null) {
-            val searchBtn = service.findNodeRecursively(root, "Search")
-                ?: service.findNodeRecursively(root, "खोजें")
-                ?: screenInspector.findTargetNode("search")
+            // First check if contact is already visible on the chat list (Requirement 11)
+            var contactElem = ScreenUnderstanding.findElementMatching(
+                ScreenUnderstanding.capture(root, "com.whatsapp"),
+                contactName
+            )
 
-            if (searchBtn != null) {
-                service.clickNode(searchBtn)
-                delay(250)
+            // If not visible, scroll the chat container (Requirement 8)
+            if (contactElem == null) {
+                contactElem = ScrollEngine.findAndScrollTo(service, "com.whatsapp", contactName, maxAttempts = 3)
             }
 
-            service.typeInFocusedNode(contactName) || service.typeInNodeByText("Search…", contactName) || service.typeInNodeByText("Search", contactName)
-            delay(500)
-
-            root = service.rootInActiveWindow
-            val contactNode = if (root != null) screenInspector.findContactNode(root, contactName) else null
-            if (contactNode != null) {
-                service.clickNode(contactNode)
+            if (contactElem != null && contactElem.nodeInfo != null) {
+                service.clickNode(contactElem.nodeInfo)
                 delay(400)
             } else {
-                return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp par contact '$contactName' nahi mila.")
+                val searchBtn = service.findNodeRecursively(root, "Search")
+                    ?: service.findNodeRecursively(root, "खोजें")
+                    ?: screenInspector.findTargetNode("search")
+
+                if (searchBtn != null) {
+                    service.clickNode(searchBtn)
+                    delay(250)
+                }
+
+                service.typeInFocusedNode(contactName) || service.typeInNodeByText("Search…", contactName) || service.typeInNodeByText("Search", contactName)
+                delay(500)
+
+                root = service.rootInActiveWindow
+                val contactNode = if (root != null) screenInspector.findContactNode(root, contactName) else null
+                if (contactNode != null) {
+                    service.clickNode(contactNode)
+                    delay(400)
+                } else {
+                    return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp par contact '$contactName' nahi mila.")
+                }
             }
 
             // Check if profile photo popup dialog opened
@@ -1050,22 +1066,14 @@ class AndroidAgent(
             return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Message input field nahi mila.")
         }
 
-        // 3. Click Send
-        root = service.rootInActiveWindow
-        val sendBtn = service.findNodeRecursively(root, "Send")
-            ?: service.findNodeRecursively(root, "भेजें")
-            ?: screenInspector.findTargetNode("Send")
-
-        if (sendBtn != null) {
-            val clickedSend = service.clickNode(sendBtn)
-            if (clickedSend) {
-                delay(300)
-                screenInspector.logStep("WhatsApp message sent verified for $contactName")
-                return StepExecutionResult(step.id, true, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp par $contactName ko message bhej diya gaya hai.")
-            }
+        // 3. Click Send using deterministic TapEngine (Requirement 7, 11, 12)
+        val sendResult = TapEngine.tapSendButton(service, "com.whatsapp")
+        if (sendResult.success) {
+            screenInspector.logStep("WhatsApp message sent verified for $contactName")
+            return StepExecutionResult(step.id, true, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp par $contactName ko message bhej diya gaya hai.")
         }
 
-        return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Send button press nahi ho paya.")
+        return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, sendResult.diagnostic)
     }
 
     private suspend fun handleEmail(step: TaskStep): StepExecutionResult {

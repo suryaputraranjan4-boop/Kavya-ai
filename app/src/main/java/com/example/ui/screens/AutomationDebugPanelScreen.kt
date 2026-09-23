@@ -30,23 +30,32 @@ import com.example.ui.theme.*
 import com.example.utils.AppResolver
 import com.example.viewmodel.KavyaViewModel
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    val micStatus by viewModel.microphoneEngine.status.collectAsState()
+    val taskState by TaskStateMachine.state.collectAsState()
+    val eventLogs by AutomationEventLogger.logs.collectAsState()
+
     val liveState by DiagnosticEngine.liveState.collectAsState()
     val currentTask by DiagnosticEngine.currentTaskDescription.collectAsState()
     val currentTarget by DiagnosticEngine.currentTargetApp.collectAsState()
     val lastVerification by DiagnosticEngine.lastVerificationResult.collectAsState()
     val debugLogs by DiagnosticEngine.automationDebugLogs.collectAsState()
-    val agentDiagnostics by DiagnosticEngine.recentDiagnostics.collectAsState()
     val selfTestReport by DiagnosticEngine.latestSelfTestReport.collectAsState()
     val isSelfTestRunning by SelfTestEngine.isRunning.collectAsState()
 
     var testQuery by remember { mutableStateOf("") }
     var testResult by remember { mutableStateOf<String?>(null) }
+    var micTestRunning by remember { mutableStateOf(false) }
+    var micTestFeedback by remember { mutableStateOf<String?>(null) }
+
     val isAccessibilityConnected = KavyaAccessibilityService.instance != null
     val currentForegroundPkg = viewModel.screenInspector.getCurrentForegroundPackage()
 
@@ -58,7 +67,146 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
             contentPadding = PaddingValues(top = 12.dp, bottom = 60.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // 1. Live System Status Overview
+            // 1. Dedicated Microphone Diagnostic Panel (Requirement 22)
+            item {
+                GlassCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = if (micStatus.isListening) Icons.Default.Mic else Icons.Default.MicNone,
+                                    contentDescription = null,
+                                    tint = if (micStatus.isListening) SuccessGreen else PrimaryLight,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "Microphone Pipeline",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = TextPrimary
+                                )
+                            }
+                            StatusBadge(
+                                text = if (micStatus.isListening) "LISTENING" else "IDLE",
+                                isActive = micStatus.isListening,
+                                activeColor = SuccessGreen,
+                                inactiveColor = TextTertiary
+                            )
+                        }
+
+                        HorizontalDivider(color = OutlineVariant)
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Permission (RECORD_AUDIO):", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            StatusBadge(
+                                text = if (micStatus.hasPermission) "GRANTED" else "DENIED",
+                                isActive = micStatus.hasPermission,
+                                activeColor = SuccessGreen,
+                                inactiveColor = Error
+                            )
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Hardware Sensor:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            StatusBadge(
+                                text = if (micStatus.isHardwareAvailable) "AVAILABLE" else "UNAVAILABLE",
+                                isActive = micStatus.isHardwareAvailable,
+                                activeColor = SuccessGreen,
+                                inactiveColor = Error
+                            )
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Audio Input Buffer:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            StatusBadge(
+                                text = if (micStatus.isAudioInputReady) "READY" else "ERROR",
+                                isActive = micStatus.isAudioInputReady,
+                                activeColor = SuccessGreen,
+                                inactiveColor = Error
+                            )
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Speech Recognizer:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            StatusBadge(
+                                text = if (micStatus.isRecognizerAvailable) "READY" else "ERROR",
+                                isActive = micStatus.isRecognizerAvailable,
+                                activeColor = SuccessGreen,
+                                inactiveColor = Error
+                            )
+                        }
+
+                        if (micStatus.lastRecognizedText.isNotBlank()) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Last Recognized:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(
+                                    "\"${micStatus.lastRecognizedText}\"",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = AccentCyan
+                                )
+                            }
+                        }
+
+                        if (micStatus.lastCallbackTimestamp > 0) {
+                            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(micStatus.lastCallbackTimestamp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Last Callback:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(timeStr, style = MaterialTheme.typography.bodySmall, color = TextTertiary)
+                            }
+                        }
+
+                        if (micStatus.lastError != "None") {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Last Error:", style = MaterialTheme.typography.bodySmall, color = Error)
+                                Text(micStatus.lastError, style = MaterialTheme.typography.bodySmall, color = Error)
+                            }
+                        }
+
+                        // Test Microphone Button (Requirement 22)
+                        Button(
+                            onClick = {
+                                micTestRunning = true
+                                micTestFeedback = "Initializing microphone test..."
+                                viewModel.microphoneEngine.testMicrophone { success, message ->
+                                    micTestRunning = false
+                                    micTestFeedback = message
+                                }
+                            },
+                            enabled = !micTestRunning,
+                            modifier = Modifier.fillMaxWidth().height(42.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryLight)
+                        ) {
+                            if (micTestRunning) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Listening for Voice...", color = Color.White, fontSize = 13.sp)
+                            } else {
+                                Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("TEST MICROPHONE", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        if (micTestFeedback != null) {
+                            Text(
+                                micTestFeedback!!,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = if (micTestFeedback!!.contains("Speech recognized")) SuccessGreen else AccentPurpleLight,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.5.sp
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 2. Live Task State Machine (Requirement 33)
             item {
                 GlassCard(modifier = Modifier.fillMaxWidth()) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -68,31 +216,60 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                "Live Agent State",
+                                "Live Task State Machine",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimary
                             )
-                            val stateColor = when (liveState) {
-                                AgentLiveState.IDLE -> TextTertiary
-                                AgentLiveState.PLANNING -> AccentCyan
-                                AgentLiveState.EXECUTING -> PrimaryLight
-                                AgentLiveState.VERIFYING -> AccentPurpleLight
-                                AgentLiveState.COMPLETED -> SuccessGreen
-                                AgentLiveState.FAILED -> Error
-                            }
-                            StatusBadge(text = liveState.name, isActive = liveState != AgentLiveState.IDLE, activeColor = stateColor)
+                            StatusBadge(
+                                text = taskState.phase.name,
+                                isActive = taskState.phase != TaskPhase.IDLE && taskState.phase != TaskPhase.SLEEP,
+                                activeColor = when (taskState.phase) {
+                                    TaskPhase.COMPLETED -> SuccessGreen
+                                    TaskPhase.FAILED, TaskPhase.INTERRUPTED -> Error
+                                    TaskPhase.SLEEP -> TextTertiary
+                                    else -> PrimaryLight
+                                }
+                            )
                         }
 
                         HorizontalDivider(color = OutlineVariant)
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Current Task:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            Text(currentTask ?: "None", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = TextPrimary)
+                            Text("Active App:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text(taskState.currentApp, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = PrimaryLight)
                         }
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Target App:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            Text(currentTarget ?: "None", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = PrimaryLight)
+                            Text("Foreground Package:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text(currentForegroundPkg, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = TextPrimary)
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Current Step:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text(taskState.currentStep, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = TextPrimary)
+                        }
+
+                        if (taskState.detectedTarget != "None") {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Detected Target:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(taskState.detectedTarget, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = AccentCyan)
+                            }
+                        }
+
+                        if (taskState.targetBounds != null) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Target Bounds:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(taskState.targetBounds.toString(), style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp), color = TextTertiary)
+                            }
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Last Action / Result:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text(
+                                if (taskState.actionResult != "None") taskState.actionResult else taskState.lastAction,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = if (taskState.actionResult.contains("verified") || taskState.actionResult.contains("PASS")) SuccessGreen else TextPrimary
+                            )
                         }
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -104,21 +281,88 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
                                 inactiveColor = Error
                             )
                         }
+                    }
+                }
+            }
 
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Foreground Package:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            Text(currentForegroundPkg, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = TextPrimary)
+            // 3. Structured Automation Event Log (Requirement 34)
+            item {
+                GlassCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Automation Event Log",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+                            if (eventLogs.isNotEmpty()) {
+                                TextButton(onClick = { AutomationEventLogger.clear() }) {
+                                    Text("Clear", color = TextTertiary, fontSize = 12.sp)
+                                }
+                            }
                         }
 
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Last Verification:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            Text(lastVerification ?: "None", style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = if (lastVerification?.startsWith("PASS") == true) SuccessGreen else TextTertiary)
+                        if (eventLogs.isEmpty()) {
+                            Text(
+                                "No automation events logged yet. Speak or type a command to observe live traces.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextTertiary
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                eventLogs.take(15).forEach { log ->
+                                    val tagColor = when (log.tag) {
+                                        EventTag.VOICE -> AccentCyan
+                                        EventTag.PARSED -> PrimaryLight
+                                        EventTag.APP -> AccentPurpleLight
+                                        EventTag.SCREEN -> Color(0xFFFFB74D)
+                                        EventTag.ACTION -> Color(0xFF64B5F6)
+                                        EventTag.VERIFY -> SuccessGreen
+                                        EventTag.TASK -> Color.White
+                                        EventTag.ERROR -> Error
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(SurfaceVariant.copy(alpha = 0.5f))
+                                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                                    ) {
+                                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                                            Text(
+                                                "[${log.tag.name}]",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = tagColor
+                                                ),
+                                                modifier = Modifier.width(68.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                log.message,
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontSize = 11.sp,
+                                                    color = TextPrimary
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // 2. Self-Test System Trigger & Results
+            // 4. System Self-Test
             item {
                 GlassCard(modifier = Modifier.fillMaxWidth()) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -129,7 +373,7 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
                         ) {
                             Column {
                                 Text("System Self-Test", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
-                                Text("Automated health audit of all 7 core subsystems", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = TextSecondary)
+                                Text("Health audit of core subsystems", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = TextSecondary)
                             }
                             Button(
                                 onClick = {
@@ -161,7 +405,6 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
                         }
 
                         if (selfTestReport != null) {
-                            Spacer(modifier = Modifier.height(4.dp))
                             val report = selfTestReport!!
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 report.components.forEach { comp ->
@@ -197,65 +440,7 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
                 }
             }
 
-            // 3. Step-by-Step Automation Trace Logs
-            item {
-                GlassCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Recent Automation Logs", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextPrimary)
-                            if (debugLogs.isNotEmpty()) {
-                                TextButton(onClick = { DiagnosticEngine.clearDiagnostics() }) {
-                                    Text("Clear", color = TextTertiary, fontSize = 12.sp)
-                                }
-                            }
-                        }
-
-                        if (debugLogs.isEmpty()) {
-                            Text("No automation actions recorded yet.", style = MaterialTheme.typography.bodySmall, color = TextTertiary)
-                        } else {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                debugLogs.take(10).forEach { log ->
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(Surface.copy(alpha = 0.6f))
-                                            .padding(10.dp)
-                                    ) {
-                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Text(log.action.ifBlank { log.command }, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
-                                                Text(log.verification.ifBlank { log.apiResponseStatus }, style = MaterialTheme.typography.labelSmall.copy(color = if (log.verification.contains("PASS") || log.apiResponseStatus.contains("200")) SuccessGreen else Error))
-                                            }
-                                            Text("Prompt: ${log.command.take(60)}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = TextSecondary)
-                                            Text("Type: ${log.classifiedTaskType} | Provider: ${log.selectedProvider} (${log.selectedModel}) | Latency: ${log.requestLatencyMs}ms", style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp), color = AccentCyan)
-                                            if (log.target.isNotBlank()) {
-                                                Text("Target: ${log.target} | App: ${log.resolvedApp}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = TextSecondary)
-                                            }
-                                            Text("Result: ${log.result}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = TextSecondary)
-                                            if (log.error != null) {
-                                                Text("Error: ${log.error}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp), color = Error)
-                                            }
-                                            if (log.detectedElements.isNotEmpty()) {
-                                                Text("Visible Nodes: ${log.detectedElements.take(3).joinToString(", ")}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 10.sp), color = TextTertiary)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 4. Interactive Deterministic App Resolver Tool
+            // 5. Interactive Deterministic App Resolver Tool
             item {
                 GlassCard(modifier = Modifier.fillMaxWidth()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -281,7 +466,7 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
                 }
             }
 
-            // 5. Re-index Button
+            // 6. Re-index Button
             item {
                 val count = viewModel.commandRouter.appResolver.getInstalledApps().size
                 Button(
@@ -298,4 +483,3 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
         }
     }
 }
-

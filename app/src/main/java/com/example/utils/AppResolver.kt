@@ -304,7 +304,7 @@ class AppResolver(private val context: Context) {
 
             // YouTube Create
             "yt create" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create", "yt create"),
-            "youtube create" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create"),
+            "youtube create" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create", "yt create"),
             "वाईटी क्रिएट" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create"),
             "यूट्यूब क्रिएट" to listOf("com.google.android.apps.youtube.creator", "com.google.android.apps.youtube.create", "youtube create")
         )
@@ -569,6 +569,26 @@ class AppResolver(private val context: Context) {
             )
         }
 
+        // 6b. Acronym / Synonym equivalence (e.g. "YouTube Create" <-> "YT Create", "Play Store" <-> "Google Play Store")
+        val acronymExpandedQuery = when {
+            normalizedQuery.startsWith("youtube ") -> normalizedQuery.replaceFirst("youtube ", "yt ")
+            normalizedQuery.startsWith("yt ") -> normalizedQuery.replaceFirst("yt ", "youtube ")
+            normalizedQuery == "play store" -> "google play store"
+            normalizedQuery == "google play store" -> "play store"
+            else -> null
+        }
+        if (acronymExpandedQuery != null) {
+            val acronymMatch = apps.find { it.normalizedName == acronymExpandedQuery }
+            if (acronymMatch != null) {
+                return AppResolutionResult(
+                    requestedName = cleanedTarget,
+                    matchedApp = acronymMatch,
+                    confidence = MatchConfidence.HIGH,
+                    reason = "Acronym expansion match: '${acronymMatch.appName}'"
+                )
+            }
+        }
+
         // 7. No match found on this device -> Strict REJECTION. Never guess an unrelated app.
         return AppResolutionResult(
             requestedName = cleanedTarget,
@@ -710,7 +730,8 @@ class AppResolver(private val context: Context) {
         directSearchRegex.find(trimmed)?.let { match ->
             val query = match.groupValues[1].trim()
             if (query.isNotBlank() && !query.startsWith("on ") && !query.startsWith("in ")) {
-                return CompoundCommand(appName = "Google", searchQuery = query, actionType = "SEARCH")
+                val app = if (trimmed.startsWith("google", ignoreCase = true)) "Google" else ""
+                return CompoundCommand(appName = app, searchQuery = query, actionType = "SEARCH")
             }
         }
 
@@ -718,13 +739,13 @@ class AppResolver(private val context: Context) {
         val hinglishDirectSearchRegex = "^(?:search\\s+karo|dhoondo|khojo|सर्च\\s+करो|ढूंढो|खोजो)\\s+(.+)$".toRegex(RegexOption.IGNORE_CASE)
         hinglishDirectSearchRegex.find(trimmed)?.let { match ->
             val query = match.groupValues[1].trim()
-            return CompoundCommand(appName = "Google", searchQuery = query, actionType = "SEARCH")
+            return CompoundCommand(appName = "", searchQuery = query, actionType = "SEARCH")
         }
 
         val hinglishSuffixSearchRegex = "^(.+?)\\s+(?:search\\s+karo|dhoondo|khojo|सर्च\\s+करो|ढूंढो|खोजो)$".toRegex(RegexOption.IGNORE_CASE)
         hinglishSuffixSearchRegex.find(trimmed)?.let { match ->
             val query = match.groupValues[1].trim()
-            return CompoundCommand(appName = "Google", searchQuery = query, actionType = "SEARCH")
+            return CompoundCommand(appName = "", searchQuery = query, actionType = "SEARCH")
         }
 
         // Pattern 8: "khol kar search karo": "youtube khol kar gana search karo", "youtube khol ke cats dhoondo"

@@ -111,6 +111,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, aiClient)
+    val microphoneEngine = com.example.agent.MicrophoneEngine.getInstance(application)
     private val database = AppDatabase.getDatabase(application)
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
@@ -600,7 +601,45 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 // 0a. Primary Source: Direct User Command Classification & Verified Device Execution
                 val classified = UserCommandClassifier.classify(prompt, commandRouter.appResolver)
 
-                if (classified.isMultiStep && classified.steps.isNotEmpty()) {
+                // Requirement 34: Automation Event Logging
+                com.example.agent.AutomationEventLogger.voice(prompt)
+                com.example.agent.AutomationEventLogger.parsed("Category=${classified.category}, Target=${classified.targetApp}, MultiStep=${classified.isMultiStep}")
+                com.example.agent.TaskStateMachine.update(
+                    phase = com.example.agent.TaskPhase.PARSING,
+                    currentTask = prompt,
+                    currentApp = classified.targetApp ?: "None"
+                )
+
+                // Requirement 20: STOP and SLEEP Handling
+                if (classified.category == CommandCategory.STOP_AUTOMATION) {
+                    com.example.agent.TaskStateMachine.update(
+                        phase = com.example.agent.TaskPhase.INTERRUPTED,
+                        lastAction = "STOP",
+                        actionResult = "User stopped automation"
+                    )
+                    com.example.agent.AutomationEventLogger.task("Automation halted by user request.")
+                    voiceEngine.stop()
+                    microphoneEngine.stopListening()
+                    cleanResponse = "Automation stopped. मैंने कार्य रोक दिया है।"
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (classified.category == CommandCategory.SLEEP) {
+                    com.example.agent.TaskStateMachine.update(
+                        phase = com.example.agent.TaskPhase.SLEEP,
+                        lastAction = "SLEEP",
+                        actionResult = "Entering sleep mode"
+                    )
+                    com.example.agent.AutomationEventLogger.task("Entering sleep mode.")
+                    voiceEngine.stop()
+                    microphoneEngine.stopListening()
+                    cleanResponse = "Going to sleep. शुभ रात्रि! जब भी आवश्यकता हो, 'Hey Kavya' बोलें।"
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (classified.isMultiStep && classified.steps.isNotEmpty()) {
                     val firstStep = classified.steps[0]
                     val secondStep = classified.steps.getOrNull(1)
 
@@ -609,21 +648,46 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
                     ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PLANNED, ActionEvent.TaskPlanned(taskCtx, classified.steps.size))
 
+                    com.example.agent.TaskStateMachine.update(
+                        phase = com.example.agent.TaskPhase.APP_RESOLUTION,
+                        currentApp = appTarget,
+                        stepIndex = 1,
+                        totalSteps = classified.steps.size
+                    )
+
                     val resolution = commandRouter.appResolver.resolve(appTarget)
                     if (resolution.confidence == com.example.utils.MatchConfidence.NONE) {
                         cleanResponse = "I couldn't find that app: '$appTarget'."
                         ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "App not installed", cleanResponse))
+                        com.example.agent.TaskStateMachine.update(phase = com.example.agent.TaskPhase.FAILED, lastError = cleanResponse)
+                        com.example.agent.AutomationEventLogger.error("App not found: $appTarget")
                     } else {
                         val matched = resolution.matchedApp!!
+                        com.example.agent.TaskStateMachine.update(
+                            phase = com.example.agent.TaskPhase.APP_OPENING,
+                            currentApp = matched.appName,
+                            currentStep = "Launching ${matched.appName}"
+                        )
+                        com.example.agent.AutomationEventLogger.app("Launching ${matched.appName} (${matched.packageName})")
+
                         val launchResult = commandRouter.launchSpecificApp(matched)
                         launchDiagnostic = launchResult.diagnostic
 
                         if (!launchResult.success) {
                             cleanResponse = launchResult.output
                             ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Launch failed", cleanResponse))
+                            com.example.agent.TaskStateMachine.update(phase = com.example.agent.TaskPhase.FAILED, lastError = cleanResponse)
+                            com.example.agent.AutomationEventLogger.error("Launch failed: $cleanResponse")
                         } else {
+                            com.example.agent.AutomationEventLogger.verify("Verified app in foreground: ${matched.appName}")
                             delay(400)
                             if (secondStep != null) {
+                                com.example.agent.TaskStateMachine.update(
+                                    phase = com.example.agent.TaskPhase.ACTION_EXECUTION,
+                                    stepIndex = 2,
+                                    currentStep = secondStep.category.name
+                                )
+                                com.example.agent.AutomationEventLogger.action("Executing step 2: ${secondStep.category}")
                                 when (secondStep.category) {
                                     CommandCategory.PLAY_MEDIA -> {
                                         val mediaQuery = secondStep.query ?: secondStep.param ?: ""
@@ -633,6 +697,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                         } else {
                                             mediaResult.output
                                         }
+                                        com.example.agent.TaskStateMachine.update(phase = if (mediaResult.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
+                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
                                     }
                                     CommandCategory.SEARCH_IN_APP -> {
                                         val searchQ = secondStep.query ?: secondStep.param ?: ""
@@ -642,6 +708,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                         } else {
                                             searchResult.output
                                         }
+                                        com.example.agent.TaskStateMachine.update(phase = if (searchResult.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
+                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
                                     }
                                     CommandCategory.SEND_MESSAGE -> {
                                         val rawParam = secondStep.param ?: ""
@@ -653,6 +721,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                         )
                                         val agentRes = androidAgent.executeAtomicStep(stepObj)
                                         cleanResponse = agentRes.output
+                                        com.example.agent.TaskStateMachine.update(phase = if (agentRes.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
+                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
                                     }
                                     CommandCategory.CALL -> {
                                         val rawParam = secondStep.param ?: ""
@@ -664,6 +734,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                         )
                                         val agentRes = androidAgent.executeAtomicStep(stepObj)
                                         cleanResponse = agentRes.output
+                                        com.example.agent.TaskStateMachine.update(phase = if (agentRes.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
+                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
                                     }
                                     else -> {
                                         cleanResponse = launchResult.output
@@ -724,10 +796,20 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
                     }
-                } else if (classified.category == CommandCategory.SEARCH_IN_APP && !classified.targetApp.isNullOrBlank()) {
-                    val appTarget = classified.targetApp
+                } else if (classified.category == CommandCategory.SEARCH_IN_APP) {
+                    val appTarget = if (!classified.targetApp.isNullOrBlank()) {
+                        classified.targetApp!!
+                    } else {
+                        contextEngine.activeTargetAppName ?: screenInspector.getCurrentForegroundPackage()
+                    }
                     val query = classified.query ?: ""
-                    if (query.isBlank()) {
+                    if (appTarget.isBlank()) {
+                        cleanResponse = "Kis app me search karna hai?"
+                        if (_autoSpeak.value) {
+                            voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                            alreadySpoken = true
+                        }
+                    } else if (query.isBlank()) {
                         cleanResponse = "$appTarget me kya search karna hai?"
                         if (_autoSpeak.value) {
                             voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
@@ -747,6 +829,29 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             cleanResponse = searchResult.output
                             ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Search failed", cleanResponse))
                         }
+                        if (_autoSpeak.value) {
+                            voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                            alreadySpoken = true
+                        }
+                    }
+                } else if (classified.category == CommandCategory.INTERACT_IN_APP) {
+                    val lowerP = prompt.lowercase(java.util.Locale.ROOT)
+                    if (lowerP.contains("first") || lowerP.contains("पहला") || lowerP.contains("pahla")) {
+                        com.example.agent.TaskStateMachine.update(
+                            phase = com.example.agent.TaskPhase.ACTION_EXECUTION,
+                            currentStep = "Tap first result"
+                        )
+                        com.example.agent.AutomationEventLogger.action("Tapping first result on active screen")
+                        val tapRes = com.example.agent.TapEngine.tapFirstResult(
+                            com.example.services.KavyaAccessibilityService.instance,
+                            screenInspector.getCurrentForegroundPackage()
+                        )
+                        cleanResponse = tapRes.diagnostic
+                        com.example.agent.TaskStateMachine.update(
+                            phase = if (tapRes.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED,
+                            actionResult = tapRes.diagnostic
+                        )
+                        com.example.agent.AutomationEventLogger.verify(tapRes.diagnostic)
                         if (_autoSpeak.value) {
                             voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                             alreadySpoken = true

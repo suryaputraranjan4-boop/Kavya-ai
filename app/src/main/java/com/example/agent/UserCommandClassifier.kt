@@ -15,6 +15,8 @@ enum class CommandCategory {
     CALL,
     PLAY_MEDIA,
     SYSTEM_ACTION,
+    STOP_AUTOMATION,
+    SLEEP,
     CONVERSATION
 }
 
@@ -53,6 +55,48 @@ object UserCommandClassifier {
         return SEARCH_KEYWORDS.any { lower.contains(it) }
     }
 
+    fun parseMessageParam(input: String): Pair<String, String> {
+        val clean = input.trim()
+
+        // Pattern 1a: explicit delimiter words (saying, that, with text, ki)
+        val patternExplicit = Regex("(?i)^(?:send\\s+(?:a\\s+)?message\\s+to|send\\s+message\\s+|message\\s+to|message|msg)\\s+(.+?)\\s+(?:saying|that|with\\s+text|ki)\\s+(.+)$")
+        patternExplicit.find(clean)?.let { match ->
+            val recipient = match.groupValues[1].replace("(?i)^to\\s+".toRegex(), "").trim()
+            val msg = match.groupValues[2].trim()
+            if (recipient.isNotBlank() && msg.isNotBlank()) {
+                return Pair(recipient, msg)
+            }
+        }
+
+        // Pattern 1b: standard greetings at the end: e.g. "message my friend hello"
+        val patternGreeting = Regex("(?i)^(?:send\\s+(?:a\\s+)?message\\s+to|send\\s+message\\s+|message\\s+to|message|msg)\\s+(.+?)\\s+(hello|hi|hey|how are you|kya haal hai|kal milte hain)$")
+        patternGreeting.find(clean)?.let { match ->
+            val recipient = match.groupValues[1].replace("(?i)^to\\s+".toRegex(), "").trim()
+            val msg = match.groupValues[2].trim()
+            if (recipient.isNotBlank() && msg.isNotBlank()) {
+                return Pair(recipient, msg)
+            }
+        }
+
+        // Pattern 2: "मेरे दोस्त को यह message भेजो hello" or "rahul ko message bhejo hello"
+        val pattern2 = Regex("(?i)^(.+?)\\s+(?:ko|को)\\s+(?:yeh\\s+|ye\\s+)?(?:message|msg|मैसेज|संदेश)\\s+(?:bhejo|karo|भेजो|करो)\\s*(.+)?$")
+        pattern2.find(clean)?.let { match ->
+            val recipient = match.groupValues[1].trim()
+            val msg = match.groupValues[2].trim().ifBlank { "Hello" }
+            return Pair(recipient, msg)
+        }
+
+        // Pattern 3: "my friend hello" -> recipient = "my friend", msg = "hello"
+        val words = clean.split("\\s+".toRegex())
+        if (words.size >= 2) {
+            val lastWord = words.last()
+            val leading = words.dropLast(1).joinToString(" ")
+            return Pair(leading, lastWord)
+        }
+
+        return Pair(clean, "Hello")
+    }
+
     /**
      * Requirement 1 & 2: Primary Classification Engine
      * Prioritizes OPEN_APP and ensures search is NEVER initiated without explicit search keywords.
@@ -60,6 +104,22 @@ object UserCommandClassifier {
     fun classify(rawInput: String, appResolver: AppResolver): ClassifiedCommand {
         val trimmed = rawInput.trim()
         val lower = trimmed.lowercase(Locale.ROOT)
+
+        // 0. STOP and SLEEP Interruption Commands (Requirement 20)
+        if (lower in listOf("stop kavya", "kavya stop", "stop", "ruko", "ruk jao", "रुको", "रुक जाओ", "बस करो", "cancel")) {
+            return ClassifiedCommand(
+                category = CommandCategory.STOP_AUTOMATION,
+                actionParam = "STOP",
+                rawPrompt = trimmed
+            )
+        }
+        if (lower in listOf("sleep kavya", "kavya sleep", "sleep", "go to sleep", "so jao", "सो जाओ", "स्लीप मोड")) {
+            return ClassifiedCommand(
+                category = CommandCategory.SLEEP,
+                actionParam = "SLEEP",
+                rawPrompt = trimmed
+            )
+        }
 
         // 1. Phone Call
         val callPattern = Regex("(?i)^(?:call|phone karo|phone mila|dial)\\s+(?:to\\s+)?(.+)$|^(.+?)\\s+ko\\s+(?:call|phone)\\s*(?:karo|lagao|milao)?$")
@@ -148,29 +208,41 @@ object UserCommandClassifier {
             )
         }
 
-        // 5. Multi-step commands (e.g. "YouTube kholo aur Believer chalao", "WhatsApp खोलो और मेरे दोस्त को यह message भेजो")
-        val compoundKholoAur = Regex("(?i)^(.+?)\\s+(?:kholo\\s+aur|open\\s+karo\\s+aur|kholke|khol\\s+ke|khol\\s+kar|open\\s+and|खोलो\\s+और|खोलकर|खोल\\s+के)\\s+(.+)$")
-        compoundKholoAur.find(trimmed)?.let { match ->
+        // 5. Multi-step commands (e.g. "Open WhatsApp and message my friend hello", "Open YouTube and search Minecraft")
+        val compoundRegex = Regex("(?i)^(?:open\\s+|launch\\s+|start\\s+)?(.+?)\\s+(?:and\\s+|then\\s+|aur\\s+|kholo\\s+aur\\s+|open\\s+karo\\s+aur\\s+|kholke\\s+|khol\\s+ke\\s+|khol\\s+kar\\s+|खोलो\\s+और\\s+|और\\s+|फिर\\s+)(.+)$")
+        compoundRegex.find(trimmed)?.let { match ->
             val firstPart = match.groupValues[1].trim()
             val secondPart = match.groupValues[2].trim()
             val app = appResolver.extractAppNameFromNaturalLanguage(firstPart)
             if (app.isNotBlank()) {
-                val hasSearchInSecond = hasExplicitSearchKeyword(secondPart)
                 val secondLower = secondPart.lowercase(Locale.ROOT)
+                val hasSearchInSecond = hasExplicitSearchKeyword(secondPart)
                 val isPlayInSecond = secondLower.contains("chalao") || secondLower.contains("play") || secondLower.contains("bajao") || secondLower.contains("sunao") || secondLower.contains("चलाओ") || secondLower.contains("बजाओ")
                 val isMsgInSecond = secondLower.contains("message") || secondLower.contains("msg") || secondLower.contains("bhejo") || secondLower.contains("send") || secondLower.contains("भेजो")
                 val isCallInSecond = secondLower.contains("call") || secondLower.contains("phone") || secondLower.contains("dial") || secondLower.contains("कॉल")
 
                 val cleanQuery = secondPart
-                    .replace("(?i)search\\s*(?:karo)?|chalao|play|bajao|sunao|dhoondo|सर्च\\s*करो|चलाओ|ढूंढो".toRegex(), "")
+                    .replace("(?i)^(?:search(?:\\s+for)?|find|look\\s+for|chalao|play|bajao|sunao|dhoondo|सर्च\\s*करो|चलाओ|ढूंढो)\\s*".toRegex(), "")
                     .trim()
 
-                val step2Category = when {
-                    isMsgInSecond -> CommandCategory.SEND_MESSAGE
-                    isCallInSecond -> CommandCategory.CALL
-                    isPlayInSecond -> CommandCategory.PLAY_MEDIA
-                    hasSearchInSecond -> CommandCategory.SEARCH_IN_APP
-                    else -> CommandCategory.INTERACT_IN_APP
+                val (step2Category, step2Param, step2Query) = when {
+                    isMsgInSecond -> {
+                        val (recipient, message) = parseMessageParam(secondPart)
+                        Triple(CommandCategory.SEND_MESSAGE, "$recipient||$message", null)
+                    }
+                    isCallInSecond -> {
+                        val recipient = secondPart.replace("(?i)call|phone|dial|karo|lagao|कॉल|करो".toRegex(), "").trim()
+                        Triple(CommandCategory.CALL, recipient, null)
+                    }
+                    isPlayInSecond -> {
+                        Triple(CommandCategory.PLAY_MEDIA, cleanQuery, cleanQuery)
+                    }
+                    hasSearchInSecond -> {
+                        Triple(CommandCategory.SEARCH_IN_APP, cleanQuery, cleanQuery)
+                    }
+                    else -> {
+                        Triple(CommandCategory.INTERACT_IN_APP, secondPart, cleanQuery.ifBlank { null })
+                    }
                 }
 
                 return ClassifiedCommand(
@@ -181,7 +253,7 @@ object UserCommandClassifier {
                     isMultiStep = true,
                     steps = listOf(
                         ClassifiedStep(category = CommandCategory.OPEN_APP, targetApp = app, query = null),
-                        ClassifiedStep(category = step2Category, targetApp = app, query = cleanQuery.ifBlank { null }, param = secondPart)
+                        ClassifiedStep(category = step2Category, targetApp = app, query = step2Query, param = step2Param)
                     )
                 )
             }
@@ -240,16 +312,17 @@ object UserCommandClassifier {
                 .replace("(?i)^(?:search(?:\\s+for)?|look\\s+for|find|google|सर्च\\s*करो|ढूंढो|खोजो)\\s+".toRegex(), "")
                 .replace("(?i)\\s+(?:search\\s+karo|dhoondo|khojo|सर्च\\s*करो|ढूंढो|खोजो)$".toRegex(), "")
                 .trim()
+            val targetApp = if (trimmed.contains("google", ignoreCase = true)) "Google" else null
             return ClassifiedCommand(
                 category = CommandCategory.SEARCH_IN_APP,
-                targetApp = "Google",
+                targetApp = targetApp,
                 query = cleanQuery.ifBlank { trimmed },
                 rawPrompt = trimmed
             )
         }
 
-        // 8. PLAY_MEDIA: "YouTube par Believer chalao", "Spotify par gana bajao"
-        val isPlayMediaIntent = lower.contains("gana chalao") || lower.contains("video chalao") ||
+        // 8. PLAY_MEDIA: "YouTube par Believer chalao", "Spotify par gana bajao", "Play Believer"
+        val isPlayMediaIntent = lower.startsWith("play ") || lower.contains("gana chalao") || lower.contains("video chalao") ||
                 lower.contains("song play") || (lower.contains("play ") && (lower.contains("spotify") || lower.contains("youtube") || lower.contains("music"))) ||
                 (lower.contains("chalao") && (lower.contains("youtube") || lower.contains("spotify") || lower.contains("gana") || lower.contains("video")))
         if (isPlayMediaIntent) {
@@ -259,6 +332,14 @@ object UserCommandClassifier {
                     category = CommandCategory.PLAY_MEDIA,
                     targetApp = compound.appName,
                     query = compound.searchQuery,
+                    rawPrompt = trimmed
+                )
+            } else if (lower.startsWith("play ")) {
+                val songQuery = trimmed.replace("(?i)^play\\s+".toRegex(), "").trim()
+                return ClassifiedCommand(
+                    category = CommandCategory.PLAY_MEDIA,
+                    targetApp = null,
+                    query = songQuery,
                     rawPrompt = trimmed
                 )
             }
