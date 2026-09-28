@@ -42,10 +42,17 @@ fun KavyaVoiceOrb(
     state: VoiceState,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    baseSize: Dp = 150.dp
+    baseSize: Dp = 150.dp,
+    amplitude: Float = 0f
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+
+    val animatedAmplitude by animateFloatAsState(
+        targetValue = amplitude.coerceIn(0f, 1f),
+        animationSpec = spring(stiffness = Spring.StiffnessHigh),
+        label = "AmplitudeSpring"
+    )
 
     // Smooth press feedback
     val pressScale by animateFloatAsState(
@@ -148,9 +155,10 @@ fun KavyaVoiceOrb(
         label = "StateScale"
     )
 
+    val ampMultiplier = if (state == VoiceState.LISTENING) 1.0f + (animatedAmplitude * 0.45f) else 1.0f
     val finalScale = when (state) {
         VoiceState.IDLE -> stateScale * idleBreath * pressScale
-        VoiceState.LISTENING -> stateScale * listeningPulse * pressScale
+        VoiceState.LISTENING -> stateScale * listeningPulse * pressScale * ampMultiplier
         VoiceState.SPEAKING -> stateScale * speakingPulse * pressScale
         VoiceState.UNDERSTANDING -> 1.02f
         VoiceState.THINKING -> stateScale * idleBreath * pressScale

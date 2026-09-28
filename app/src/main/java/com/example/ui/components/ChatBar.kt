@@ -52,6 +52,14 @@ fun ChatBar(
     placeholderText: String = "Talk to Kavya..."
 ) {
     var text by remember { mutableStateOf("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            onMicClick()
+        }
+    }
 
     Row(
         modifier = modifier
@@ -136,7 +144,15 @@ fun ChatBar(
                     onSend(text)
                     text = ""
                 } else {
-                    onMicClick()
+                    val permGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+                        context,
+                        android.Manifest.permission.RECORD_AUDIO
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (permGranted) {
+                        onMicClick()
+                    } else {
+                        micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                    }
                 }
             },
             modifier = Modifier

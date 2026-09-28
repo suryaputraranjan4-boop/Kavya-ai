@@ -131,7 +131,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         bottomBar = {
             ChatBar(
                 onSend = { viewModel.sendMessage(it) },
-                onMicClick = { /* Handled in ChatBar */ },
+                onMicClick = { viewModel.toggleVoiceInput() },
                 onPlusClick = { showScreenShareSheet = true },
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 10.dp)

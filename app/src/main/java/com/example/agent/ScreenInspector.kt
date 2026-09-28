@@ -271,6 +271,8 @@ class ScreenInspector {
         return null
     }
 
+    val freshRecognizer = FreshScreenRecognizer()
+
     private fun findFirstSearchResultNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (node == null) return null
         
@@ -280,7 +282,16 @@ class ScreenInspector {
         for (candidate in clickableNodes) {
             val txt = candidate.text?.toString() ?: candidate.contentDescription?.toString() ?: ""
             val lowerTxt = txt.lowercase(Locale.ROOT)
-            if (txt.length > 3 && !lowerTxt.contains("search") && !lowerTxt.contains("filter") && !lowerTxt.contains("menu")) {
+            val resId = candidate.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+
+            val isAd = lowerTxt.contains("sponsored") || lowerTxt.startsWith("ad ") || lowerTxt.startsWith("ad ·") ||
+                    lowerTxt.contains("विज्ञापन") || lowerTxt.contains("प्रायोजित") || resId.contains("ad_badge") ||
+                    resId.contains("promoted") || resId.contains("sponsor")
+            val isAuxiliary = lowerTxt.contains("search") || lowerTxt.contains("filter") ||
+                    lowerTxt.contains("menu") || lowerTxt.contains("clear") || lowerTxt == "close" ||
+                    lowerTxt == "cancel" || resId.contains("clear")
+
+            if (txt.length > 3 && !isAd && !isAuxiliary) {
                 return candidate
             }
         }

@@ -80,11 +80,29 @@ class KavyaAccessibilityService : AccessibilityService() {
         return currentForegroundPackage
     }
 
+    fun safeRootPackage(): String? {
+        return safeGetRootInActiveWindow()?.packageName?.toString()
+    }
+
     fun isForegroundPackage(expectedPackage: String): Boolean {
-        val current = getForegroundPackage()
-        return current.equals(expectedPackage, ignoreCase = true) ||
-               current.contains(expectedPackage, ignoreCase = true) ||
-               expectedPackage.contains(current, ignoreCase = true)
+        val current = getForegroundPackage().lowercase(Locale.ROOT)
+        val expected = expectedPackage.lowercase(Locale.ROOT)
+
+        if (current.equals(expected, ignoreCase = true) ||
+            current.contains(expected, ignoreCase = true) ||
+            expected.contains(current, ignoreCase = true)
+        ) {
+            return true
+        }
+
+        return when {
+            expected.contains("youtube") && current.contains("youtube") -> true
+            expected.contains("spotify") && current.contains("spotify") -> true
+            expected.contains("whatsapp") && current.contains("whatsapp") -> true
+            (expected.contains("chrome") || expected.contains("browser")) && (current.contains("chrome") || current.contains("browser")) -> true
+            expected.contains("free fire") && (current.contains("freefire") || current.contains("dts")) -> true
+            else -> false
+        }
     }
 
     override fun onInterrupt() {
@@ -340,19 +358,38 @@ class KavyaAccessibilityService : AccessibilityService() {
         val isAvatarOrPhoto = resId.contains("avatar") || resId.contains("photo") || resId.contains("picture") ||
                 resId.contains("contact_photo") || desc.contains("profile photo") || desc.contains("avatar") ||
                 desc.contains("photo")
+
+        // AD & SPONSORED FILTERING: Never select ads or promoted content as organic results!
+        val isAdOrSponsored = resId.contains("ad_badge") || resId.contains("promoted_anchor") ||
+                resId.contains("ad_view") || resId.contains("sponsor") || resId.contains("commercial") ||
+                lowerText == "ad" || lowerDesc == "ad" || lowerText == "ad ·" || lowerDesc == "ad ·" ||
+                lowerText.startsWith("ad ·") || lowerDesc.startsWith("ad ·") ||
+                lowerText.startsWith("sponsored") || lowerDesc.startsWith("sponsored") ||
+                lowerText.contains("विज्ञापन") || lowerDesc.contains("प्रायोजित") ||
+                lowerText.contains("visit site") || lowerDesc.contains("visit site") ||
+                lowerText.contains("install now") || lowerDesc.contains("install now")
+
+        val isClearOrClose = resId.contains("clear") || resId.contains("close") ||
+                resId.contains("cancel") || resId.contains("dismiss") ||
+                lowerText == "clear" || lowerDesc == "clear" ||
+                lowerText == "close" || lowerDesc == "close" ||
+                lowerText == "x" || lowerDesc == "x" ||
+                lowerText == "cancel" || lowerDesc == "cancel" ||
+                lowerText == "clear query" || lowerDesc == "clear query"
+
         val isHeaderOrNav = resId.contains("toolbar") || resId.contains("search_box") ||
                 resId.contains("search_src_text") || resId.contains("search_button") ||
                 resId.contains("nav_bar") || resId.contains("bottom_nav") ||
                 resId.contains("tab_layout") || resId.contains("filter_bar") ||
-                resId.contains("action_bar") ||
+                resId.contains("action_bar") || resId.contains("shorts_shelf") ||
                 lowerText == "search" || lowerDesc == "search" ||
                 lowerText == "navigate up" || lowerDesc == "navigate up" ||
-                lowerText == "clear query" || lowerDesc == "clear query" ||
                 lowerText == "voice search" || lowerDesc == "voice search" ||
                 lowerText.contains("search with your voice") || lowerDesc.contains("search with your voice") ||
                 lowerText == "more options" || lowerDesc == "more options" ||
                 lowerText == "filter" || lowerDesc == "filter" ||
-                isAvatarOrPhoto
+                lowerText == "subscribe" || lowerDesc == "subscribe" ||
+                isAvatarOrPhoto || isAdOrSponsored || isClearOrClose
 
         // Bounds validation: In music/video apps like Spotify/YouTube, content items are typically below the search bar (b.top > 200)
         // and above bottom navigation tabs (b.bottom < 2050)
@@ -360,12 +397,19 @@ class KavyaAccessibilityService : AccessibilityService() {
 
         if (!isHeaderOrNav && isPositionValid) {
             val subtreeText = getSubtreeText(node)
-            val isClickableSelf = node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
-            val isClickableParent = node.parent?.isClickable == true || node.parent?.actionList?.any { it.id == AccessibilityNodeInfo.ACTION_CLICK } == true
+            val lowerSubtree = subtreeText.lowercase(Locale.ROOT)
+            val subtreeIsAd = lowerSubtree.contains("sponsored") || lowerSubtree.startsWith("ad ·") ||
+                    lowerSubtree.startsWith("ad •") || lowerSubtree.startsWith("ad ") ||
+                    lowerSubtree.contains("प्रायोजित") || lowerSubtree.contains("विज्ञापन")
 
-            if ((isClickableSelf || isClickableParent) && subtreeText.length >= 3) {
-                val targetNode = if (isClickableSelf) node else (node.parent ?: node)
-                list.add(OrdinalCandidate(targetNode, b, subtreeText))
+            if (!subtreeIsAd) {
+                val isClickableSelf = node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+                val isClickableParent = node.parent?.isClickable == true || node.parent?.actionList?.any { it.id == AccessibilityNodeInfo.ACTION_CLICK } == true
+
+                if ((isClickableSelf || isClickableParent) && subtreeText.length >= 3) {
+                    val targetNode = if (isClickableSelf) node else (node.parent ?: node)
+                    list.add(OrdinalCandidate(targetNode, b, subtreeText))
+                }
             }
         }
 
@@ -396,6 +440,45 @@ class KavyaAccessibilityService : AccessibilityService() {
             path.moveTo(x, y)
             val gesture = android.accessibilityservice.GestureDescription.Builder()
                 .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 100))
+                .build()
+            return dispatchGesture(gesture, null, null)
+        }
+        return false
+    }
+
+    fun doubleClickByCoordinates(x: Float, y: Float): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val path1 = android.graphics.Path().apply { moveTo(x, y) }
+            val path2 = android.graphics.Path().apply { moveTo(x, y) }
+            val gesture = android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path1, 0, 80))
+                .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path2, 140, 80))
+                .build()
+            return dispatchGesture(gesture, null, null)
+        }
+        return false
+    }
+
+    fun longClickByCoordinates(x: Float, y: Float, durationMs: Long = 1000L): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val path = android.graphics.Path()
+            path.moveTo(x, y)
+            val gesture = android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, durationMs))
+                .build()
+            return dispatchGesture(gesture, null, null)
+        }
+        return false
+    }
+
+    fun swipeGesture(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300L): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val path = android.graphics.Path().apply {
+                moveTo(startX, startY)
+                lineTo(endX, endY)
+            }
+            val gesture = android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, durationMs))
                 .build()
             return dispatchGesture(gesture, null, null)
         }
@@ -557,9 +640,43 @@ class KavyaAccessibilityService : AccessibilityService() {
      */
     suspend fun performAppSearch(query: String): Boolean {
         var root = safeGetRootInActiveWindow()
+        val currentPkg = getForegroundPackage().lowercase(Locale.ROOT)
         var targetField = findSearchField(root)
 
-        // 1. If no editable field is immediately visible, look for a search icon or button to tap
+        // 1. App-specific search activations
+        if (currentPkg.contains("spotify") && (targetField == null || !targetField.isEditable)) {
+            val spotifySearchTab = findSpotifySearchTab(root)
+            if (spotifySearchTab != null) {
+                clickNode(spotifySearchTab)
+                kotlinx.coroutines.delay(400)
+                root = safeGetRootInActiveWindow()
+                targetField = findSearchField(root)
+                if (targetField != null && !targetField.isFocused) {
+                    clickNode(targetField)
+                    kotlinx.coroutines.delay(200)
+                    root = safeGetRootInActiveWindow()
+                    targetField = findSearchField(root)
+                }
+            }
+        } else if (currentPkg.contains("whatsapp") && (targetField == null || !targetField.isEditable)) {
+            val waSearch = findWhatsAppSearchButton(root)
+            if (waSearch != null) {
+                clickNode(waSearch)
+                kotlinx.coroutines.delay(350)
+                root = safeGetRootInActiveWindow()
+                targetField = findSearchField(root)
+            }
+        } else if (currentPkg.contains("youtube") && (targetField == null || !targetField.isEditable)) {
+            val ytSearch = findYouTubeSearchButton(root)
+            if (ytSearch != null) {
+                clickNode(ytSearch)
+                kotlinx.coroutines.delay(350)
+                root = safeGetRootInActiveWindow()
+                targetField = findSearchField(root)
+            }
+        }
+
+        // 2. Generic fallback if no editable field is immediately visible
         if (targetField == null || !targetField.isEditable) {
             val searchBtn = findSearchButtonOrIcon(root)
             if (searchBtn != null) {
@@ -570,7 +687,7 @@ class KavyaAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 2. Type into the detected search field
+        // 3. Type into the detected search field
         if (targetField != null) {
             val typed = typeInNode(targetField, query)
             if (typed) {
@@ -580,14 +697,14 @@ class KavyaAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 3. Try typing in currently focused input
+        // 4. Try typing in currently focused input
         if (typeInFocusedNode(query)) {
             kotlinx.coroutines.delay(200)
             clickSearchOrSubmitButton()
             return true
         }
 
-        // 4. Try generic search text resolution
+        // 5. Try generic search text resolution
         if (typeInNodeByText("search", query)) {
             kotlinx.coroutines.delay(200)
             clickSearchOrSubmitButton()
@@ -595,6 +712,79 @@ class KavyaAccessibilityService : AccessibilityService() {
         }
 
         return false
+    }
+
+    fun findSpotifySearchTab(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        val root = node ?: safeGetRootInActiveWindow() ?: return null
+        return findSpotifySearchTabRecursive(root)
+    }
+
+    private fun findSpotifySearchTabRecursive(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
+        val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+
+        val isSearchTab = (desc == "search" || desc.startsWith("search,") || text == "search" ||
+                desc == "खोजें" || text == "खोजें" || resId.contains("search_tab")) &&
+                !desc.contains("voice") && !resId.contains("voice")
+        if (isSearchTab && (node.isClickable || node.parent?.isClickable == true)) {
+            return if (node.isClickable) node else node.parent
+        }
+        for (i in 0 until node.childCount) {
+            val child = findSpotifySearchTabRecursive(node.getChild(i))
+            if (child != null) return child
+        }
+        return null
+    }
+
+    fun findWhatsAppSearchButton(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        val root = node ?: safeGetRootInActiveWindow() ?: return null
+        return findWhatsAppSearchButtonRecursive(root)
+    }
+
+    private fun findWhatsAppSearchButtonRecursive(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
+        val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+
+        val isWaSearch = (resId.contains("menuitem_search") || resId.contains("action_search") ||
+                resId.contains("search_button") || desc == "search" || desc == "खोजें") &&
+                !desc.contains("voice") && !resId.contains("voice") && !desc.contains("clear")
+        if (isWaSearch && (node.isClickable || node.parent?.isClickable == true)) {
+            return if (node.isClickable) node else node.parent
+        }
+        for (i in 0 until node.childCount) {
+            val child = findWhatsAppSearchButtonRecursive(node.getChild(i))
+            if (child != null) return child
+        }
+        return null
+    }
+
+    fun findYouTubeSearchButton(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        val root = node ?: safeGetRootInActiveWindow() ?: return null
+        return findYouTubeSearchButtonRecursive(root)
+    }
+
+    private fun findYouTubeSearchButtonRecursive(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
+        val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+
+        val isYtSearch = (resId.contains("menu_item_search") || resId.contains("search_button") ||
+                desc.contains("search youtube") || desc == "search" || desc == "खोजें") &&
+                !desc.contains("voice") && !resId.contains("voice") && !desc.contains("clear") &&
+                !desc.contains("account") && !desc.contains("notification")
+        if (isYtSearch && (node.isClickable || node.parent?.isClickable == true)) {
+            return if (node.isClickable) node else node.parent
+        }
+        for (i in 0 until node.childCount) {
+            val child = findYouTubeSearchButtonRecursive(node.getChild(i))
+            if (child != null) return child
+        }
+        return null
     }
 
     private fun findSearchButtonOrIcon(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {

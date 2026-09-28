@@ -4,6 +4,9 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.example.agent.ActionEvent
 import com.example.agent.ActionEventBus
 import com.example.agent.CommandCategory
@@ -15,9 +18,11 @@ import com.example.agent.ContextEngine
 import com.example.agent.DiagnosticEngine
 import com.example.agent.MemoryEngine
 import com.example.agent.ScreenInspector
+import com.example.agent.TapEngine
 import com.example.agent.TaskPlanner
 import com.example.agent.UniversalActionType
 import com.example.agent.VerificationEngine
+import com.example.services.KavyaAccessibilityService
 import com.example.ai.KavyaAI
 import com.example.data.AppDatabase
 import com.example.data.ChatEntity
@@ -112,6 +117,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, aiClient)
     val microphoneEngine = com.example.agent.MicrophoneEngine.getInstance(application)
+    val micAmplitude: StateFlow<Float> = microphoneEngine.amplitude
+    val micEngineState: StateFlow<com.example.agent.MicrophoneState> = microphoneEngine.micState
     private val database = AppDatabase.getDatabase(application)
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
@@ -169,7 +176,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         val visualKeywords = listOf(
             "br start", "cs ranked", "free fire", "freefire", "start button", "game start",
             "tap on", "click on", "dabaao", "dabao", "button दबाओ", "click करो", "tap करो",
-            "screen पर", "screen par", "dhundo", "ढूंढो", "खोलो और", "kholo aur",
+            "screen पर", "screen par", "dhundo", "ढूंढो",
             "scroll down", "scroll up", "swipe up", "swipe down", "swipe left", "swipe right"
         )
         return visualKeywords.any { lower.contains(it) }
@@ -188,6 +195,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     init {
         val savedPitch = com.example.utils.AppPreferences.getVoicePitch(application)
         val savedSpeed = com.example.utils.AppPreferences.getVoiceSpeed(application)
+
+        viewModelScope.launch {
+            com.example.state.KavyaStateManager.state.collect { global ->
+                _voiceState.value = global.voiceState
+            }
+        }
     }
 
     val allChats = chatDao.getAllChats()
@@ -320,6 +333,134 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setMicMuted(muted: Boolean) {
         _isMicMuted.value = muted
+    }
+
+    fun startVoiceInput() {
+        if (_isProcessing.value) return
+        voiceEngine.stop()
+
+        val hasPerm = com.example.utils.PermissionsManager.hasRecordAudioPermission(getApplication())
+        if (!hasPerm) {
+            _voiceState.value = VoiceState.ERROR
+            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
+            _latestKavyaCaption.value = "Microphone permission required"
+            return
+        }
+
+        // Show starting status without prematurely asserting LISTENING
+        _latestKavyaCaption.value = "Starting microphone..."
+
+        microphoneEngine.startRecording(
+            onRecordingStarted = {
+                // AudioRecord is confirmed INITIALIZED and RECORDSTATE_RECORDING!
+                // Android's native green mic indicator is NOW visible.
+                viewModelScope.launch(Dispatchers.Main) {
+                    _voiceState.value = VoiceState.LISTENING
+                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
+                    _latestKavyaCaption.value = "सुन रही हूँ... (Listening...)"
+                }
+            },
+            onAudioCaptured = { pcmBytes, sampleRate ->
+                viewModelScope.launch {
+                    _voiceState.value = VoiceState.THINKING
+                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.THINKING)
+                    _latestKavyaCaption.value = "समझ रही हूँ... (Processing...)"
+
+                    val recognizedText = aiClient.transcribeAudio(pcmBytes, sampleRate)
+                    if (recognizedText.isNotBlank()) {
+                        Log.d(TAG, "Recognized user speech: \"$recognizedText\"")
+                        _latestKavyaCaption.value = recognizedText
+
+                        if (com.example.agent.SleepWakeDetector.isSleepCommand(recognizedText)) {
+                            com.example.utils.AppPreferences.setKavyaState(getApplication(), "SLEEP")
+                            _voiceState.value = VoiceState.IDLE
+                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                            _latestKavyaCaption.value = "Kavya sleeping."
+                            voiceEngine.processAndSpeak("Going to sleep. Say 'Wake Kavya' whenever you need me.")
+                            return@launch
+                        }
+
+                        if (com.example.agent.SleepWakeDetector.isWakeCommand(recognizedText)) {
+                            com.example.utils.AppPreferences.setKavyaState(getApplication(), "ACTIVE")
+                            _voiceState.value = VoiceState.IDLE
+                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                            _latestKavyaCaption.value = "Kavya awake."
+                            voiceEngine.processAndSpeak("Kavya is awake and listening! How can I help you?")
+                            return@launch
+                        }
+
+                        val lower = recognizedText.lowercase().trim()
+                        if (lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" || lower.contains("stop kavya") || lower.contains("kavya stop")) {
+                            _voiceState.value = VoiceState.IDLE
+                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                            _latestKavyaCaption.value = "Kavya stopped."
+                            return@launch
+                        }
+
+                        sendMessage(recognizedText)
+                    } else {
+                        Log.d(TAG, "Empty speech recognized.")
+                        _voiceState.value = VoiceState.IDLE
+                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                        _latestKavyaCaption.value = null
+                    }
+                }
+            },
+            onError = { error ->
+                Log.w(TAG, "Microphone error: $error")
+                viewModelScope.launch(Dispatchers.Main) {
+                    _voiceState.value = VoiceState.ERROR
+                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
+                    _latestKavyaCaption.value = error
+                    delay(3000)
+                    if (_voiceState.value == VoiceState.ERROR) {
+                        _voiceState.value = VoiceState.IDLE
+                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                        _latestKavyaCaption.value = null
+                    }
+                }
+            }
+        )
+    }
+
+    fun stopVoiceInput() {
+        microphoneEngine.stopRecording()
+        if (_voiceState.value == VoiceState.LISTENING) {
+            _voiceState.value = VoiceState.IDLE
+            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+        }
+    }
+
+    fun toggleVoiceInput() {
+        if (_voiceState.value == VoiceState.SPEAKING) {
+            voiceEngine.stop()
+            _voiceState.value = VoiceState.IDLE
+            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+            return
+        }
+
+        val app = getApplication<Application>()
+        val hasPerm = com.example.utils.PermissionsManager.hasRecordAudioPermission(app)
+        if (!hasPerm) {
+            _voiceState.value = VoiceState.ERROR
+            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
+            _latestKavyaCaption.value = "Microphone permission required"
+            return
+        }
+
+        // Send toggle intent to background voice service
+        try {
+            val serviceIntent = android.content.Intent(app, com.example.services.KavyaVoiceService::class.java).apply {
+                action = com.example.services.KavyaVoiceService.ACTION_TOGGLE_MIC
+            }
+            app.startService(serviceIntent)
+        } catch (e: Exception) {
+            if (_voiceState.value == VoiceState.LISTENING) {
+                stopVoiceInput()
+            } else {
+                startVoiceInput()
+            }
+        }
     }
 
     fun setAutoSpeak(enabled: Boolean) {
@@ -688,10 +829,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                     currentStep = secondStep.category.name
                                 )
                                 com.example.agent.AutomationEventLogger.action("Executing step 2: ${secondStep.category}")
+                                var step2Success = true
                                 when (secondStep.category) {
                                     CommandCategory.PLAY_MEDIA -> {
                                         val mediaQuery = secondStep.query ?: secondStep.param ?: ""
                                         val mediaResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, mediaQuery, "PLAY"))
+                                        step2Success = mediaResult.success
                                         cleanResponse = if (mediaResult.success) {
                                             "$appTarget par $mediaQuery play kar diya hai."
                                         } else {
@@ -703,6 +846,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                     CommandCategory.SEARCH_IN_APP -> {
                                         val searchQ = secondStep.query ?: secondStep.param ?: ""
                                         val searchResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, searchQ, "SEARCH"))
+                                        step2Success = searchResult.success
                                         cleanResponse = if (searchResult.success) {
                                             "$appTarget par $searchQ search kar diya hai."
                                         } else {
@@ -720,6 +864,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                             param = rawParam
                                         )
                                         val agentRes = androidAgent.executeAtomicStep(stepObj)
+                                        step2Success = agentRes.success
                                         cleanResponse = agentRes.output
                                         com.example.agent.TaskStateMachine.update(phase = if (agentRes.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
                                         com.example.agent.AutomationEventLogger.verify(cleanResponse)
@@ -733,18 +878,41 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                             param = rawParam
                                         )
                                         val agentRes = androidAgent.executeAtomicStep(stepObj)
+                                        step2Success = agentRes.success
                                         cleanResponse = agentRes.output
                                         com.example.agent.TaskStateMachine.update(phase = if (agentRes.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
+                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
+                                    }
+                                    CommandCategory.INTERACT_IN_APP -> {
+                                        val rawParam = secondStep.param ?: ""
+                                        val isOrdinalFirst = rawParam.contains("first", ignoreCase = true) || rawParam.contains("pehla", ignoreCase = true) || rawParam.contains("1st", ignoreCase = true)
+                                        val tapResult = if (isOrdinalFirst) {
+                                            TapEngine.tapFirstResult(KavyaAccessibilityService.instance, matched.packageName)
+                                        } else {
+                                            TapEngine.tapElement(KavyaAccessibilityService.instance, matched.packageName, rawParam)
+                                        }
+                                        step2Success = tapResult.success
+                                        cleanResponse = if (tapResult.success) {
+                                            "$appTarget par '${tapResult.targetLabel}' select kar diya hai."
+                                        } else {
+                                            "$appTarget open ho gaya hai, lekin target locate nahi ho paya."
+                                        }
+                                        com.example.agent.TaskStateMachine.update(phase = if (step2Success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
                                         com.example.agent.AutomationEventLogger.verify(cleanResponse)
                                     }
                                     else -> {
                                         cleanResponse = launchResult.output
                                     }
                                 }
+                                if (step2Success) {
+                                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
+                                } else {
+                                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Step 2 failed", cleanResponse))
+                                }
                             } else {
                                 cleanResponse = launchResult.output
+                                ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
                             }
-                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
                         }
                     }
                     if (_autoSpeak.value) {

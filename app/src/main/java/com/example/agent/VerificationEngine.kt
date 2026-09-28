@@ -25,27 +25,35 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
     /**
      * Verifies that the expected target package became the foreground window within the timeout.
      */
-    suspend fun verifyAppForeground(expectedPackage: String, timeoutMs: Long = 800L): VerificationResult {
+    suspend fun verifyAppForeground(expectedPackage: String, timeoutMs: Long = 2500L): VerificationResult {
         val startTime = System.currentTimeMillis()
         var currentPkg = screenInspector.getCurrentForegroundPackage()
+        val service = KavyaAccessibilityService.instance
 
         while (System.currentTimeMillis() - startTime < timeoutMs) {
             currentPkg = screenInspector.getCurrentForegroundPackage()
-            if (currentPkg.equals(expectedPackage, ignoreCase = true) ||
+            val serviceRootPkg = service?.safeRootPackage() ?: ""
+
+            val isMatch = currentPkg.equals(expectedPackage, ignoreCase = true) ||
                 currentPkg.contains(expectedPackage, ignoreCase = true) ||
                 expectedPackage.contains(currentPkg, ignoreCase = true) ||
-                (expectedPackage == "com.google.android.youtube" && currentPkg.contains("youtube")) ||
-                (expectedPackage == "com.android.chrome" && (currentPkg.contains("chrome") || currentPkg.contains("browser"))) ||
-                (expectedPackage == "com.google.android.googlequicksearchbox" && (currentPkg.contains("google") || currentPkg.contains("searchbox")))
-            ) {
-                Log.d(TAG, "Foreground verification PASS for $expectedPackage -> active: $currentPkg")
+                (service?.isForegroundPackage(expectedPackage) == true) ||
+                (expectedPackage.contains("youtube", ignoreCase = true) && (currentPkg.contains("youtube") || serviceRootPkg.contains("youtube"))) ||
+                (expectedPackage.contains("spotify", ignoreCase = true) && (currentPkg.contains("spotify") || serviceRootPkg.contains("spotify"))) ||
+                (expectedPackage.contains("whatsapp", ignoreCase = true) && (currentPkg.contains("whatsapp") || serviceRootPkg.contains("whatsapp"))) ||
+                (expectedPackage.contains("chrome", ignoreCase = true) && (currentPkg.contains("chrome") || currentPkg.contains("browser") || serviceRootPkg.contains("chrome"))) ||
+                (expectedPackage.contains("freefire", ignoreCase = true) && (currentPkg.contains("freefire") || currentPkg.contains("dts") || serviceRootPkg.contains("freefire")))
+
+            if (isMatch) {
+                val active = if (currentPkg != "com.example" && currentPkg != "unknown") currentPkg else if (serviceRootPkg.isNotBlank()) serviceRootPkg else expectedPackage
+                Log.d(TAG, "Foreground verification PASS for $expectedPackage -> active: $active")
                 return VerificationResult(
                     passed = true,
-                    reason = "PASS: Verified foreground window changed to $currentPkg",
-                    currentPackage = currentPkg
+                    reason = "PASS: Verified foreground window changed to $active",
+                    currentPackage = active
                 )
             }
-            delay(50)
+            delay(100)
         }
 
         Log.w(TAG, "Foreground verification FAIL: Expected $expectedPackage, but found $currentPkg")

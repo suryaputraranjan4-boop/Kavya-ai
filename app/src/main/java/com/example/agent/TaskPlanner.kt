@@ -281,6 +281,43 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                         expectedResult = "Opened result item at index $ordinalIndex"
                     )
                 )
+                continue
+            }
+
+            // Case B.0: Direct Video/Song Open instruction (e.g. "video खोलो", "video open karo", "gana chalao", "song chalao")
+            val isDirectVideoOpenClause = (clauseLower.contains("video kholo") || clauseLower.contains("video खोलो") ||
+                    clauseLower.contains("video open") || clauseLower.contains("video chalao") ||
+                    clauseLower.contains("gana bajao") || clauseLower.contains("gana chalao") ||
+                    clauseLower.contains("song play") || clauseLower.contains("play video") ||
+                    clauseLower.contains("video play")) && ordinalMatch == null
+            if (isDirectVideoOpenClause) {
+                val hasExistingPlayStep = steps.any { it.actionType == UniversalActionType.PLAY }
+                if (!hasExistingPlayStep) {
+                    steps.add(
+                        TaskStep(
+                            id = stepId++,
+                            actionType = UniversalActionType.PLAY,
+                            targetAppOrUrl = currentTarget,
+                            param = "ORDINAL_0",
+                            selectorType = SelectorType.ORDINAL_RESULT,
+                            ordinalIndex = 0,
+                            spokenAnnouncement = "Video open kar rahi hoon.",
+                            expectedOutcome = "Video playback started"
+                        )
+                    )
+                    universalIntents.add(
+                        UniversalIntent(
+                            target = currentTarget,
+                            targetCategory = currentCategory,
+                            action = UniversalActionType.PLAY,
+                            objectSelector = "content_result",
+                            ordinalIndex = 0,
+                            sequenceNumber = universalIntents.size + 1,
+                            expectedResult = "Video item opened for playback"
+                        )
+                    )
+                }
+                continue
             }
 
             // Case B.1: Call / Message (e.g. "Rahul ko call karo", "Mom ko message karo hello", "मेरे दोस्त को यह message भेजो")
@@ -731,12 +768,26 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
         
         // Custom replacement for Devanagari words without \b because \b doesn't always work well with Unicode in Java/Kotlin depending on the engine.
         // It's safer to just replace them with spaces if they appear as standalone words.
-        val hindiRemovals = listOf("पर", "पे", "में", "के अंदर", "खोलें", "खोलो", "खोल दो", "खोल के", "खोल कर", "सर्च करो", "सर्च कर", "सर्च", "ढूंढो", "खोजो", "चलाओ", "प्ले करो", "लगाओ", "करो", "कर", "दो", "इस", "इसमें", "इसपे", "उसमें", "उसपे", "यहाँ", "वहाँ")
+        val hindiRemovals = listOf(
+            "पर", "पे", "में", "के अंदर", "खोलें", "खोलो", "खोल दो", "खोल के", "खोल कर",
+            "सर्च करो", "सर्च कर", "सर्च", "ढूंढो", "खोजो", "चलाओ", "प्ले करो", "लगाओ", "करो", "कर", "दो",
+            "इस", "इसमें", "इसपे", "उसमें", "उसपे", "यहाँ", "वहाँ", "को", "का", "की", "के",
+            "इस गाने को", "इस गाने का", "इस गाने", "गाने को", "गाने का", "गाना को", "गाने", "गाना"
+        )
         for (hr in hindiRemovals) {
             query = query.replace("(?<=\\s|^)$hr(?=\\s|$)".toRegex(), " ")
         }
 
         query = query.replace("[,.!?;:\"]".toRegex(), " ").trim().replace("\\s+".toRegex(), " ")
+
+        val genericPlaceholders = listOf("गाने को", "गाने", "गाना", "gana", "gaane", "video", "song", "this song", "is gaane", "is gaane ko", "")
+        if (query.lowercase(Locale.ROOT) in genericPlaceholders) {
+            val isMusicOrVideo = clause.lowercase(Locale.ROOT).let {
+                it.contains("gana") || it.contains("gaana") || it.contains("song") ||
+                it.contains("video") || it.contains("गाने") || it.contains("गाना")
+            }
+            query = if (isMusicOrVideo) "Trending songs" else "Popular"
+        }
 
         return query
     }

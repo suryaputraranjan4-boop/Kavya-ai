@@ -177,7 +177,8 @@ object StructuredActionParser {
         // Map snake_case actions to canonical action names
         val action = when (rawAction) {
             "OPEN_APP", "OPEN" -> "OPEN_APP"
-            "FIND_AND_CLICK", "CLICK", "TAP", "UI_CLICK" -> "UI_CLICK"
+            "TAP" -> "TAP"
+            "FIND_AND_CLICK", "CLICK", "UI_CLICK" -> "UI_CLICK"
             "TYPE_TEXT", "TYPE", "UI_TYPE" -> "UI_TYPE"
             "SUBMIT_SEARCH", "SUBMIT" -> "SUBMIT"
             "SELECT_RESULT", "SELECT" -> "SELECT_RESULT"

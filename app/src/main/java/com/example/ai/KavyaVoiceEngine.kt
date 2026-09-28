@@ -21,6 +21,21 @@ class KavyaVoiceEngine(
     private var activeSpeechJob: Job? = null
     private var androidTts: android.speech.tts.TextToSpeech? = null
 
+    @Volatile
+    var isSpeaking: Boolean = false
+        private set
+
+    var onSpeakingStateChanged: ((Boolean) -> Unit)? = null
+
+    private fun updateSpeakingState(speaking: Boolean) {
+        if (isSpeaking != speaking) {
+            isSpeaking = speaking
+            scope.launch(Dispatchers.Main) {
+                onSpeakingStateChanged?.invoke(speaking)
+            }
+        }
+    }
+
     init {
         try {
             androidTts = android.speech.tts.TextToSpeech(context.applicationContext) { status ->
@@ -29,6 +44,17 @@ class KavyaVoiceEngine(
                     if (result == android.speech.tts.TextToSpeech.LANG_MISSING_DATA || result == android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED) {
                         androidTts?.language = Locale.getDefault()
                     }
+                    androidTts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {
+                            updateSpeakingState(true)
+                        }
+                        override fun onDone(utteranceId: String?) {
+                            updateSpeakingState(false)
+                        }
+                        override fun onError(utteranceId: String?) {
+                            updateSpeakingState(false)
+                        }
+                    })
                 }
             }
         } catch (e: Exception) {
@@ -36,15 +62,22 @@ class KavyaVoiceEngine(
         }
     }
 
-    fun processAndSpeak(rawText: String, enqueue: Boolean = false): SpeechAnalysisResult {
+    fun processAndSpeak(rawText: String, enqueue: Boolean = false, onComplete: (() -> Unit)? = null): SpeechAnalysisResult {
         val analysis = analyzeSpeech(rawText)
         if (analysis.cleanSpokenText.isNotBlank()) {
-            speak(analysis.cleanSpokenText, analysis.sentiment, enqueue)
+            speak(analysis.cleanSpokenText, analysis.sentiment, enqueue, onComplete)
+        } else {
+            onComplete?.invoke()
         }
         return analysis
     }
 
-    fun speak(text: String, explicitSentiment: Sentiment? = null, enqueue: Boolean = false) {
+    fun speak(
+        text: String,
+        explicitSentiment: Sentiment? = null,
+        enqueue: Boolean = false,
+        onComplete: (() -> Unit)? = null
+    ) {
         val sentiment = explicitSentiment ?: inferSentiment(text)
         val basePitch = com.example.utils.AppPreferences.getVoicePitch(context).coerceIn(0.95f, 1.25f)
         val baseSpeed = com.example.utils.AppPreferences.getVoiceSpeed(context).coerceIn(0.80f, 1.25f)
@@ -53,11 +86,16 @@ class KavyaVoiceEngine(
         val effectiveSpeed = (baseSpeed * sentiment.speedMultiplier).coerceIn(0.80f, 1.25f)
 
         val cleanText = cleanText(text)
-        if (cleanText.isBlank()) return
+        if (cleanText.isBlank()) {
+            onComplete?.invoke()
+            return
+        }
 
         if (!enqueue) {
             stop()
         }
+
+        updateSpeakingState(true)
 
         val job = scope.launch(Dispatchers.IO) {
             var geminiSuccess = false
@@ -80,6 +118,8 @@ class KavyaVoiceEngine(
                         Log.d(TAG, "GEMINI_VOICE_PLAYBACK_STARTED: ${audioBytes.size} bytes")
                         geminiPlayer.playAudioBytes(audioBytes, text = cleanText, enqueue = enqueue) {
                             Log.d(TAG, "VOICE_PLAYBACK_COMPLETED")
+                            updateSpeakingState(false)
+                            onComplete?.invoke()
                         }
                         geminiSuccess = true
                     } else {
@@ -97,15 +137,37 @@ class KavyaVoiceEngine(
                     try {
                         androidTts?.setPitch(1.02f)
                         androidTts?.setSpeechRate(1.0f)
-                        androidTts?.speak(cleanText, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "KAVYA_TTS_${System.currentTimeMillis()}")
+                        val uId = "KAVYA_TTS_${System.currentTimeMillis()}"
+                        androidTts?.speak(cleanText, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, uId)
                     } catch (e: Exception) {
                         Log.e(TAG, "Android TTS fallback failed: ${e.message}")
+                        updateSpeakingState(false)
+                        onComplete?.invoke()
                     }
                 }
             }
         }
         if (!enqueue) {
             activeSpeechJob = job
+        }
+    }
+
+    suspend fun speakSuspending(text: String, explicitSentiment: Sentiment? = null) {
+        val clean = cleanText(text)
+        if (clean.isBlank()) return
+        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+            speak(clean, explicitSentiment, enqueue = false) {
+                if (continuation.isActive) {
+                    continuation.resume(Unit) {}
+                }
+            }
+            // Timeout safety fallback after 10s if TTS hangs
+            scope.launch {
+                delay(10000)
+                if (continuation.isActive) {
+                    continuation.resume(Unit) {}
+                }
+            }
         }
     }
 

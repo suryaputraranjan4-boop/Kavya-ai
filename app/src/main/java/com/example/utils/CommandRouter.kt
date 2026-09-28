@@ -726,21 +726,39 @@ class CommandRouter(private val context: Context) {
             // Launch the exact package
             context.startActivity(launchIntent)
 
-            // Short delay to give Android WindowManager time to transition window
-            delay(100)
-
-            // Verify foreground package: requested app == resolved app == foreground app
+            // Dynamic polling with stabilization for Android WindowManager transition
             val accessibilityService = KavyaAccessibilityService.instance
-            val fgAfter = accessibilityService?.getForegroundPackage() ?: app.packageName
+            var fgAfter = accessibilityService?.getForegroundPackage() ?: app.packageName
+            var isForegroundVerified = accessibilityService == null
 
-            val isForegroundVerified = if (accessibilityService != null) {
-                // If accessibility is active, perform strict check
-                fgAfter.equals(app.packageName, ignoreCase = true) ||
-                fgAfter.contains(app.packageName, ignoreCase = true) ||
-                app.packageName.contains(fgAfter, ignoreCase = true)
-            } else {
-                // Accessibility not enabled by user yet, system launch succeeded
-                true
+            if (accessibilityService != null) {
+                val timeoutMs = 1500L
+                val startTime = System.currentTimeMillis()
+                while (System.currentTimeMillis() - startTime < timeoutMs) {
+                    fgAfter = accessibilityService.getForegroundPackage()
+                    val match = fgAfter.equals(app.packageName, ignoreCase = true) ||
+                            fgAfter.contains(app.packageName, ignoreCase = true) ||
+                            app.packageName.contains(fgAfter, ignoreCase = true) ||
+                            (app.packageName == "com.whatsapp" && fgAfter.contains("whatsapp")) ||
+                            (app.packageName == "com.google.android.youtube" && fgAfter.contains("youtube")) ||
+                            (app.packageName == "com.spotify.music" && fgAfter.contains("spotify")) ||
+                            (app.packageName == "com.instagram.android" && fgAfter.contains("instagram"))
+
+                    if (match) {
+                        isForegroundVerified = true
+                        break
+                    }
+                    delay(80)
+                }
+                // If still not verified by package name, verify via active root window node package
+                if (!isForegroundVerified) {
+                    val root = accessibilityService.rootInActiveWindow
+                    val rootPkg = root?.packageName?.toString() ?: ""
+                    if (rootPkg.contains(app.packageName, ignoreCase = true) || app.packageName.contains(rootPkg, ignoreCase = true)) {
+                        fgAfter = rootPkg
+                        isForegroundVerified = true
+                    }
+                }
             }
 
             if (isForegroundVerified) {

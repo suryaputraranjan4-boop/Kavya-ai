@@ -53,6 +53,7 @@ class AndroidAgent(
     }
 
     private val failureDao: AutomationFailureDao = AppDatabase.getDatabase(context).automationFailureDao()
+    val freshRecognizer: FreshScreenRecognizer = screenInspector.freshRecognizer
     val workflowEngine: WorkflowEngine = WorkflowEngine(screenInspector, verificationEngine, TaskPlanner(appResolver))
     val visualActionEngine: com.example.visual.VisualActionEngine = com.example.visual.VisualActionEngine(context)
 
@@ -66,10 +67,14 @@ class AndroidAgent(
         visualActionEngine.executeGoal(goal, onProgress)
     }
 
+    @Volatile
+    private var isCancelled: Boolean = false
+
     /**
-     * Immediately terminates pending visual action engine automation.
+     * Immediately terminates pending visual action engine automation and task plan execution.
      */
     fun stopExecution(reason: String = "User requested stop") {
+        isCancelled = true
         visualActionEngine.stopAutomation(reason)
     }
 
@@ -91,6 +96,7 @@ class AndroidAgent(
         plan: TaskPlan,
         onSpeakProgress: (suspend (String) -> Unit)? = null
     ): TaskExecutionOutcome = withContext(Dispatchers.IO) {
+        isCancelled = false
         DiagnosticEngine.updateLiveState(AgentLiveState.PLANNING, plan.originalPrompt, plan.targetAppName)
         KavyaStateManager.updateTaskState(TaskState.PLANNING, "Plan created with ${plan.steps.size} steps")
         val completedDiagnostics = mutableListOf<AppLaunchDiagnostic>()
@@ -99,6 +105,19 @@ class AndroidAgent(
         var completedSteps = 0
 
         for (step in plan.steps) {
+            if (isCancelled) {
+                Log.i(TAG, "Task plan execution cancelled: user requested stop")
+                KavyaStateManager.updateTaskState(TaskState.CANCELLED, "Execution cancelled by user")
+                return@withContext TaskExecutionOutcome(
+                    success = false,
+                    finalSpokenMessage = "Action stopped.",
+                    completedStepsCount = completedSteps,
+                    totalStepsCount = plan.steps.size,
+                    failureReason = "User requested stop",
+                    diagnostics = completedDiagnostics,
+                    debugLogs = debugLogs
+                )
+            }
             DiagnosticEngine.updateLiveState(
                 AgentLiveState.EXECUTING,
                 "Step ${step.id}/${plan.steps.size}: ${step.actionType} ${step.param.take(15)}",
@@ -106,9 +125,30 @@ class AndroidAgent(
             )
             KavyaStateManager.updateTaskState(TaskState.EXECUTING, "Step ${step.id}/${plan.steps.size}: ${step.actionType}")
 
-            val screenPerceptionBefore = screenInspector.inspectScreen()
+            // 1. FRESH SCREEN RECOGNITION PASS with adaptive UI stability wait
+            val freshScreenBefore = freshRecognizer.acquireFreshScreen(
+                expectedPackage = if (step.actionType != UniversalActionType.OPEN_APP) plan.targetAppName else null,
+                waitForStability = true
+            )
+
             KavyaStateManager.updateTaskState(TaskState.EXECUTING, "Executing step ${step.id}")
-            val stepResult = executeAtomicStep(step)
+            var stepResult = executeAtomicStep(step)
+
+            // 2. BOUNDED RETRY with fresh screen invalidation if first attempt failed
+            if (!stepResult.success && !stepResult.isAmbiguous && step.actionType != UniversalActionType.OPEN_APP && step.actionType != UniversalActionType.VERIFY) {
+                Log.w(TAG, "Step ${step.id} (${step.actionType}) initial attempt unverified: ${stepResult.output}. Retrying with fresh scan...")
+                for (retry in 1..2) {
+                    delay(300)
+                    freshRecognizer.acquireFreshScreen(expectedPackage = plan.targetAppName, waitForStability = true)
+                    val retryResult = executeAtomicStep(step)
+                    if (retryResult.success) {
+                        Log.i(TAG, "Step ${step.id} (${step.actionType}) recovered on retry #$retry")
+                        stepResult = retryResult
+                        break
+                    }
+                }
+            }
+
             stepSummaries.add("Step ${step.id} (${step.actionType}): ${if (stepResult.success) "SUCCESS" else "FAIL - " + stepResult.output}")
 
             KavyaStateManager.updateTaskState(TaskState.VERIFYING, "Verifying step ${step.id}")
@@ -133,8 +173,8 @@ class AndroidAgent(
                 target = plan.targetAppName,
                 resolvedApp = stepResult.diagnostic?.resolvedApp ?: plan.targetAppName,
                 foregroundPackage = stepResult.verifiedPackage ?: screenInspector.getCurrentForegroundPackage(),
-                currentScreen = screenPerceptionBefore.rawContextString.take(200),
-                detectedElements = screenPerceptionBefore.elementSummaries,
+                currentScreen = freshScreenBefore.summaryString.take(200),
+                detectedElements = freshScreenBefore.nodes.map { it.displayLabel },
                 action = "${step.actionType} [${step.param}]",
                 result = stepResult.output,
                 verification = if (stepResult.success) "VERIFIED_PASS" else "VERIFIED_FAIL",
@@ -649,12 +689,21 @@ class AndroidAgent(
         // If editable field is not directly open, look for a search icon/button to open search mode first
         if (targetField == null) {
             val root = service.rootInActiveWindow
-            val searchBtn = service.findNodeRecursively(root, "Search")
-                ?: service.findNodeRecursively(root, "खोजें")
-                ?: service.findNodeRecursively(root, "search")
-            if (searchBtn != null && searchBtn.isClickable) {
+            val currentPkg = service.getForegroundPackage().lowercase(Locale.ROOT)
+            val searchBtn = if (currentPkg.contains("spotify")) {
+                service.findSpotifySearchTab(root)
+            } else if (currentPkg.contains("whatsapp")) {
+                service.findWhatsAppSearchButton(root)
+            } else if (currentPkg.contains("youtube")) {
+                service.findYouTubeSearchButton(root)
+            } else {
+                service.findNodeRecursively(root, "Search")
+                    ?: service.findNodeRecursively(root, "खोजें")
+                    ?: service.findNodeRecursively(root, "search")
+            }
+            if (searchBtn != null && (searchBtn.isClickable || searchBtn.parent?.isClickable == true)) {
                 service.clickNode(searchBtn)
-                delay(100) // Wait for search edit box to animate in
+                delay(300) // Wait for search edit box to animate in
                 targetField = service.findSearchField(null)
             }
         }
@@ -739,20 +788,24 @@ class AndroidAgent(
         // Poll up to 3.5 seconds for dynamic web or app search results to render
         var targetNode: AccessibilityNodeInfo? = null
         for (attempt in 0..11) {
-            val root = service.rootInActiveWindow
+            val freshState = freshRecognizer.acquireFreshScreen(waitForStability = true, maxWaitMs = 1200L)
+            val root = freshState.root
             if (root != null) {
                 targetNode = service.findOrdinalContentNode(root, step.ordinalIndex)
+                    ?: freshState.organicContentResults.getOrNull(if (step.ordinalIndex == -1) freshState.organicContentResults.size - 1 else step.ordinalIndex)?.node
                     ?: screenInspector.findTargetNode("first_result", "FIRST_RESULT")
                 if (targetNode != null) break
             }
-            delay(300)
+            delay(250)
         }
 
         if (targetNode != null) {
+            val screenBefore = screenInspector.getScreenContextString()
             val clicked = service.clickNode(targetNode)
             if (clicked) {
-                delay(250)
-                return StepExecutionResult(step.id, true, UniversalActionType.SELECT, "Result at index ${step.ordinalIndex} selected")
+                delay(350)
+                val verif = verificationEngine.verifyUiInteraction(UniversalActionType.SELECT, "Ordinal_${step.ordinalIndex}", screenBefore)
+                return StepExecutionResult(step.id, true, UniversalActionType.SELECT, "Result at index ${step.ordinalIndex} selected", screenSummary = verif.screenSummary)
             }
         }
 
@@ -765,20 +818,24 @@ class AndroidAgent(
         // Poll up to 3.5 seconds for video cards or media items to render
         var resultNode: AccessibilityNodeInfo? = null
         for (attempt in 0..11) {
-            val root = service.rootInActiveWindow
+            val freshState = freshRecognizer.acquireFreshScreen(waitForStability = true, maxWaitMs = 1200L)
+            val root = freshState.root
             if (root != null) {
                 resultNode = service.findOrdinalContentNode(root, step.ordinalIndex)
+                    ?: freshState.organicContentResults.getOrNull(if (step.ordinalIndex == -1) freshState.organicContentResults.size - 1 else step.ordinalIndex)?.node
                     ?: screenInspector.findTargetNode("Play", "PLAY_BUTTON")
                 if (resultNode != null) break
             }
-            delay(300)
+            delay(250)
         }
 
         if (resultNode != null) {
+            val screenBefore = screenInspector.getScreenContextString()
             val clicked = service.clickNode(resultNode)
             if (clicked) {
-                delay(250)
-                return StepExecutionResult(step.id, true, UniversalActionType.PLAY, "Playing media item")
+                delay(400)
+                val verif = verificationEngine.verifyUiInteraction(UniversalActionType.PLAY, "Media_${step.ordinalIndex}", screenBefore)
+                return StepExecutionResult(step.id, true, UniversalActionType.PLAY, "Playing media item", screenSummary = verif.screenSummary)
             }
         }
 
@@ -981,11 +1038,22 @@ class AndroidAgent(
         if (contactName.isBlank()) contactName = step.param.trim()
         if (messageText.isBlank()) messageText = "Hello"
 
+        val lowerContact = contactName.lowercase(Locale.ROOT)
+        val isGenericContact = lowerContact in listOf(
+            "इस contact", "is contact", "this contact", "current contact", "contact", "chat",
+            "दोस्त", "friend", "my friend", "mere dost", "is chat", "yeh contact", "ye contact"
+        )
+
         screenInspector.logStep("Initiating real WhatsApp message to '$contactName': '$messageText'")
 
-        val launchResult = handleOpenApp("WhatsApp")
-        if (!launchResult.success) {
-            return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp open nahi ho paya: ${launchResult.output}")
+        // 1. Verify if WhatsApp is already active in foreground. If not, launch it.
+        val currentFg = screenInspector.getCurrentForegroundPackage().lowercase(Locale.ROOT)
+        if (!currentFg.contains("whatsapp")) {
+            val launchResult = handleOpenApp("WhatsApp")
+            if (!launchResult.success) {
+                return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp open nahi ho paya: ${launchResult.output}")
+            }
+            delay(400)
         }
 
         val service = KavyaAccessibilityService.instance
@@ -993,27 +1061,38 @@ class AndroidAgent(
             return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Accessibility service active nahi hai, automation sambhav nahi hai.")
         }
 
-        delay(400)
+        delay(300)
 
-        // 1. Check if chat input is already visible
+        // 2. Check if chat input is already visible on the current screen
         var root = service.rootInActiveWindow
         var msgInput = service.findWhatsAppMessageInput(root)
 
         if (msgInput == null) {
-            // First check if contact is already visible on the chat list (Requirement 11)
-            var contactElem = ScreenUnderstanding.findElementMatching(
-                ScreenUnderstanding.capture(root, "com.whatsapp"),
-                contactName
-            )
+            // Check if contact is already visible on chat list
+            var contactElem = if (!isGenericContact) {
+                ScreenUnderstanding.findElementMatching(
+                    ScreenUnderstanding.capture(root, "com.whatsapp"),
+                    contactName
+                )
+            } else null
 
-            // If not visible, scroll the chat container (Requirement 8)
-            if (contactElem == null) {
+            // If not visible and not generic, scroll the chat container
+            if (contactElem == null && !isGenericContact) {
                 contactElem = ScrollEngine.findAndScrollTo(service, "com.whatsapp", contactName, maxAttempts = 3)
             }
 
             if (contactElem != null && contactElem.nodeInfo != null) {
                 service.clickNode(contactElem.nodeInfo)
                 delay(400)
+            } else if (isGenericContact) {
+                // If generic contact (e.g. "इस contact को"), click the top/first conversation item in chat list
+                val snapshot = ScreenUnderstanding.capture(root, "com.whatsapp")
+                val firstChat = snapshot.listItems.firstOrNull { it.isValidTarget() && it.bounds.top > 180 }
+                    ?: snapshot.allElements.firstOrNull { it.isClickable && !it.isEditable && it.bounds.top in 180..1800 && it.bounds.height() in 60..300 }
+                if (firstChat?.nodeInfo != null) {
+                    service.clickNode(firstChat.nodeInfo)
+                    delay(400)
+                }
             } else {
                 val searchBtn = service.findNodeRecursively(root, "Search")
                     ?: service.findNodeRecursively(root, "खोजें")
@@ -1053,7 +1132,7 @@ class AndroidAgent(
             }
         }
 
-        // 2. Type message into input
+        // 3. Type message into input
         root = service.rootInActiveWindow
         msgInput = service.findWhatsAppMessageInput(root)
         if (msgInput != null) {
@@ -1061,16 +1140,17 @@ class AndroidAgent(
             if (!typed) {
                 service.typeInFocusedNode(messageText)
             }
-            delay(200)
+            delay(250)
         } else {
             return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, "Message input field nahi mila.")
         }
 
-        // 3. Click Send using deterministic TapEngine (Requirement 7, 11, 12)
+        // 4. Click Send using deterministic TapEngine
         val sendResult = TapEngine.tapSendButton(service, "com.whatsapp")
         if (sendResult.success) {
             screenInspector.logStep("WhatsApp message sent verified for $contactName")
-            return StepExecutionResult(step.id, true, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp par $contactName ko message bhej diya gaya hai.")
+            val targetLabel = if (isGenericContact) "contact" else contactName
+            return StepExecutionResult(step.id, true, UniversalActionType.SEND_WHATSAPP_MESSAGE, "WhatsApp par $targetLabel ko message bhej diya gaya hai.")
         }
 
         return StepExecutionResult(step.id, false, UniversalActionType.SEND_WHATSAPP_MESSAGE, sendResult.diagnostic)

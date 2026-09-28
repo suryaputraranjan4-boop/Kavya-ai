@@ -56,9 +56,12 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val canStart = accessibilityGranted && permissionState.allPermissionsGranted
     
     val voiceState by viewModel.voiceState.collectAsState()
+    val micAmplitude by viewModel.micAmplitude.collectAsState()
+    val micEngineState by viewModel.micEngineState.collectAsState()
     val emotionState by viewModel.emotionState.collectAsState()
     val globalState by com.example.state.KavyaStateManager.state.collectAsState()
     var showScreenShareSheet by remember { mutableStateOf(false) }
+    var showPermissionRationaleDialog by remember { mutableStateOf(false) }
     val isScreenSharing by viewModel.isScreenSharing.collectAsState()
     val latestCaption by viewModel.latestKavyaCaption.collectAsState()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
@@ -213,25 +216,27 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
                 KavyaVoiceOrb(
                     state = voiceState,
+                    amplitude = micAmplitude,
                     onClick = {
-                        if (canStart) {
-                            if (voiceState == VoiceState.SPEAKING) {
-                                viewModel.setVoiceState(VoiceState.IDLE)
+                        val permGranted = com.example.utils.PermissionsManager.hasRecordAudioPermission(context)
+                        if (!permGranted) {
+                            if (!permissionState.shouldShowRationale && permissionState.allPermissionsGranted.not()) {
+                                permissionState.launchMultiplePermissionRequest()
                             } else {
-                                try {
-                                    val intent = Intent(context, KavyaVoiceService::class.java)
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                        context.startForegroundService(intent)
-                                    } else {
-                                        context.startService(intent)
-                                    }
-                                    viewModel.setVoiceState(VoiceState.LISTENING)
-                                } catch (e: Exception) {
-                                    // ignored
-                                }
+                                showPermissionRationaleDialog = true
                             }
                         } else {
-                            navController.navigate("permissions")
+                            try {
+                                val intent = Intent(context, KavyaVoiceService::class.java)
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    context.startForegroundService(intent)
+                                } else {
+                                    context.startService(intent)
+                                }
+                            } catch (e: Exception) {
+                                // ignored
+                            }
+                            viewModel.toggleVoiceInput()
                         }
                     },
                     baseSize = 72.dp // Refined size
@@ -252,10 +257,12 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     globalState.taskState == com.example.state.TaskState.COMPLETED -> "Task complete ho gaya."
                     globalState.taskState == com.example.state.TaskState.STOPPED -> "Action rok diya gaya hai."
                     globalState.taskState == com.example.state.TaskState.FAILED -> globalState.taskStateDetail ?: "Task pura nahi ho paya."
-                    voiceState == VoiceState.LISTENING -> "Sun rahi hoon..."
+                    micEngineState == com.example.agent.MicrophoneState.STARTING -> "Starting microphone..."
+                    micEngineState == com.example.agent.MicrophoneState.PROCESSING -> "समझ रही हूँ... (Processing...)"
+                    voiceState == VoiceState.LISTENING -> "सुन रही हूँ... (Listening...)"
                     voiceState == VoiceState.UNDERSTANDING -> "Request analyze ho rahi hai..."
                     voiceState == VoiceState.EXECUTING -> globalState.taskStateDetail
-                    voiceState == VoiceState.ERROR -> "Kuch gadbad hui. Retry karne ke liye tap karein."
+                    voiceState == VoiceState.ERROR -> "Microphone unavailable. Tap to retry."
                     voiceState == VoiceState.IDLE -> "Tap to talk with Kavya"
                     else -> null
                 }
@@ -437,6 +444,43 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             viewModel = viewModel,
             onDismiss = { showScreenShareSheet = false },
             onNavigateToChat = { navController.navigate("chat") }
+        )
+    }
+
+    if (showPermissionRationaleDialog) {
+        AlertDialog(
+            onDismissRequest = { showPermissionRationaleDialog = false },
+            title = {
+                Text(
+                    text = "माइक्रोफ़ोन अनुमति आवश्यक है",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White
+                )
+            },
+            text = {
+                Text(
+                    text = "Kavya AI को आपकी आवाज़ सुनने और कमांड लेने के लिए Android Microphone अनुमति चाहिए। कृपया App Settings में जाकर Microphone permission Allow करें।",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.85f)
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showPermissionRationaleDialog = false
+                        com.example.utils.PermissionsManager.openAppSettings(context)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("Open Settings")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showPermissionRationaleDialog = false }) {
+                    Text("Cancel", color = Color.White.copy(alpha = 0.7f))
+                }
+            },
+            containerColor = Color(0xFF1E1E2E)
         )
     }
 }

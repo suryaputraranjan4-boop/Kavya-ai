@@ -225,9 +225,9 @@ class WorkflowEngine(
         KavyaStateManager.updateTaskState(TaskState.VERIFYING, "Verifying: ${step.verificationCriteria}")
         val criteriaLower = step.verificationCriteria.lowercase()
 
-        // Verify package
+        // Verify package using package alias matching
         if (step.expectedPackage != null && perception.foregroundPackage != "none" && perception.foregroundPackage != "unknown") {
-            if (perception.foregroundPackage.contains(step.expectedPackage, ignoreCase = true)) {
+            if (screenInspector.freshRecognizer.isMatchingPackage(perception.foregroundPackage, step.expectedPackage)) {
                 return true
             }
         }
