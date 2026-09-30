@@ -140,9 +140,9 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
             val root = service?.rootInActiveWindow
             val input = service?.findWhatsAppMessageInput(root)
             val fgPkg = screenInspector.getCurrentForegroundPackage().lowercase()
-            val screenContext = screenInspector.getScreenContextString().lowercase()
 
-            if (fgPkg.contains("whatsapp") && (input != null || screenContext.contains("type a message") || screenContext.contains("message"))) {
+            val isChatScreen = service?.isWhatsAppChatScreen(root) == true
+            if (fgPkg.contains("whatsapp") && (isChatScreen || input != null)) {
                 return VerificationResult(
                     passed = true,
                     reason = "PASS: Conversation window is open with active message input",

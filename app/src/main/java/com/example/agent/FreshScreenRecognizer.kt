@@ -54,7 +54,10 @@ data class FreshScreenState(
     val organicContentResults: List<AnalyzedNode>,
     val adNodes: List<AnalyzedNode>,
     val timestamp: Long = System.currentTimeMillis()
-)
+) {
+    val screenTitle: String
+        get() = visibleTexts.firstOrNull() ?: ""
+}
 
 /**
  * Fresh Screen Recognition Engine.
@@ -94,6 +97,10 @@ class FreshScreenRecognizer(
             "clear query", "clear search", "clear", "close", "cancel", "dismiss",
             "delete", "cross", "remove", "हटाएं", "बंद करें", "रद्द करें"
         )
+
+        fun inspectFreshScreenNow(expectedPackage: String? = null): FreshScreenState {
+            return FreshScreenRecognizer().inspectFreshScreenNow(expectedPackage)
+        }
     }
 
     /**

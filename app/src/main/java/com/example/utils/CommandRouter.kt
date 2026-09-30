@@ -86,6 +86,12 @@ class CommandRouter(private val context: Context) {
         val trimmed = input.trim().lowercase(java.util.Locale.ROOT)
         if (trimmed.isEmpty()) return false
 
+        // Conversational greetings ("hi", "hello", "kaise ho") must NEVER trigger device commands or app launches!
+        val interpreted = com.example.agent.CommandInterpreter.interpret(input)
+        if (interpreted is com.example.agent.CommandIntent.Conversation) {
+            return false
+        }
+
         // Call & SMS
         if (parseCallCommand(input) != null) return true
         if (parseSmsCommand(input) != null) return true
@@ -793,7 +799,7 @@ class CommandRouter(private val context: Context) {
                 Log.e(TAG, "Foreground verification mismatch: expected ${app.packageName}, got $fgAfter")
                 val isHindiOrHinglish = requestedName.any { it in '\u0900'..'\u097F' } ||
                     requestedName.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("jao") }
-                val failMsg = if (isHindiOrHinglish) "${app.appName} open नहीं हो पाया।" else "Failed to open ${app.appName}."
+                val failMsg = if (isHindiOrHinglish) "${app.appName} open नहीं हुआ।" else "Failed to open ${app.appName}."
                 CommandExecutionResult(failMsg, false, diagnostic = diag)
             }
         } catch (e: Exception) {

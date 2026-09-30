@@ -26,7 +26,16 @@ class ContextEngine {
     var activeSubContext: String? = null // e.g. "reels", "chess_game", "search_results", "chat_window"
         private set
 
-    var activeTargetSubject: String? = null // e.g. "Rahul", "Minecraft", "Hi"
+    var activeTargetSubject: String? = null // e.g. "Rahul", "Minecraft", "Kavya AI"
+        private set
+
+    var lastSearchQuery: String? = null
+        private set
+
+    var lastContactName: String? = null
+        private set
+
+    var lastPlayedMedia: String? = null
         private set
 
     var lastActionTimestamp: Long = 0
@@ -37,15 +46,39 @@ class ContextEngine {
         packageName: String? = null,
         url: String? = null,
         subContext: String? = null,
-        subject: String? = null
+        subject: String? = null,
+        searchQuery: String? = null,
+        contact: String? = null,
+        media: String? = null
     ) {
         if (!appName.isNullOrBlank()) activeTargetAppName = appName
         if (!packageName.isNullOrBlank()) activePackageName = packageName
         if (!url.isNullOrBlank()) activeWebsiteUrl = url
         if (!subContext.isNullOrBlank()) activeSubContext = subContext
         if (!subject.isNullOrBlank()) activeTargetSubject = subject
+        if (!searchQuery.isNullOrBlank()) {
+            lastSearchQuery = searchQuery
+            if (activeTargetSubject.isNullOrBlank()) activeTargetSubject = searchQuery
+        }
+        if (!contact.isNullOrBlank()) lastContactName = contact
+        if (!media.isNullOrBlank()) lastPlayedMedia = media
         lastActionTimestamp = System.currentTimeMillis()
-        Log.d(TAG, "Context updated: app=$activeTargetAppName, pkg=$activePackageName, url=$activeWebsiteUrl, sub=$activeSubContext, subj=$activeTargetSubject")
+        Log.d(TAG, "Context updated: app=$activeTargetAppName, pkg=$activePackageName, url=$activeWebsiteUrl, sub=$activeSubContext, subj=$activeTargetSubject, q=$lastSearchQuery")
+    }
+
+    /**
+     * Resolves anaphoric pronouns and references ("ise", "usko", "iske baare me", "wahi wala", "this", "that").
+     */
+    fun resolveReference(reference: String): String? {
+        val lower = reference.lowercase(Locale.ROOT).trim()
+        val isPronoun = lower in listOf(
+            "ise", "isse", "isko", "use", "usse", "usko", "iske", "iske bare me", "iske baare mein", "iske baare me",
+            "uske", "uske baare me", "uske baare mein", "iska", "uska", "wahi", "wahi wala", "ye wala", "yeh wala",
+            "vo wala", "vahi", "this", "that", "it", "him", "her", "there", "these", "those"
+        )
+        if (!isPronoun) return null
+
+        return activeTargetSubject ?: lastSearchQuery ?: lastContactName ?: lastPlayedMedia
     }
 
     fun isContextActive(): Boolean {

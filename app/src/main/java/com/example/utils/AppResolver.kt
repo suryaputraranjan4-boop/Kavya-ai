@@ -90,6 +90,18 @@ class AppResolver(private val context: Context) {
         private const val TAG = "KavyaAppResolver"
         private const val PREFS_ALIASES = "kavya_user_app_aliases"
 
+        val CONVERSATIONAL_STOP_WORDS = setOf(
+            "hi", "hello", "hey", "hie", "namaste", "pranam", "kavya",
+            "suno", "bye", "ok", "okay", "yes", "no", "thanks", "thank you",
+            "kya", "kaise", "kab", "kaha", "how", "what", "why", "who", "which",
+            "where", "when", "tell", "help", "stop", "cancel", "so jao", "utho",
+            "good morning", "good night", "whats up", "what's up",
+            "call", "search", "open", "play", "message", "send", "this", "that",
+            "it", "him", "her", "there", "kholo", "chalao", "dhoondo", "bhejo",
+            "dekho", "nikal", "pata lagao", "online", "images", "wahan", "usme",
+            "ise", "usko", "wahi", "iske baare me", "karo", "kar do", "karna"
+        )
+
         /**
          * Deterministic natural language stripper for English, Hindi, and Hinglish.
          */
@@ -446,6 +458,17 @@ class AppResolver(private val context: Context) {
         val normalizedQuery = normalizeString(cleanedTarget)
         val apps = getInstalledApps()
 
+        // Disambiguate pure conversational greetings (e.g. "hi", "hello") from app launches
+        val hasExplicitAppKeyword = trimmed.contains("app", ignoreCase = true) || trimmed.contains("ऐप")
+        if (CONVERSATIONAL_STOP_WORDS.contains(normalizedQuery) && !hasExplicitAppKeyword) {
+            return AppResolutionResult(
+                requestedName = cleanedTarget,
+                matchedApp = null,
+                confidence = MatchConfidence.NONE,
+                reason = "Conversational word '$cleanedTarget' disambiguated from app launch."
+            )
+        }
+
         Log.d(TAG, "Resolving app: raw='$rawInput' -> cleaned='$cleanedTarget' -> normalized='$normalizedQuery'")
 
         // 1. Exact case-sensitive match on App Label
@@ -771,6 +794,17 @@ class AppResolver(private val context: Context) {
         val trimmed = input.trim().lowercase(Locale.ROOT)
         if (trimmed.isEmpty()) return false
 
+        val hasAppKeyword = trimmed.contains("app") || trimmed.contains("ऐप")
+        val norm = normalizeString(trimmed)
+        if (CONVERSATIONAL_STOP_WORDS.contains(norm) && !hasAppKeyword) {
+            return false
+        }
+
+        val interpreted = com.example.agent.CommandInterpreter.interpret(input)
+        if (interpreted is com.example.agent.CommandIntent.Conversation) {
+            return false
+        }
+
         // If it's an ordinal website / video / result selection, do not treat as app launch
         val isOrdinalSelection = trimmed.contains("website") || trimmed.contains("result") ||
                 trimmed.contains("video") || trimmed.contains("link") ||
@@ -807,6 +841,9 @@ class AppResolver(private val context: Context) {
         // Direct app name match
         val extracted = extractAppNameFromNaturalLanguage(input)
         val normalizedExtracted = normalizeString(extracted)
+        if (CONVERSATIONAL_STOP_WORDS.contains(normalizedExtracted) && !hasAppKeyword) {
+            return false
+        }
         return OFFICIAL_ALIASES.containsKey(normalizedExtracted) ||
                installedAppIndex.any { it.normalizedName == normalizedExtracted }
     }

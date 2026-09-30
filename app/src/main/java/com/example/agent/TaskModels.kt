@@ -50,6 +50,7 @@ enum class UniversalActionType {
     SEND_SMS,
     SEND_WHATSAPP_MESSAGE,
     SEND_EMAIL,
+    OPEN_CHAT,
     CREATE_FOLDER,
     SELECT_RESULT,
     SCREENSHOT,
@@ -130,7 +131,9 @@ data class TaskPlan(
     val steps: List<TaskStep>,
     val isMultiStep: Boolean = false,
     val explanation: String = "",
-    val universalIntents: List<UniversalIntent> = emptyList()
+    val universalIntents: List<UniversalIntent> = emptyList(),
+    val appliedMemory: com.example.data.MemoryEntity? = null,
+    val rememberedWorkflowUsed: Boolean = false
 )
 
 /**

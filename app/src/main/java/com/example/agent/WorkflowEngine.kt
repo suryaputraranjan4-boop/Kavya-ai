@@ -65,6 +65,10 @@ class WorkflowEngine(
     private val taskPlanner: TaskPlanner = TaskPlanner()
 ) {
 
+    private val recoveryManager: RecoveryManager = RecoveryManager(screenInspector)
+    private val checkpointManager = CheckpointManager()
+    private val recoveryBudget = RecoveryBudget()
+
     companion object {
         private const val TAG = "KavyaWorkflowEngine"
     }
@@ -255,24 +259,49 @@ class WorkflowEngine(
     }
 
     /**
-     * 5. RECOVER: Executes fallback or retry recovery action.
+     * 5. RECOVER: Executes fallback or retry recovery action using RecoveryManager.
      */
     suspend fun recover(step: WorkflowStep, failureReason: String, context: Context): Boolean {
         KavyaStateManager.updateTaskState(TaskState.RETRYING, "Recovering step ${step.stepNumber}: $failureReason")
         Log.w(TAG, "RECOVER: Attempting recovery for step '${step.description}'. Reason: $failureReason")
         val service = KavyaAccessibilityService.instance ?: return false
 
+        val freshScreen = screenInspector.freshRecognizer.acquireFreshScreen(waitForStability = true)
+        val taskStep = TaskStep(
+            id = step.stepNumber,
+            actionType = step.actionType,
+            targetAppOrUrl = step.target,
+            param = step.text.ifBlank { step.query },
+            expectedOutcome = step.verificationCriteria
+        )
+
+        val strategy = recoveryManager.planRecovery(
+            currentScreen = freshScreen,
+            step = taskStep,
+            targetApp = step.target,
+            targetPackage = step.expectedPackage ?: step.target,
+            budget = recoveryBudget,
+            history = emptyList(),
+            checkpointManager = checkpointManager
+        )
+
+        if (strategy.level != RecoveryLevel.LEVEL_5_SAFE_STOP) {
+            recoveryBudget.recordAttempt(strategy.level)
+            val dispatched = recoveryManager.executeRecovery(strategy, context, taskStep, checkpointManager)
+            delay(300)
+            if (dispatched) return true
+        }
+
+        // Fallback strategies:
         service.scroll("forward")
         delay(200)
 
-        // Strategy B: Re-attempt target search with relaxed query
         val targetQuery = step.target
         if (targetQuery.isNotBlank()) {
             val retried = service.clickNodeByText(targetQuery)
             if (retried) return true
         }
 
-        // Strategy C: Fallback to global back if stuck in wrong modal
         service.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
         delay(150)
         return false

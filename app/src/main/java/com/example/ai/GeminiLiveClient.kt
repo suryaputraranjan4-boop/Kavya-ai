@@ -373,7 +373,7 @@ class GeminiLiveClient(
 
         val minSize = AudioRecord.getMinBufferSize(SAMPLE_RATE_IN, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         try {
-            // Need permission check in production, assuming granted for now
+            com.example.agent.MicrophoneEngine.getInstance(context).stopListening()
             audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE_IN, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minSize * 2)
             audioRecord?.startRecording()
             isRecording = true

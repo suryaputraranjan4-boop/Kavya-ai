@@ -21,8 +21,13 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
 
     /**
      * Deconstructs any single or multi-step command into a verified TaskPlan.
+     * Incorporates relevant long-term memories and workflow preferences into the plan (Requirement 2 & 5).
      */
-    fun createPlan(userInput: String, activeContext: ContextEngine): TaskPlan? {
+    fun createPlan(
+        userInput: String,
+        activeContext: ContextEngine,
+        relevantMemories: List<com.example.data.MemoryEntity> = emptyList()
+    ): TaskPlan? {
         val trimmed = userInput.trim()
         if (trimmed.isBlank()) return null
         val lower = trimmed.lowercase(Locale.ROOT)
@@ -56,6 +61,446 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                 )
             )
         }
+
+        val rawClauses = splitIntoClauses(trimmed)
+        val isMultiClauseCommand = rawClauses.size > 1
+
+        // 2. Structured Semantic Intent Layer (Requirement 2 & 3)
+        // Meaning first: resolves natural syntax, inverted word order, context, pronouns, and explicit intents
+        val resolvedSemanticIntent = IntentResolver.resolve(trimmed, activeContext)
+        val hasMultiStepOrOrdinal = isMultiClauseCommand ||
+                detectOrdinalSelection(trimmed.lowercase(Locale.ROOT)) != null ||
+                trimmed.contains("koi video", ignoreCase = true) ||
+                trimmed.contains("video open", ignoreCase = true)
+        val isSystemIntent = resolvedSemanticIntent is CommandIntent.Stop ||
+                resolvedSemanticIntent is CommandIntent.Sleep ||
+                resolvedSemanticIntent is CommandIntent.Wake ||
+                resolvedSemanticIntent is CommandIntent.Conversation ||
+                resolvedSemanticIntent is CommandIntent.RememberInstruction
+        val interpreted = if (isSystemIntent || !hasMultiStepOrOrdinal) resolvedSemanticIntent else null
+        if (interpreted != null) {
+            when (interpreted) {
+            is CommandIntent.Conversation -> {
+                // Strict Disambiguation: Greetings ("hi", "hello") and chats NEVER launch an app or search!
+                return null
+            }
+            is CommandIntent.Stop -> {
+                val step = TaskStep(
+                    id = 1,
+                    actionType = UniversalActionType.SYSTEM_CONTROL,
+                    targetAppOrUrl = "System",
+                    param = "STOP",
+                    spokenAnnouncement = "Ruk gayi hoon.",
+                    expectedOutcome = "Automation stopped"
+                )
+                return TaskPlan(trimmed, "System", listOf(step), false)
+            }
+            is CommandIntent.Sleep -> {
+                val step = TaskStep(
+                    id = 1,
+                    actionType = UniversalActionType.SYSTEM_CONTROL,
+                    targetAppOrUrl = "System",
+                    param = "SLEEP",
+                    spokenAnnouncement = "Main so rahi hoon.",
+                    expectedOutcome = "Assistant sleeping"
+                )
+                return TaskPlan(trimmed, "System", listOf(step), false)
+            }
+            is CommandIntent.Wake -> {
+                val step = TaskStep(
+                    id = 1,
+                    actionType = UniversalActionType.SYSTEM_CONTROL,
+                    targetAppOrUrl = "System",
+                    param = "WAKE",
+                    spokenAnnouncement = "Main jag gayi hoon.",
+                    expectedOutcome = "Assistant awake"
+                )
+                return TaskPlan(trimmed, "System", listOf(step), false)
+            }
+            is CommandIntent.RememberInstruction -> {
+                val step = TaskStep(
+                    id = 1,
+                    actionType = UniversalActionType.SAVE_MEMORY,
+                    targetAppOrUrl = interpreted.targetApp ?: "Memory",
+                    param = "${interpreted.memoryKey}||${interpreted.memoryContent}",
+                    spokenAnnouncement = "Theek hai, maine yaad rakh liya.",
+                    expectedOutcome = "Memory saved to persistent storage"
+                )
+                return TaskPlan(
+                    originalPrompt = trimmed,
+                    targetAppName = interpreted.targetApp ?: "Memory",
+                    steps = listOf(step),
+                    isMultiStep = false,
+                    explanation = "Explicit memory instruction saved"
+                )
+            }
+            is CommandIntent.OpenWebsite -> {
+                val steps = listOf(
+                    TaskStep(
+                        id = 1,
+                        actionType = UniversalActionType.OPEN_URL,
+                        targetAppOrUrl = interpreted.destinationUrl,
+                        param = interpreted.destinationUrl,
+                        spokenAnnouncement = "Okay, Chrome par ${interpreted.destinationName} खोल रही हूँ.",
+                        expectedOutcome = "${interpreted.destinationName} opened in browser"
+                    ),
+                    TaskStep(
+                        id = 2,
+                        actionType = UniversalActionType.VERIFY,
+                        targetAppOrUrl = "Google Chrome",
+                        spokenAnnouncement = "Done.",
+                        expectedOutcome = "Website loaded"
+                    )
+                )
+                return TaskPlan(trimmed, "Google Chrome", steps, false)
+            }
+            is CommandIntent.WebSearch -> {
+                val app = if (interpreted.engineOrApp.isNotBlank()) interpreted.engineOrApp else "Google"
+                val steps = listOf(
+                    TaskStep(
+                        id = 1,
+                        actionType = UniversalActionType.OPEN_APP,
+                        targetAppOrUrl = app,
+                        param = app,
+                        spokenAnnouncement = "Okay, $app खोल रही हूँ.",
+                        expectedOutcome = "$app opened"
+                    ),
+                    TaskStep(
+                        id = 2,
+                        actionType = UniversalActionType.TYPE,
+                        targetAppOrUrl = app,
+                        param = interpreted.query,
+                        selectorType = SelectorType.SEARCH_FIELD,
+                        spokenAnnouncement = "अब ${interpreted.query} search कर रही हूँ.",
+                        expectedOutcome = "Search query entered"
+                    ),
+                    TaskStep(
+                        id = 3,
+                        actionType = UniversalActionType.SUBMIT,
+                        targetAppOrUrl = app,
+                        param = "SUBMIT",
+                        selectorType = SelectorType.SUBMIT_BUTTON,
+                        spokenAnnouncement = "",
+                        expectedOutcome = "Search submitted"
+                    ),
+                    TaskStep(
+                        id = 4,
+                        actionType = UniversalActionType.VERIFY,
+                        targetAppOrUrl = app,
+                        spokenAnnouncement = "Done.",
+                        expectedOutcome = "Search results displayed"
+                    )
+                )
+                return TaskPlan(trimmed, app, steps, true)
+            }
+            is CommandIntent.CallContact -> {
+                val targetApp = if (interpreted.isWhatsApp) "WhatsApp" else "Phone"
+                val steps = listOf(
+                    TaskStep(
+                        id = 1,
+                        actionType = if (interpreted.isWhatsApp) UniversalActionType.MAKE_WHATSAPP_CALL else UniversalActionType.CALL,
+                        targetAppOrUrl = targetApp,
+                        param = interpreted.contactName,
+                        recipient = interpreted.contactName,
+                        spokenAnnouncement = "${interpreted.contactName} ko call kar rahi hoon.",
+                        expectedOutcome = "Call initiated to ${interpreted.contactName}"
+                    ),
+                    TaskStep(
+                        id = 2,
+                        actionType = UniversalActionType.VERIFY,
+                        targetAppOrUrl = targetApp,
+                        spokenAnnouncement = "Done.",
+                        expectedOutcome = "Call verified"
+                    )
+                )
+                return TaskPlan(trimmed, targetApp, steps, false)
+            }
+            is CommandIntent.OpenChat -> {
+                val steps = listOf(
+                    TaskStep(
+                        id = 1,
+                        actionType = UniversalActionType.OPEN_APP,
+                        targetAppOrUrl = interpreted.app,
+                        param = interpreted.app,
+                        spokenAnnouncement = "Okay, ${interpreted.app} खोल रही हूँ.",
+                        expectedOutcome = "${interpreted.app} opened"
+                    ),
+                    TaskStep(
+                        id = 2,
+                        actionType = UniversalActionType.OPEN_CHAT,
+                        targetAppOrUrl = interpreted.app,
+                        param = interpreted.contactName,
+                        recipient = interpreted.contactName,
+                        spokenAnnouncement = "${interpreted.contactName} ka chat open kar rahi hoon.",
+                        expectedOutcome = "Chat open with ${interpreted.contactName}"
+                    ),
+                    TaskStep(
+                        id = 3,
+                        actionType = UniversalActionType.VERIFY,
+                        targetAppOrUrl = interpreted.app,
+                        spokenAnnouncement = "Done.",
+                        expectedOutcome = "Conversation visible"
+                    )
+                )
+                return TaskPlan(trimmed, interpreted.app, steps, true)
+            }
+            is CommandIntent.SendMessage -> {
+                // Check if a relevant workflow memory exists for this recipient / app (Requirement 2 & 8)
+                val workflowMemory = relevantMemories.firstOrNull { mem ->
+                    val k = mem.key.lowercase(Locale.ROOT)
+                    val c = mem.content.lowercase(Locale.ROOT)
+                    val r = interpreted.recipient.lowercase(Locale.ROOT)
+                    val a = interpreted.app.lowercase(Locale.ROOT)
+                    (k.contains(r) || c.contains(r)) && (k.contains(a) || c.contains(a))
+                }
+
+                val hasExplicitComposerPreference = workflowMemory != null &&
+                        (workflowMemory.content.contains("message box", ignoreCase = true) ||
+                         workflowMemory.content.contains("composer", ignoreCase = true) ||
+                         workflowMemory.content.contains("chat open hone ke baad", ignoreCase = true))
+
+                val steps = if (hasExplicitComposerPreference) {
+                    // Remembered workflow: "chat open hone ke baad message box me type karna"
+                    listOf(
+                        TaskStep(
+                            id = 1,
+                            actionType = UniversalActionType.OPEN_APP,
+                            targetAppOrUrl = interpreted.app,
+                            param = interpreted.app,
+                            spokenAnnouncement = "Okay, ${interpreted.app} खोल रही हूँ.",
+                            expectedOutcome = "${interpreted.app} opened"
+                        ),
+                        TaskStep(
+                            id = 2,
+                            actionType = UniversalActionType.OPEN_CHAT,
+                            targetAppOrUrl = interpreted.app,
+                            param = interpreted.recipient,
+                            recipient = interpreted.recipient,
+                            spokenAnnouncement = "${interpreted.recipient} ka chat open kar rahi hoon.",
+                            expectedOutcome = "Chat open with ${interpreted.recipient}"
+                        ),
+                        TaskStep(
+                            id = 3,
+                            actionType = UniversalActionType.VERIFY,
+                            targetAppOrUrl = interpreted.app,
+                            param = "message_composer",
+                            spokenAnnouncement = "Message box verify kar rahi hoon.",
+                            expectedOutcome = "Message composer active and verified"
+                        ),
+                        TaskStep(
+                            id = 4,
+                            actionType = UniversalActionType.TYPE,
+                            targetAppOrUrl = interpreted.app,
+                            param = interpreted.messageText,
+                            recipient = interpreted.recipient,
+                            messageText = interpreted.messageText,
+                            selectorType = SelectorType.SEARCH_FIELD,
+                            spokenAnnouncement = "",
+                            expectedOutcome = "Message typed into composer"
+                        ),
+                        TaskStep(
+                            id = 5,
+                            actionType = UniversalActionType.TAP,
+                            targetAppOrUrl = interpreted.app,
+                            param = "Send",
+                            selectorType = SelectorType.SUBMIT_BUTTON,
+                            spokenAnnouncement = "",
+                            expectedOutcome = "Send button tapped"
+                        ),
+                        TaskStep(
+                            id = 6,
+                            actionType = UniversalActionType.VERIFY,
+                            targetAppOrUrl = interpreted.app,
+                            param = "message_sent",
+                            spokenAnnouncement = "Done.",
+                            expectedOutcome = "Message sent and verified"
+                        )
+                    )
+                } else {
+                    listOf(
+                        TaskStep(
+                            id = 1,
+                            actionType = UniversalActionType.OPEN_APP,
+                            targetAppOrUrl = interpreted.app,
+                            param = interpreted.app,
+                            spokenAnnouncement = "Okay, ${interpreted.app} खोल रही हूँ.",
+                            expectedOutcome = "${interpreted.app} opened"
+                        ),
+                        TaskStep(
+                            id = 2,
+                            actionType = UniversalActionType.SEND_MESSAGE,
+                            targetAppOrUrl = interpreted.app,
+                            param = "${interpreted.recipient}||${interpreted.messageText}",
+                            recipient = interpreted.recipient,
+                            messageText = interpreted.messageText,
+                            spokenAnnouncement = "${interpreted.recipient} ko message bhej rahi hoon.",
+                            expectedOutcome = "Message sent to ${interpreted.recipient}"
+                        ),
+                        TaskStep(
+                            id = 3,
+                            actionType = UniversalActionType.VERIFY,
+                            targetAppOrUrl = interpreted.app,
+                            spokenAnnouncement = "Done.",
+                            expectedOutcome = "Message sent and verified"
+                        )
+                    )
+                }
+                return TaskPlan(
+                    originalPrompt = trimmed,
+                    targetAppName = interpreted.app,
+                    steps = steps,
+                    isMultiStep = true,
+                    appliedMemory = workflowMemory,
+                    rememberedWorkflowUsed = workflowMemory != null
+                )
+            }
+            is CommandIntent.PlayMedia -> {
+                val steps = listOf(
+                    TaskStep(
+                        id = 1,
+                        actionType = UniversalActionType.OPEN_APP,
+                        targetAppOrUrl = interpreted.app,
+                        param = interpreted.app,
+                        spokenAnnouncement = "Okay, ${interpreted.app} खोल रही हूँ.",
+                        expectedOutcome = "${interpreted.app} opened"
+                    ),
+                    TaskStep(
+                        id = 2,
+                        actionType = UniversalActionType.TYPE,
+                        targetAppOrUrl = interpreted.app,
+                        param = interpreted.mediaQuery,
+                        selectorType = SelectorType.SEARCH_FIELD,
+                        spokenAnnouncement = "अब ${interpreted.mediaQuery} search kar rahi hoon.",
+                        expectedOutcome = "Search query entered"
+                    ),
+                    TaskStep(
+                        id = 3,
+                        actionType = UniversalActionType.SUBMIT,
+                        targetAppOrUrl = interpreted.app,
+                        param = "SUBMIT",
+                        selectorType = SelectorType.SUBMIT_BUTTON,
+                        spokenAnnouncement = "",
+                        expectedOutcome = "Search submitted"
+                    ),
+                    TaskStep(
+                        id = 4,
+                        actionType = UniversalActionType.PLAY,
+                        targetAppOrUrl = interpreted.app,
+                        param = interpreted.mediaQuery,
+                        selectorType = SelectorType.ORDINAL_RESULT,
+                        ordinalIndex = 0,
+                        spokenAnnouncement = "${interpreted.mediaQuery} play kar rahi hoon.",
+                        expectedOutcome = "Media playback started"
+                    ),
+                    TaskStep(
+                        id = 5,
+                        actionType = UniversalActionType.VERIFY,
+                        targetAppOrUrl = interpreted.app,
+                        spokenAnnouncement = "Done.",
+                        expectedOutcome = "Playback verified"
+                    )
+                )
+                return TaskPlan(trimmed, interpreted.app, steps, true)
+            }
+            is CommandIntent.OpenApp -> {
+                val clauses = splitIntoClauses(trimmed)
+                if (clauses.size <= 1) {
+                    val steps = listOf(
+                        TaskStep(
+                            id = 1,
+                            actionType = UniversalActionType.OPEN_APP,
+                            targetAppOrUrl = interpreted.appName,
+                            param = interpreted.appName,
+                            spokenAnnouncement = "Okay, ${interpreted.appName} खोल रही हूँ.",
+                            expectedOutcome = "${interpreted.appName} opened and in foreground"
+                        ),
+                        TaskStep(
+                            id = 2,
+                            actionType = UniversalActionType.VERIFY,
+                            targetAppOrUrl = interpreted.appName,
+                            spokenAnnouncement = "Done.",
+                            expectedOutcome = "${interpreted.appName} verified"
+                        )
+                    )
+                    return TaskPlan(trimmed, interpreted.appName, steps, false)
+                }
+                // If compound clauses, fall through to multi-step clause planner below
+            }
+            is CommandIntent.SystemControl -> {
+                val step = TaskStep(
+                    id = 1,
+                    actionType = UniversalActionType.SYSTEM_CONTROL,
+                    targetAppOrUrl = "System",
+                    param = interpreted.controlType,
+                    spokenAnnouncement = "System control action ${interpreted.controlType} execute kar rahi hoon.",
+                    expectedOutcome = "System action executed"
+                )
+                return TaskPlan(trimmed, "System", listOf(step), false)
+            }
+            is CommandIntent.WebSearch -> {
+                val targetApp = if (interpreted.engineOrApp.isNotBlank()) interpreted.engineOrApp else "Google"
+                val steps = listOf(
+                    TaskStep(
+                        id = 1,
+                        actionType = UniversalActionType.OPEN_APP,
+                        targetAppOrUrl = targetApp,
+                        param = targetApp,
+                        spokenAnnouncement = "Okay, $targetApp par search kar rahi hoon.",
+                        expectedOutcome = "$targetApp opened and ready"
+                    ),
+                    TaskStep(
+                        id = 2,
+                        actionType = UniversalActionType.TYPE,
+                        targetAppOrUrl = targetApp,
+                        param = interpreted.query,
+                        selectorType = SelectorType.SEARCH_FIELD,
+                        spokenAnnouncement = "${interpreted.query} search kar rahi hoon.",
+                        expectedOutcome = "Search query entered"
+                    ),
+                    TaskStep(
+                        id = 3,
+                        actionType = UniversalActionType.SUBMIT,
+                        targetAppOrUrl = targetApp,
+                        param = "SUBMIT",
+                        selectorType = SelectorType.SUBMIT_BUTTON,
+                        spokenAnnouncement = "",
+                        expectedOutcome = "Search submitted"
+                    ),
+                    TaskStep(
+                        id = 4,
+                        actionType = UniversalActionType.VERIFY,
+                        targetAppOrUrl = targetApp,
+                        spokenAnnouncement = "Done.",
+                        expectedOutcome = "Search results verified"
+                    )
+                )
+                return TaskPlan(
+                    originalPrompt = trimmed,
+                    targetAppName = targetApp,
+                    steps = steps,
+                    isMultiStep = true,
+                    explanation = "Search for '${interpreted.query}' in $targetApp"
+                )
+            }
+            is CommandIntent.InteractInApp -> {
+                val actionType = when (interpreted.action) {
+                    "HOME" -> UniversalActionType.HOME
+                    "BACK" -> UniversalActionType.BACK
+                    "SCROLL" -> UniversalActionType.SCROLL
+                    else -> UniversalActionType.TAP
+                }
+                val step = TaskStep(
+                    id = 1,
+                    actionType = actionType,
+                    targetAppOrUrl = "System",
+                    param = interpreted.param,
+                    spokenAnnouncement = "Action perform kar rahi hoon.",
+                    expectedOutcome = "Navigation executed"
+                )
+                return TaskPlan(trimmed, "System", listOf(step), false)
+            }
+        }
+    }
 
         // 2. Split user input into sequential action clauses
         val clauses = splitIntoClauses(trimmed)
@@ -109,7 +554,11 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                 return null
             }
         } else if (primaryTarget == activeContext.activeTargetAppName) {
-            skipOpenStep = true
+            val hasExplicitOpenDirective = lower.contains("open") || lower.contains("kholo") ||
+                    lower.contains("launch") || lower.contains("start") || lower.contains("chalao")
+            if (!hasExplicitOpenDirective && !isMultiClauseCommand) {
+                skipOpenStep = true
+            }
         }
 
         val steps = mutableListOf<TaskStep>()

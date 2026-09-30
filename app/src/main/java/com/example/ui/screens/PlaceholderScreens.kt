@@ -614,10 +614,7 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
     val screenCaptureConsentLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            viewModel.toggleScreenSharing(true)
-            viewModel.setMicMuted(false)
-        }
+        viewModel.onScreenShareConsentResult(context, result.resultCode, result.data)
     }
 
     fun startScreenShare() {
@@ -626,17 +623,9 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
             return
         }
 
-        if (mediaProjectionManager != null) {
-            try {
-                val intent = mediaProjectionManager.createScreenCaptureIntent()
-                screenCaptureConsentLauncher.launch(intent)
-            } catch (e: Exception) {
-                viewModel.toggleScreenSharing(true)
-                viewModel.setMicMuted(false)
-            }
-        } else {
-            viewModel.toggleScreenSharing(true)
-            viewModel.setMicMuted(false)
+        val captureIntent = viewModel.startScreenShareConsent(context)
+        if (captureIntent != null) {
+            screenCaptureConsentLauncher.launch(captureIntent)
         }
     }
 

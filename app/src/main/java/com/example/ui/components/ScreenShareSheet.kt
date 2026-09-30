@@ -70,11 +70,7 @@ fun ScreenShareSheet(
     val screenCaptureConsentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            // User confirmed official screen capture consent in system dialog
-            viewModel.toggleScreenSharing(true)
-            viewModel.setMicMuted(false)
-        }
+        viewModel.onScreenShareConsentResult(context, result.resultCode, result.data)
     }
 
     fun startScreenShareWithConsent() {
@@ -84,18 +80,9 @@ fun ScreenShareSheet(
             return
         }
 
-        if (mediaProjectionManager != null) {
-            try {
-                val captureIntent = mediaProjectionManager.createScreenCaptureIntent()
-                screenCaptureConsentLauncher.launch(captureIntent)
-            } catch (e: Exception) {
-                // Fallback direct start if projection intent is unavailable on test environment
-                viewModel.toggleScreenSharing(true)
-                viewModel.setMicMuted(false)
-            }
-        } else {
-            viewModel.toggleScreenSharing(true)
-            viewModel.setMicMuted(false)
+        val captureIntent = viewModel.startScreenShareConsent(context)
+        if (captureIntent != null) {
+            screenCaptureConsentLauncher.launch(captureIntent)
         }
     }
 

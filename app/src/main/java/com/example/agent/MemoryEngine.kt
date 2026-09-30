@@ -176,8 +176,26 @@ class MemoryEngine(private val context: Context) {
             val verify = memoryDao.getMemoryById(if (memoryEntity.id > 0) memoryEntity.id else insertedId)
             
             val isVerified = verify != null
+            if (isVerified) {
+                try {
+                    okfRepository.createKnowledge(
+                        key = key,
+                        content = content,
+                        category = if (category == "TASK_WORKFLOW") OkfCategory.RUNBOOK else OkfCategory.PREFERENCE,
+                        importance = importance,
+                        provenance = OkfProvenance(source = "EXPLICIT_USER_COMMAND", author = "User")
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "OKF sync error on remember: ${e.message}")
+                }
+            }
+
             val confirm = if (isVerified) {
-                "Got it, I've remembered that for you. याद रहेगा"
+                if (category == "TASK_WORKFLOW" || category == "WORKFLOW_PREFERENCE") {
+                    "Theek hai, maine yaad rakh liya: $content. Aage se is task mein isi workflow ka dhyan rakhungi."
+                } else {
+                    "Theek hai, maine yaad rakh liya: $content."
+                }
             } else {
                 "I couldn't save that to memory."
             }
@@ -191,25 +209,8 @@ class MemoryEngine(private val context: Context) {
             )
         }
 
-        // 4. Automatic Recurring Preference / Context Extraction
-        val autoPref = extractAutomaticPreference(lower, trimmed)
-        if (autoPref != null) {
-            val (key, content, category, importance) = autoPref
-            val existing = memoryDao.searchMemories(key)
-            if (existing.isEmpty()) {
-                val entity = MemoryEntity(
-                    key = key,
-                    content = content,
-                    category = category,
-                    importance = importance,
-                    sourceConversation = sourceConversation,
-                    confidence = 0.85f,
-                    userConfirmed = false
-                )
-                memoryDao.insertMemory(entity)
-            }
-        }
-
+        // Requirement 1 Mandate: Do not save every conversation automatically.
+        // Only save information when explicitly requested or when it is part of the defined active-task memory system.
         return@withContext MemoryExtractionResult(detected = false)
     }
 
@@ -316,7 +317,7 @@ class MemoryEngine(private val context: Context) {
 
     /**
      * Handles explicit conversational recall questions such as:
-     * "What did I tell you last time?", "What are my preferences?", "Mujhe kya pasand hai?"
+     * "What did I tell you last time?", "What are my preferences?", "Mujhe kya pasand hai?", "Kya tumhe yaad hai?"
      */
     suspend fun handleConversationalRecall(
         query: String,
@@ -332,13 +333,43 @@ class MemoryEngine(private val context: Context) {
                 lower.contains("pichli baar") ||
                 lower.contains("meri preferences") ||
                 lower.contains("what are my preferences") ||
-                lower.contains("what do you know about me")
+                lower.contains("what do you know about me") ||
+                lower.contains("yaad hai") ||
+                lower.contains("do you remember")
 
         if (!isRecallQuestion) return@withContext null
 
         val memories = memoryDao.getAllMemories()
+
+        // Check if user is asking about a SPECIFIC topic, person, or app (Requirement 9: No Fake Memory)
+        val specificKeywords = listOf(
+            "didi", "whatsapp", "spotify", "youtube", "chrome", "rohan",
+            "mummy", "call", "message", "song", "preference", "workflow"
+        )
+        val matchingKeywords = specificKeywords.filter { lower.contains(it) }
+
+        if (matchingKeywords.isNotEmpty()) {
+            val matched = memories.filter { m ->
+                val lowerKey = m.key.lowercase(Locale.ROOT)
+                val lowerContent = m.content.lowercase(Locale.ROOT)
+                matchingKeywords.any { kw -> lowerKey.contains(kw) || lowerContent.contains(kw) }
+            }
+
+            if (matched.isNotEmpty()) {
+                val sb = StringBuilder()
+                sb.append("Haan, mujhe yaad hai:\n\n")
+                matched.forEach { m ->
+                    sb.append("• ${m.content}\n")
+                }
+                return@withContext sb.toString().trim()
+            } else {
+                // Strictly return actual status instead of making up a fake memory
+                return@withContext "Mujhe is baare mein koi memory saved nahi mili."
+            }
+        }
+
         if (memories.isEmpty() && recentMessages.isEmpty()) {
-            return@withContext "Mujhe abhi aapke bare mein koi saved memory nahi mili. Agar aap kuch yaad rakhwana chahte hain, toh bas bol dijiye 'Remember that...'!"
+            return@withContext "Mujhe abhi aapke bare mein koi saved memory nahi mili. Agar aap kuch yaad rakhwana chahte hain, toh bas bol dijiye 'Ye yaad rakhna' ya 'Remember this'!"
         }
 
         val sb = StringBuilder()
@@ -346,8 +377,9 @@ class MemoryEngine(private val context: Context) {
 
         val validMemories = memories.filter { it.category != "TEMPORARY" }
         if (validMemories.isNotEmpty()) {
-            validMemories.take(5).forEach { m ->
+            validMemories.take(6).forEach { m ->
                 val badge = when (m.category) {
+                    "TASK_WORKFLOW", "WORKFLOW_PREFERENCE" -> "⚙️ Workflow"
                     "PREFERENCE" -> "⭐ Preference"
                     "CRITICAL" -> "🔴 Critical"
                     "IMPORTANT" -> "📌 Important"
@@ -360,6 +392,156 @@ class MemoryEngine(private val context: Context) {
         }
 
         return@withContext sb.toString().trim()
+    }
+
+    /**
+     * Requirement 2 & 5: Finds remembered workflow preferences matching target app, target entity, or action.
+     */
+    suspend fun findWorkflowMemory(
+        targetApp: String?,
+        targetEntity: String? = null,
+        action: String? = null,
+        query: String = ""
+    ): MemoryEntity? = withContext(Dispatchers.IO) {
+        val all = memoryDao.getAllMemories()
+        if (all.isEmpty()) return@withContext null
+
+        val app = targetApp?.lowercase(Locale.ROOT)?.trim()
+        val entity = targetEntity?.lowercase(Locale.ROOT)?.trim()
+        val q = query.lowercase(Locale.ROOT).trim()
+
+        // 1. Exact Key match (e.g. "Workflow:WhatsApp:Didi")
+        if (!app.isNullOrBlank() && !entity.isNullOrBlank()) {
+            val exactKeyMatch = all.firstOrNull {
+                it.key.lowercase(Locale.ROOT).contains(app) && it.key.lowercase(Locale.ROOT).contains(entity)
+            }
+            if (exactKeyMatch != null) return@withContext exactKeyMatch
+
+            // Or content containing both
+            val exactContentMatch = all.firstOrNull {
+                val c = it.content.lowercase(Locale.ROOT)
+                c.contains(app) && c.contains(entity)
+            }
+            if (exactContentMatch != null) return@withContext exactContentMatch
+        }
+
+        // 2. App + Action match (e.g. "Workflow:WhatsApp:Preference")
+        if (!app.isNullOrBlank()) {
+            val appMatch = all.firstOrNull {
+                it.key.lowercase(Locale.ROOT).contains(app) && (it.category == "TASK_WORKFLOW" || it.category == "WORKFLOW_PREFERENCE" || it.category == "PREFERENCE")
+            }
+            if (appMatch != null) return@withContext appMatch
+        }
+
+        // 3. Search query match
+        if (q.isNotBlank()) {
+            val searchResults = memoryDao.searchMemories(q)
+            val workflowMatch = searchResults.firstOrNull { it.category == "TASK_WORKFLOW" || it.category == "WORKFLOW_PREFERENCE" || it.importance >= 4 }
+            if (workflowMatch != null) return@withContext workflowMatch
+        }
+
+        null
+    }
+
+    /**
+     * Retrieves all memories relevant to planning a specific task.
+     */
+    suspend fun findRelevantTaskMemories(
+        targetApp: String?,
+        targetEntity: String?,
+        action: String?,
+        prompt: String
+    ): List<MemoryEntity> = withContext(Dispatchers.IO) {
+        val results = mutableListOf<MemoryEntity>()
+        val workflowMem = findWorkflowMemory(targetApp, targetEntity, action, prompt)
+        if (workflowMem != null) {
+            results.add(workflowMem)
+        }
+
+        // Also query general memories for the app or prompt
+        if (!targetApp.isNullOrBlank()) {
+            val appMems = memoryDao.searchMemories(targetApp)
+            for (m in appMems) {
+                if (results.none { it.id == m.id }) {
+                    results.add(m)
+                }
+            }
+        }
+
+        results
+    }
+
+    /**
+     * Requirement 6: Learns from a successful task execution by reinforcing the memory and updating timestamp/usage.
+     */
+    suspend fun recordWorkflowSuccess(
+        memory: MemoryEntity,
+        learnedDetails: String? = null
+    ) = withContext(Dispatchers.IO) {
+        val updated = memory.copy(
+            lastUsedAt = System.currentTimeMillis(),
+            confidence = 1.0f,
+            content = if (learnedDetails.isNullOrBlank()) memory.content else "${memory.content.substringBefore(" [Verified Path: ")} [Verified Path: $learnedDetails]"
+        )
+        memoryDao.updateMemory(updated)
+        try {
+            okfRepository.updateKnowledge(
+                idOrKey = updated.key,
+                content = updated.content,
+                importance = updated.importance
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "OKF sync error on success: ${e.message}")
+        }
+    }
+
+    /**
+     * Requirement 6 & 7: Updates an existing workflow memory without creating unnecessary duplicates.
+     */
+    suspend fun updateWorkflowMemory(
+        key: String,
+        updatedContent: String,
+        targetApp: String? = null,
+        targetEntity: String? = null
+    ) = withContext(Dispatchers.IO) {
+        val existing = memoryDao.searchMemories(key).firstOrNull()
+        if (existing != null) {
+            val updated = existing.copy(
+                content = updatedContent,
+                lastUsedAt = System.currentTimeMillis(),
+                confidence = 1.0f
+            )
+            memoryDao.updateMemory(updated)
+            try {
+                okfRepository.updateKnowledge(
+                    idOrKey = updated.key,
+                    content = updated.content
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "OKF sync error on update: ${e.message}")
+            }
+        } else {
+            val newEntity = MemoryEntity(
+                key = key,
+                content = updatedContent,
+                category = "TASK_WORKFLOW",
+                importance = 5,
+                confidence = 1.0f,
+                userConfirmed = true
+            )
+            val id = memoryDao.insertMemory(newEntity)
+            try {
+                okfRepository.createKnowledge(
+                    key = key,
+                    content = updatedContent,
+                    category = OkfCategory.RUNBOOK,
+                    importance = 5,
+                    provenance = OkfProvenance(source = "TASK_LEARNING", author = "Kavya Memory Engine")
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "OKF sync error on create: ${e.message}")
+            }
+        }
     }
 
     // --- Private Extraction Helpers ---
@@ -402,34 +584,58 @@ class MemoryEngine(private val context: Context) {
     }
 
     private fun extractExplicitMemory(lower: String, original: String): MemoryTuple? {
-        val rememberTriggers = listOf(
-            "remember that ",
+        val rememberPrefixTriggers = listOf(
+            "aage se aise karna: ",
+            "aage se aise karna ",
+            "aage se aisa karna: ",
+            "aage se aisa karna ",
+            "aage se aise hi karna ",
+            "aage se dhyan rakhna ki ",
+            "aage se dhyan rakhna ",
+            "aage se ",
             "remember this: ",
+            "remember this ",
+            "remember that: ",
+            "remember that ",
+            "remember to ",
             "remember ",
             "yaad rakhna ki ",
+            "yaad rakhna: ",
             "yaad rakhna ",
+            "yaad rakho ki ",
             "yaad rakho ",
+            "isko remember karo ki ",
+            "isko remember karo ",
+            "ise remember karo ",
+            "isko yaad rakho ki ",
+            "isko yaad rakho ",
+            "isko yaad rakhna ki ",
+            "isko yaad rakhna ",
             "note down that ",
             "always remember "
         )
 
-        for (trigger in rememberTriggers) {
+        for (trigger in rememberPrefixTriggers) {
             if (lower.startsWith(trigger)) {
-                val rawFact = original.substring(trigger.length).trim()
+                val rawFact = original.substring(trigger.length).trim(' ', ',', '.', ':', ';', '!', '\"', '\'')
                 if (rawFact.isNotBlank()) {
                     return classifyFact(rawFact)
                 }
             }
         }
 
-        // Check for suffix triggers like "... yaad rakho" or "... yaad rakhna"
-        val suffixTriggers = listOf(" yaad rakho", " yaad rakhna", " याद रखो", " याद रखना")
-        for (suffix in suffixTriggers) {
-            val suffixLower = suffix.trim().lowercase(Locale.ROOT)
-            if (lower.endsWith(suffixLower)) {
-                val rawFact = original.substring(0, original.length - suffixLower.length).trim()
-                if (rawFact.isNotBlank()) {
-                    return classifyFact(rawFact)
+        // Check for suffix triggers like "Ye yaad rakhna", "Isko remember karo", "Aage se aise karna"
+        val suffixPatterns = listOf(
+            "(?i)\\s*[,.]?\\s*(?:ye\\s+|yeh\\s+|isko\\s+|ise\\s+)?(?:yaad\\s+rakhna|yaad\\s+rakho|remember\\s+karo|remember\\s+rakhna|remember\\s+this|remember\\s+that|aage\\s+se\\s+aise\\s+karna|aage\\s+se\\s+aisa\\s+karna|aage\\s+se\\s+aise\\s+hi\\s+karna|याद\\s*रखना|याद\\s*रखो)[.!]?$",
+            "(?i)\\s*[,.]?\\s*(?:next\\s+time\\s+do\\s+it\\s+like\\s+this|from\\s+now\\s+on\\s+do\\s+this)[.!]?$"
+        )
+
+        for (pat in suffixPatterns) {
+            val regex = pat.toRegex()
+            if (regex.containsMatchIn(original)) {
+                val cleaned = original.replace(regex, "").trim(' ', ',', '.', ':', ';', '!', '\"', '\'')
+                if (cleaned.isNotBlank()) {
+                    return classifyFact(cleaned)
                 }
             }
         }
@@ -453,6 +659,46 @@ class MemoryEngine(private val context: Context) {
 
     private fun classifyFact(fact: String): MemoryTuple {
         val lower = fact.lowercase(Locale.ROOT)
+
+        // Check for App Workflow Instructions (Requirement 1, 2, 8)
+        val isWorkflowInstruction = lower.contains("whatsapp") || lower.contains("spotify") ||
+                lower.contains("youtube") || lower.contains("chrome") ||
+                lower.contains("message") || lower.contains("chat") ||
+                lower.contains("type") || lower.contains("call") ||
+                lower.contains("play") || lower.contains("open hone ke baad") ||
+                lower.contains("composer") || lower.contains("aage se")
+
+        if (isWorkflowInstruction) {
+            var app = when {
+                lower.contains("whatsapp") || lower.contains("वाट्सएप") || lower.contains("व्हाट्सएप") -> "WhatsApp"
+                lower.contains("spotify") || lower.contains("स्पॉटिफाई") -> "Spotify"
+                lower.contains("youtube") || lower.contains("यूट्यूब") -> "YouTube"
+                lower.contains("chrome") || lower.contains("browser") -> "Google Chrome"
+                lower.contains("phone") || lower.contains("call") -> "Phone"
+                else -> null
+            }
+
+            var entity: String? = null
+            val candidates = listOf(
+                "didi", "rohan", "mummy", "mom", "papa", "dad", "bhai", "sister",
+                "brother", "rahul", "priya", "amit", "neha", "arijit singh", "boss"
+            )
+            for (candidate in candidates) {
+                if (lower.contains(candidate)) {
+                    entity = candidate.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+                    break
+                }
+            }
+
+            val key = when {
+                app != null && entity != null -> "Workflow:$app:$entity"
+                app != null -> "Workflow:$app:Preference"
+                entity != null -> "Workflow:Contact:$entity"
+                else -> "Workflow:${fact.take(20).trim().replace(" ", "_")}"
+            }
+            return MemoryTuple(key, fact, "TASK_WORKFLOW", 5)
+        }
+
         return when {
             lower.contains("friendly") || lower.contains("tone") || lower.contains("personality") || lower.contains("polite") || lower.contains("formal") || lower.contains("casual") || lower.contains("behavior") || lower.contains("dostana") || lower.contains("pyar se") -> {
                 MemoryTuple("Personality & Tone", fact, "PERSONALITY", 5)

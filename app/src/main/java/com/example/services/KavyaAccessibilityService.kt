@@ -872,22 +872,66 @@ class KavyaAccessibilityService : AccessibilityService() {
             val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
             val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
             val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
-            val isMsgInput = resId.contains("entry") || resId.contains("input") || resId.contains("caption") ||
-                    resId.contains("message") || desc.contains("message") || text.contains("message") ||
-                    desc.contains("type a message") || text.contains("type a message")
-            if (isMsgInput || resId.contains("conversation")) {
-                return node
+            val isSearch = resId.contains("search") || desc.contains("search") || text.contains("search") ||
+                    desc.contains("खोजें") || text.contains("खोजें") || text.startsWith("search…")
+
+            val bounds = android.graphics.Rect()
+            node.getBoundsInScreen(bounds)
+            val isNearTop = bounds.top > 0 && bounds.top < 450 // Search bar lives at the top header
+
+            if (!isSearch && !isNearTop) {
+                val isMsgInput = resId.contains("entry") || resId.contains("input") || resId.contains("caption") ||
+                        resId.contains("message") || desc.contains("message") || text.contains("message") ||
+                        desc.contains("type a message") || text.contains("type a message") ||
+                        resId.contains("conversation")
+                if (isMsgInput) {
+                    return node
+                }
             }
         }
         for (i in 0 until node.childCount) {
             val child = findWhatsAppMessageInputRecursive(node.getChild(i))
             if (child != null) return child
         }
-        // Fallback: return any editable node that is not a search box
-        if (node.isEditable && !(node.viewIdResourceName?.contains("search", true) == true)) {
-            return node
+        // Strict fallback: only return editable node if located in bottom half and not search
+        if (node.isEditable) {
+            val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+            val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT) ?: ""
+            val text = node.text?.toString()?.lowercase(Locale.ROOT) ?: ""
+            val bounds = android.graphics.Rect()
+            node.getBoundsInScreen(bounds)
+            val isSearch = resId.contains("search") || desc.contains("search") || text.contains("search")
+            if (!isSearch && bounds.top > 600) {
+                return node
+            }
         }
         return null
+    }
+
+    /**
+     * Verifies if WhatsApp is currently showing an active chat / conversation screen.
+     */
+    fun isWhatsAppChatScreen(root: AccessibilityNodeInfo?): Boolean {
+        val rootNode = root ?: safeGetRootInActiveWindow() ?: return false
+        val screenContext = getScreenContext().lowercase(Locale.ROOT)
+
+        // If tabs like "Chats", "Updates" or "Calls" are present, we are on the main WhatsApp dashboard!
+        val hasMainTabs = (screenContext.contains("chats") && screenContext.contains("updates")) ||
+                (screenContext.contains("chats") && screenContext.contains("calls")) ||
+                (screenContext.contains("chats") && screenContext.contains("communities"))
+        if (hasMainTabs) return false
+
+        // Check for back navigation button ("Navigate up", "Back", "वापस जाएं")
+        val hasBackNav = findNodeRecursively(rootNode, "Navigate up") != null ||
+                findNodeRecursively(rootNode, "Back") != null ||
+                findNodeRecursively(rootNode, "वापस जाएं") != null
+
+        // Check for message composer or in-chat call icons
+        val hasComposer = findWhatsAppMessageInput(rootNode) != null
+        val hasCallActions = screenContext.contains("voice call") || screenContext.contains("video call") ||
+                screenContext.contains("audio call")
+
+        return hasBackNav && (hasComposer || hasCallActions)
     }
 
     /**

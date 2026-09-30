@@ -1,18 +1,17 @@
 package com.example.ui.components
 
-import android.app.Activity
-import android.content.Intent
-import android.speech.RecognizerIntent
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -27,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,12 +36,11 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.*
-import java.util.Locale
+import com.example.utils.PermissionsManager
 
 @Composable
 fun ChatBar(
@@ -49,24 +48,82 @@ fun ChatBar(
     onMicClick: () -> Unit,
     onPlusClick: () -> Unit,
     modifier: Modifier = Modifier,
-    placeholderText: String = "Talk to Kavya..."
+    placeholderText: String = "Talk to Kavya...",
+    isListening: Boolean = false
 ) {
     var text by remember { mutableStateOf("") }
     val context = androidx.compose.ui.platform.LocalContext.current
+    var showPermissionAlert by remember { mutableStateOf(false) }
+
     val micPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
             onMicClick()
+        } else {
+            showPermissionAlert = true
         }
     }
+
+    if (showPermissionAlert) {
+        AlertDialog(
+            onDismissRequest = { showPermissionAlert = false },
+            title = {
+                Text(
+                    text = "माइक्रोफ़ोन अनुमति आवश्यक है",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White
+                )
+            },
+            text = {
+                Text(
+                    text = "Kavya AI को आपकी आवाज़ सुनने के लिए Android Microphone अनुमति चाहिए। कृपया App Settings में जाकर Microphone permission Allow करें।",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.85f)
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showPermissionAlert = false
+                        PermissionsManager.openAppSettings(context)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("Open Settings")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showPermissionAlert = false }) {
+                    Text("Cancel", color = Color.White.copy(alpha = 0.7f))
+                }
+            },
+            containerColor = Color(0xFF1E1E2E)
+        )
+    }
+
+    // Pulse animation when listening
+    val infiniteTransition = rememberInfiniteTransition(label = "MicListeningPulse")
+    val listeningPulse by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "PulseScale"
+    )
 
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(28.dp))
             .background(SurfaceGlass.copy(alpha = 0.85f))
-            .border(1.dp, GlassBorder, RoundedCornerShape(28.dp))
+            .border(
+                1.dp,
+                if (isListening) Color(0xFFFF5252).copy(alpha = 0.6f) else GlassBorder,
+                RoundedCornerShape(28.dp)
+            )
             .padding(horizontal = 6.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -116,8 +173,8 @@ fun ChatBar(
                 Box(contentAlignment = Alignment.CenterStart) {
                     if (text.isEmpty()) {
                         Text(
-                            text = placeholderText,
-                            color = TextTertiary,
+                            text = if (isListening) "सुन रही हूँ... (Listening...)" else placeholderText,
+                            color = if (isListening) Color(0xFFFF7A7A) else TextTertiary,
                             style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp)
                         )
                     }
@@ -133,7 +190,7 @@ fun ChatBar(
         val interactionSource = remember { MutableInteractionSource() }
         val isPressed by interactionSource.collectIsPressedAsState()
         val btnScale by animateFloatAsState(
-            targetValue = if (isPressed) 0.90f else 1f,
+            targetValue = if (isPressed) 0.90f else if (isListening) listeningPulse else 1f,
             animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
             label = "ActionBtnScale"
         )
@@ -144,10 +201,7 @@ fun ChatBar(
                     onSend(text)
                     text = ""
                 } else {
-                    val permGranted = androidx.core.content.ContextCompat.checkSelfPermission(
-                        context,
-                        android.Manifest.permission.RECORD_AUDIO
-                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    val permGranted = PermissionsManager.hasRecordAudioPermission(context)
                     if (permGranted) {
                         onMicClick()
                     } else {
@@ -165,37 +219,47 @@ fun ChatBar(
                     .size(38.dp)
                     .clip(CircleShape)
                     .background(
-                        if (isTyping) {
-                            Brush.linearGradient(listOf(BrandGradientStart, BrandGradientEnd))
-                        } else {
-                            Brush.linearGradient(
-                                listOf(
-                                    SurfaceElevated,
-                                    SurfaceVariant
-                                )
-                            )
+                        when {
+                            isTyping -> Brush.linearGradient(listOf(BrandGradientStart, BrandGradientEnd))
+                            isListening -> Brush.linearGradient(listOf(Color(0xFFE53935), Color(0xFFFF5252)))
+                            else -> Brush.linearGradient(listOf(SurfaceElevated, SurfaceVariant))
                         }
                     )
                     .border(
                         1.dp,
-                        if (isTyping) Color.White.copy(alpha = 0.2f) else GlassBorder,
+                        when {
+                            isTyping -> Color.White.copy(alpha = 0.2f)
+                            isListening -> Color(0xFFFFCDD2)
+                            else -> GlassBorder
+                        },
                         CircleShape
                     )
             ) {
-                if (isTyping) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send message",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Mic,
-                        contentDescription = "Voice Input",
-                        tint = PrimaryLight,
-                        modifier = Modifier.size(20.dp)
-                    )
+                when {
+                    isTyping -> {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send message",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    isListening -> {
+                        Icon(
+                            imageVector = Icons.Default.Stop,
+                            contentDescription = "Stop Listening",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    else -> {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = "Voice Input",
+                            tint = PrimaryLight,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
         }

@@ -18,17 +18,35 @@ object LocalAssistantEngine {
 
         if (clean.isBlank()) return null
 
+        val isDevanagari = query.any { it in '\u0900'..'\u097F' }
+        val isHindiRomanized = clean.let {
+            it.contains("kaun") || it.contains("kaise") || it.contains("kya") ||
+            it.contains("aap") || it.contains("tum") || it.contains("batao") ||
+            it.contains("shukriya") || it.contains("dhanyawad") || it.contains("namaste") ||
+            it.contains("karo") || it.contains("kholo") || it.contains("chalao") ||
+            it.contains("hain") || it.contains("hai") || it.contains("baje") || it.contains("din")
+        }
+        val isHindiOrHinglish = isDevanagari || isHindiRomanized
+
         // 1. Time & Date
         if (isTimeQuery(clean)) {
             val sdf = SimpleDateFormat("h:mm a", Locale.getDefault())
             val timeStr = sdf.format(Date())
-            return "The current time is $timeStr."
+            return when {
+                isDevanagari -> "अभी $timeStr हुए हैं।"
+                isHindiRomanized -> "Abhi $timeStr huye hain."
+                else -> "It's $timeStr, sir."
+            }
         }
 
         if (isDateQuery(clean)) {
             val sdf = SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.getDefault())
             val dateStr = sdf.format(Date())
-            return "Today is $dateStr."
+            return when {
+                isDevanagari -> "आज $dateStr है।"
+                isHindiRomanized -> "Aaj $dateStr hai."
+                else -> "Today is $dateStr."
+            }
         }
 
         // 2. Simple Math evaluation
@@ -37,29 +55,57 @@ object LocalAssistantEngine {
             return mathResult
         }
 
-        // 3. Greetings & Identity
+        // 3. Greetings & Identity (Butler Persona: Calm, concise, capable, respectful, Hindi/Hinglish first)
         return when {
             clean in listOf("hi", "hello", "hey", "namaste", "hola", "heya", "yo") ||
             clean.startsWith("hi ") || clean.startsWith("hello ") || clean.startsWith("hey ") -> {
-                "Hello! I am Kavya, your AI companion. How can I assist you right now?"
+                when {
+                    isDevanagari -> "नमस्ते। कहिये, क्या काम है?"
+                    isHindiRomanized -> "हाँ sir, batayiye kya kaam hai?"
+                    else -> "Hello, sir. How can I help?"
+                }
             }
             clean in listOf("who are you", "what is your name", "whats your name", "what's your name", "aap kaun ho", "tum kaun ho") -> {
-                "I am Kavya, your super-fast AI companion and Android automation assistant!"
+                when {
+                    isDevanagari -> "मैं Kavya हूँ, आपकी personal AI assistant।"
+                    isHindiRomanized -> "Main Kavya hoon, aapki personal AI assistant."
+                    else -> "I'm Kavya, your personal assistant."
+                }
             }
             clean in listOf("how are you", "how are you doing", "kaise ho", "kaisa chal raha hai", "how's it going", "what's up") -> {
-                "I'm doing wonderfully and ready to help! What would you like to do today?"
+                when {
+                    isDevanagari -> "मैं ठीक हूँ। आप बताइये, क्या करना है?"
+                    isHindiRomanized -> "Main theek hoon sir. Batayiye, kya kaam hai?"
+                    else -> "I'm doing well, sir. Ready when you are."
+                }
             }
             clean in listOf("thank you", "thanks", "thank you so much", "shukriya", "dhanyawad") -> {
-                "You're very welcome! Let me know if you need anything else."
+                when {
+                    isDevanagari -> "कोई बात नहीं।"
+                    isHindiRomanized -> "Koi baat nahi sir."
+                    else -> "You're welcome, sir."
+                }
             }
             clean in listOf("good morning", "shubh prabhat") -> {
-                "Good morning! Hope you have an energetic and productive day ahead!"
+                when {
+                    isDevanagari -> "शुभ प्रभात।"
+                    isHindiRomanized -> "Good morning sir."
+                    else -> "Good morning, sir."
+                }
             }
             clean in listOf("good night", "shubh ratri") -> {
-                "Good night! Rest well and sweet dreams!"
+                when {
+                    isDevanagari -> "शुभ रात्रि।"
+                    isHindiRomanized -> "Good night sir."
+                    else -> "Good night, sir."
+                }
             }
             clean in listOf("what can you do", "help", "kya kar sakti ho", "features") -> {
-                "I can launch apps, search on YouTube or Google, control device settings (flashlight, volume, screenshots), check weather, do math, and converse with you naturally!"
+                when {
+                    isDevanagari -> "मैं apps open कर सकती हूँ, YouTube या web पर search, phone calls, messages और phone की settings control कर सकती हूँ।"
+                    isHindiRomanized -> "Main apps open kar sakti hoon, YouTube ya web search, calls, messages aur device settings control kar sakti hoon."
+                    else -> "I can launch apps, search YouTube or the web, manage calls and messages, and control phone settings."
+                }
             }
             else -> null
         }

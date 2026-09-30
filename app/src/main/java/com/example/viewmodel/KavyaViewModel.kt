@@ -1,12 +1,16 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.update
+import com.example.agent.TaskPhase
 import com.example.agent.ActionEvent
 import com.example.agent.ActionEventBus
 import com.example.agent.CommandCategory
@@ -339,67 +343,84 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         if (_isProcessing.value) return
         voiceEngine.stop()
 
-        val hasPerm = com.example.utils.PermissionsManager.hasRecordAudioPermission(getApplication())
+        val app = getApplication<Application>()
+        val hasPerm = com.example.utils.PermissionsManager.hasRecordAudioPermission(app)
         if (!hasPerm) {
+            Log.e(TAG, "MIC_PERMISSION_DENIED: Cannot start voice input without RECORD_AUDIO")
             _voiceState.value = VoiceState.ERROR
             com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
             _latestKavyaCaption.value = "Microphone permission required"
+            viewModelScope.launch {
+                delay(3000)
+                if (_voiceState.value == VoiceState.ERROR) {
+                    _voiceState.value = VoiceState.IDLE
+                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                    _latestKavyaCaption.value = null
+                }
+            }
             return
         }
 
-        // Show starting status without prematurely asserting LISTENING
+        Log.d(TAG, "MIC_INITIALIZING: User initiated voice input session")
         _latestKavyaCaption.value = "Starting microphone..."
 
-        microphoneEngine.startRecording(
-            onRecordingStarted = {
-                // AudioRecord is confirmed INITIALIZED and RECORDSTATE_RECORDING!
-                // Android's native green mic indicator is NOW visible.
+        microphoneEngine.startListening(
+            onListeningStarted = {
+                // Audio capture is confirmed active and Android green privacy indicator is visible
                 viewModelScope.launch(Dispatchers.Main) {
+                    Log.d(TAG, "MIC_STARTED: Microphone active, listening for speech")
                     _voiceState.value = VoiceState.LISTENING
                     com.example.state.KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
                     _latestKavyaCaption.value = "सुन रही हूँ... (Listening...)"
                 }
             },
-            onAudioCaptured = { pcmBytes, sampleRate ->
+            onPartialResult = { partial ->
+                viewModelScope.launch(Dispatchers.Main) {
+                    if (partial.isNotBlank()) {
+                        _latestKavyaCaption.value = partial
+                    }
+                }
+            },
+            onResult = { recognizedText ->
                 viewModelScope.launch {
-                    _voiceState.value = VoiceState.THINKING
-                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.THINKING)
-                    _latestKavyaCaption.value = "समझ रही हूँ... (Processing...)"
-
-                    val recognizedText = aiClient.transcribeAudio(pcmBytes, sampleRate)
+                    Log.d(TAG, "STT_RESULT: Candidates received, final length=${recognizedText.length}")
                     if (recognizedText.isNotBlank()) {
-                        Log.d(TAG, "Recognized user speech: \"$recognizedText\"")
+                        _voiceState.value = VoiceState.THINKING
+                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.THINKING)
                         _latestKavyaCaption.value = recognizedText
 
                         if (com.example.agent.SleepWakeDetector.isSleepCommand(recognizedText)) {
-                            com.example.utils.AppPreferences.setKavyaState(getApplication(), "SLEEP")
-                            _voiceState.value = VoiceState.IDLE
-                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                            Log.d(TAG, "SLEEP_COMMAND: Putting Kavya to sleep")
+                            com.example.utils.AppPreferences.setKavyaState(app, "SLEEP")
+                            stopVoiceInput()
                             _latestKavyaCaption.value = "Kavya sleeping."
                             voiceEngine.processAndSpeak("Going to sleep. Say 'Wake Kavya' whenever you need me.")
                             return@launch
                         }
 
                         if (com.example.agent.SleepWakeDetector.isWakeCommand(recognizedText)) {
-                            com.example.utils.AppPreferences.setKavyaState(getApplication(), "ACTIVE")
-                            _voiceState.value = VoiceState.IDLE
-                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                            Log.d(TAG, "WAKE_COMMAND: Waking Kavya up")
+                            com.example.utils.AppPreferences.setKavyaState(app, "ACTIVE")
+                            stopVoiceInput()
                             _latestKavyaCaption.value = "Kavya awake."
                             voiceEngine.processAndSpeak("Kavya is awake and listening! How can I help you?")
                             return@launch
                         }
 
                         val lower = recognizedText.lowercase().trim()
-                        if (lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" || lower.contains("stop kavya") || lower.contains("kavya stop")) {
-                            _voiceState.value = VoiceState.IDLE
-                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                        if (lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
+                            lower.contains("stop kavya") || lower.contains("kavya stop") ||
+                            lower.contains("kavya chup") || lower.contains("chup ho jao")
+                        ) {
+                            Log.d(TAG, "STOP_COMMAND: User stopped Kavya listening")
+                            stopVoiceInput()
                             _latestKavyaCaption.value = "Kavya stopped."
                             return@launch
                         }
 
                         sendMessage(recognizedText)
                     } else {
-                        Log.d(TAG, "Empty speech recognized.")
+                        Log.d(TAG, "STT_EMPTY: No speech detected in audio window")
                         _voiceState.value = VoiceState.IDLE
                         com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                         _latestKavyaCaption.value = null
@@ -407,7 +428,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 }
             },
             onError = { error ->
-                Log.w(TAG, "Microphone error: $error")
+                Log.w(TAG, "STT_ERROR: $error")
                 viewModelScope.launch(Dispatchers.Main) {
                     _voiceState.value = VoiceState.ERROR
                     com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
@@ -424,11 +445,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopVoiceInput() {
-        microphoneEngine.stopRecording()
-        if (_voiceState.value == VoiceState.LISTENING) {
-            _voiceState.value = VoiceState.IDLE
-            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-        }
+        Log.d(TAG, "MIC_STOPPING: Stopping microphone capture")
+        microphoneEngine.stopListening()
+        _voiceState.value = VoiceState.IDLE
+        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+        _latestKavyaCaption.value = null
     }
 
     fun toggleVoiceInput() {
@@ -448,18 +469,14 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // Send toggle intent to background voice service
-        try {
-            val serviceIntent = android.content.Intent(app, com.example.services.KavyaVoiceService::class.java).apply {
-                action = com.example.services.KavyaVoiceService.ACTION_TOGGLE_MIC
-            }
-            app.startService(serviceIntent)
-        } catch (e: Exception) {
-            if (_voiceState.value == VoiceState.LISTENING) {
-                stopVoiceInput()
-            } else {
-                startVoiceInput()
-            }
+        val isCurrentlyListening = _voiceState.value == VoiceState.LISTENING ||
+                microphoneEngine.micState.value == com.example.agent.MicrophoneState.LISTENING ||
+                microphoneEngine.micState.value == com.example.agent.MicrophoneState.STARTING
+
+        if (isCurrentlyListening) {
+            stopVoiceInput()
+        } else {
+            startVoiceInput()
         }
     }
 
@@ -471,34 +488,46 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         voiceEngine.setBaseVoiceProfile(pitch, rate)
     }
 
+    val screenShareState: StateFlow<com.example.services.ScreenShareManager.ScreenShareState> =
+        com.example.services.ScreenShareManager.state
+
+    fun startScreenShareConsent(ctx: Context): Intent? {
+        return com.example.services.ScreenShareManager.createConsentIntent(ctx)
+    }
+
+    fun onScreenShareConsentResult(ctx: Context, resultCode: Int, data: Intent?) {
+        com.example.services.ScreenShareManager.handleConsentResult(ctx, resultCode, data)
+    }
+
+    fun stopScreenShare() {
+        com.example.services.ScreenShareManager.stopScreenShare(getApplication())
+        _isScreenSharing.value = false
+        _screenContextText.value = null
+    }
+
     fun toggleScreenSharing(enabled: Boolean? = null) {
         val target = enabled ?: !_isScreenSharing.value
-        _isScreenSharing.value = target
-        if (target) {
-            // Keep microphone enabled automatically during screen share
+        if (!target) {
+            stopScreenShare()
+        } else {
+            // Request system consent through UI launcher
+            _isScreenSharing.value = true
             _isMicMuted.value = false
             refreshScreenContext()
-            // Announce in natural, confident tone
-            val chatId = _currentChatId.value
-            if (chatId != null) {
-                val announcement = "Screen sharing is active! I'm Kavya, and I can see what's on your screen. Just tell me what you'd like me to help with."
-                val introMsg = ChatMessage(id = UUID.randomUUID().toString(), text = announcement, isUser = false)
-                _messages.value = _messages.value + introMsg
-                if (_autoSpeak.value) {
-                    voiceEngine.speak(announcement, com.example.ai.Sentiment.WARM)
-                }
-            }
-        } else {
-            _screenContextText.value = null
         }
     }
 
     fun refreshScreenContext() {
         val liveContext = com.example.services.KavyaAccessibilityService.instance?.getScreenContext()
+        val perceptionSnapshot = com.example.visual.VisionPipeline.getUnifiedPerceptionSnapshot()
         _screenContextText.value = if (!liveContext.isNullOrBlank() && !liveContext.contains("Root node is null")) {
-            liveContext
+            if (perceptionSnapshot.isVisualCaptureActive) {
+                "$liveContext\n[Vision: Real-time screen capture feed active]"
+            } else {
+                liveContext
+            }
         } else {
-            "Active Screen: Home / App Overview\nStatus: Screen Perception is active. (Enable Accessibility in Settings for deep UI tree perception)"
+            "Active Screen: Home / App Overview\nStatus: Screen Perception is active."
         }
     }
 
@@ -516,6 +545,49 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        viewModelScope.launch {
+            com.example.services.ScreenShareManager.state.collect { state ->
+                when (state) {
+                    is com.example.services.ScreenShareManager.ScreenShareState.Active -> {
+                        _isScreenSharing.value = true
+                        _isMicMuted.value = false
+                        refreshScreenContext()
+                    }
+                    is com.example.services.ScreenShareManager.ScreenShareState.Stopped -> {
+                        _isScreenSharing.value = false
+                        _screenContextText.value = null
+                    }
+                    is com.example.services.ScreenShareManager.ScreenShareState.PermissionDenied -> {
+                        _isScreenSharing.value = false
+                        _screenContextText.value = null
+                        val chatId = _currentChatId.value
+                        if (chatId != null) {
+                            val denyMsg = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                text = "Screen share permission was cancelled or denied.",
+                                isUser = false
+                            )
+                            _messages.value = _messages.value + denyMsg
+                        }
+                    }
+                    is com.example.services.ScreenShareManager.ScreenShareState.Error -> {
+                        _isScreenSharing.value = false
+                        _screenContextText.value = null
+                        val chatId = _currentChatId.value
+                        if (chatId != null) {
+                            val errMsg = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                text = "Screen share failed: ${state.message}",
+                                isUser = false
+                            )
+                            _messages.value = _messages.value + errMsg
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        }
+
         viewModelScope.launch {
             chatDao.getAllChats().collect { chats ->
                 if (_currentChatId.value == null) {
@@ -759,9 +831,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         actionResult = "User stopped automation"
                     )
                     com.example.agent.AutomationEventLogger.task("Automation halted by user request.")
+                    val isDevanagari = prompt.any { it in '\u0900'..'\u097F' }
+                    val isHindiOrHinglish = isDevanagari || prompt.lowercase(java.util.Locale.ROOT).let {
+                        it.contains("ruko") || it.contains("rok") || it.contains("band") || it.contains("stop") || it.contains("karo")
+                    }
                     voiceEngine.stop()
                     microphoneEngine.stopListening()
-                    cleanResponse = "Automation stopped. मैंने कार्य रोक दिया है।"
+                    cleanResponse = if (isHindiOrHinglish) "हाँ sir, रोक दिया है।" else "Stopped, sir."
                     if (_autoSpeak.value) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
@@ -773,9 +849,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         actionResult = "Entering sleep mode"
                     )
                     com.example.agent.AutomationEventLogger.task("Entering sleep mode.")
+                    val isDevanagari = prompt.any { it in '\u0900'..'\u097F' }
+                    val isHindiOrHinglish = isDevanagari || prompt.lowercase(java.util.Locale.ROOT).let {
+                        it.contains("so") || it.contains("jao") || it.contains("shubh") || it.contains("ratri") || it.contains("sleep")
+                    }
                     voiceEngine.stop()
                     microphoneEngine.stopListening()
-                    cleanResponse = "Going to sleep. शुभ रात्रि! जब भी आवश्यकता हो, 'Hey Kavya' बोलें।"
+                    cleanResponse = if (isHindiOrHinglish) "शुभ रात्रि sir।" else "Good night, sir."
                     if (_autoSpeak.value) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
@@ -798,7 +878,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
                     val resolution = commandRouter.appResolver.resolve(appTarget)
                     if (resolution.confidence == com.example.utils.MatchConfidence.NONE) {
-                        cleanResponse = "I couldn't find that app: '$appTarget'."
+                        val isHindiOrHinglish = prompt.any { it in '\u0900'..'\u097F' } || prompt.lowercase(java.util.Locale.ROOT).let {
+                            it.contains("kholo") || it.contains("khol") || it.contains("chalao") || it.contains("jao") || it.contains("open")
+                        }
+                        cleanResponse = if (isHindiOrHinglish) "मुझे '$appTarget' app नहीं मिला।" else "I couldn't find the '$appTarget' app."
                         ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "App not installed", cleanResponse))
                         com.example.agent.TaskStateMachine.update(phase = com.example.agent.TaskPhase.FAILED, lastError = cleanResponse)
                         com.example.agent.AutomationEventLogger.error("App not found: $appTarget")
@@ -1349,11 +1432,17 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
 
+                        val targetAppNameStr = structuredActions.firstOrNull()?.target ?: ""
+                        val targetEntityStr = structuredActions.firstOrNull()?.recipient ?: ""
+                        val relevantWorkflowMem = memoryEngine.findWorkflowMemory(targetAppNameStr, targetEntityStr, query = prompt)
+
                         val taskPlan = com.example.agent.TaskPlan(
                             originalPrompt = prompt,
-                            targetAppName = structuredActions.firstOrNull()?.target ?: "",
+                            targetAppName = targetAppNameStr,
                             steps = taskSteps,
-                            isMultiStep = taskSteps.size > 1
+                            isMultiStep = taskSteps.size > 1,
+                            appliedMemory = relevantWorkflowMem,
+                            rememberedWorkflowUsed = relevantWorkflowMem != null
                         )
 
                         val sensitiveStep = taskSteps.firstOrNull {
@@ -1434,7 +1523,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     } else {
                         // Fallback check: Did taskPlanner detect a real automation intent?
-                        val fallbackPlan = taskPlanner.createPlan(prompt, contextEngine)
+                        val relevantMems = memoryEngine.findRelevantTaskMemories(
+                            targetApp = null,
+                            targetEntity = null,
+                            action = null,
+                            prompt = prompt
+                        )
+                        val fallbackPlan = taskPlanner.createPlan(prompt, contextEngine, relevantMems)
                         if (fallbackPlan != null && fallbackPlan.steps.isNotEmpty()) {
                             val outcome = androidAgent.executeTaskPlan(
                                 fallbackPlan,

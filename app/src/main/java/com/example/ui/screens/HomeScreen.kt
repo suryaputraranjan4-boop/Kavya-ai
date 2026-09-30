@@ -226,16 +226,6 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                                 showPermissionRationaleDialog = true
                             }
                         } else {
-                            try {
-                                val intent = Intent(context, KavyaVoiceService::class.java)
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    context.startForegroundService(intent)
-                                } else {
-                                    context.startService(intent)
-                                }
-                            } catch (e: Exception) {
-                                // ignored
-                            }
                             viewModel.toggleVoiceInput()
                         }
                     },
@@ -327,25 +317,12 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     viewModel.sendMessage(it)
                 },
                 onMicClick = {
-                    if (canStart) {
-                        try {
-                            val intent = Intent(context, KavyaVoiceService::class.java)
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                context.startForegroundService(intent)
-                            } else {
-                                context.startService(intent)
-                            }
-                            viewModel.setVoiceState(VoiceState.LISTENING)
-                        } catch (e: Exception) {
-                            // ignored
-                        }
-                    } else {
-                        navController.navigate("permissions")
-                    }
+                    viewModel.toggleVoiceInput()
                 },
                 onPlusClick = {
                     showScreenShareSheet = true
                 },
+                isListening = (voiceState == VoiceState.LISTENING || micEngineState == com.example.agent.MicrophoneState.LISTENING),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)
