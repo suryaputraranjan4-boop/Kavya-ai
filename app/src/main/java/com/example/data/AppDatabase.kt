@@ -13,9 +13,12 @@ import androidx.room.RoomDatabase
         AutomationFailureEntity::class,
         com.example.evolution.EvolutionHistoryEntity::class,
         com.example.evolution.EvolutionReportEntity::class,
-        com.example.evolution.EvolutionUpgradeEntity::class
+        com.example.evolution.EvolutionUpgradeEntity::class,
+        DurableTaskEntity::class,
+        DurableTaskStepEntity::class,
+        ScheduledTaskEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -23,6 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun memoryDao(): MemoryDao
     abstract fun automationFailureDao(): AutomationFailureDao
     abstract fun evolutionDao(): com.example.evolution.EvolutionDao
+    abstract fun taskDao(): TaskDao
 
     companion object {
         @Volatile
@@ -39,6 +43,8 @@ abstract class AppDatabase : RoomDatabase() {
                 instance
             }
         }
+
+        fun getInstance(context: Context): AppDatabase = getDatabase(context)
     }
 }
 

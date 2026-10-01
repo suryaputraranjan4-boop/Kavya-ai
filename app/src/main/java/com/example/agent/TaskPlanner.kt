@@ -437,51 +437,6 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                 )
                 return TaskPlan(trimmed, "System", listOf(step), false)
             }
-            is CommandIntent.WebSearch -> {
-                val targetApp = if (interpreted.engineOrApp.isNotBlank()) interpreted.engineOrApp else "Google"
-                val steps = listOf(
-                    TaskStep(
-                        id = 1,
-                        actionType = UniversalActionType.OPEN_APP,
-                        targetAppOrUrl = targetApp,
-                        param = targetApp,
-                        spokenAnnouncement = "Okay, $targetApp par search kar rahi hoon.",
-                        expectedOutcome = "$targetApp opened and ready"
-                    ),
-                    TaskStep(
-                        id = 2,
-                        actionType = UniversalActionType.TYPE,
-                        targetAppOrUrl = targetApp,
-                        param = interpreted.query,
-                        selectorType = SelectorType.SEARCH_FIELD,
-                        spokenAnnouncement = "${interpreted.query} search kar rahi hoon.",
-                        expectedOutcome = "Search query entered"
-                    ),
-                    TaskStep(
-                        id = 3,
-                        actionType = UniversalActionType.SUBMIT,
-                        targetAppOrUrl = targetApp,
-                        param = "SUBMIT",
-                        selectorType = SelectorType.SUBMIT_BUTTON,
-                        spokenAnnouncement = "",
-                        expectedOutcome = "Search submitted"
-                    ),
-                    TaskStep(
-                        id = 4,
-                        actionType = UniversalActionType.VERIFY,
-                        targetAppOrUrl = targetApp,
-                        spokenAnnouncement = "Done.",
-                        expectedOutcome = "Search results verified"
-                    )
-                )
-                return TaskPlan(
-                    originalPrompt = trimmed,
-                    targetAppName = targetApp,
-                    steps = steps,
-                    isMultiStep = true,
-                    explanation = "Search for '${interpreted.query}' in $targetApp"
-                )
-            }
             is CommandIntent.InteractInApp -> {
                 val actionType = when (interpreted.action) {
                     "HOME" -> UniversalActionType.HOME

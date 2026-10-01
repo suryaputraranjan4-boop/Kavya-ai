@@ -105,6 +105,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
     private var activeSampleRate = 16000
     private var activeBufferSize = 0
     private var recordingJob: Job? = null
+    private var rearmJob: Job? = null
     private var audioFocusRequest: AudioFocusRequest? = null
 
     @Volatile
@@ -112,6 +113,17 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
     @Volatile
     private var isRecognizing = false
+
+    @Volatile
+    private var isContinuousMode = false
+
+    @Volatile
+    private var isPausedForTts = false
+
+    private var activeOnResult: ((String) -> Unit)? = null
+    private var activeOnPartialResult: ((String) -> Unit)? = null
+    private var activeOnListeningStarted: (() -> Unit)? = null
+    private var activeOnError: ((String) -> Unit)? = null
 
     private val _micState = MutableStateFlow(MicrophoneState.IDLE)
     val micState: StateFlow<MicrophoneState> = _micState.asStateFlow()
@@ -191,6 +203,111 @@ class MicrophoneEngine private constructor(private val context: Context) {
         onPartialResult: ((String) -> Unit)? = null,
         onError: (String) -> Unit = {}
     ) {
+        activeOnListeningStarted = onListeningStarted
+        activeOnResult = onResult
+        activeOnPartialResult = onPartialResult
+        activeOnError = onError
+        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+    }
+
+    /**
+     * Starts continuous hands-free listening loop across the Android system.
+     * Automatically re-arms recognition listener on silence timeouts, and pauses
+     * during assistant speech output to avoid acoustic feedback loops.
+     */
+    @Synchronized
+    fun startContinuousListening(
+        onListeningStarted: () -> Unit = {},
+        onResult: (String) -> Unit,
+        onPartialResult: ((String) -> Unit)? = null,
+        onError: (String) -> Unit = {}
+    ) {
+        Log.i(TAG, "START_CONTINUOUS_LISTENING: Initializing continuous hands-free assistant mode.")
+        isContinuousMode = true
+        isPausedForTts = false
+        activeOnListeningStarted = onListeningStarted
+        activeOnResult = onResult
+        activeOnPartialResult = onPartialResult
+        activeOnError = onError
+        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+    }
+
+    fun setContinuousListening(enabled: Boolean) {
+        Log.i(TAG, "setContinuousListening: $enabled")
+        isContinuousMode = enabled
+        if (!enabled) {
+            rearmJob?.cancel()
+            rearmJob = null
+            stopListening()
+        }
+    }
+
+    fun isContinuousListeningEnabled(): Boolean = isContinuousMode
+
+    /**
+     * Prevents acoustic echo and feedback loops by temporarily pausing microphone capture
+     * while Kavya is speaking TTS audio.
+     */
+    fun pauseForTts() {
+        Log.d(TAG, "pauseForTts: Muting mic capture during assistant speech playback")
+        isPausedForTts = true
+        rearmJob?.cancel()
+        rearmJob = null
+        stopAllInternal(discard = true)
+        _amplitude.value = 0f
+        _micState.value = MicrophoneState.IDLE
+        KavyaStateManager.updateVoiceState(VoiceState.SPEAKING)
+    }
+
+    /**
+     * Re-arms microphone recognition after assistant speech finishes, allowing a configurable
+     * acoustic dissipation window (default 350ms) so speaker vibrations do not trigger false STT.
+     */
+    fun resumeAfterTts(acousticDelayMs: Long = 350L) {
+        Log.d(TAG, "resumeAfterTts: Scheduling mic re-arm after $acousticDelayMs ms dissipation")
+        isPausedForTts = false
+        if (isContinuousMode) {
+            rearmJob?.cancel()
+            rearmJob = scope.launch {
+                delay(acousticDelayMs)
+                if (isContinuousMode && !isPausedForTts) {
+                    val onStarted = activeOnListeningStarted ?: {}
+                    val onRes = activeOnResult ?: return@launch
+                    val onPart = activeOnPartialResult
+                    val onErr = activeOnError ?: {}
+                    startListeningSession(onStarted, onRes, onPart, onErr)
+                }
+            }
+        }
+    }
+
+    /**
+     * User Barge-In: immediately halts speech pauses and cuts directly to microphone capture.
+     */
+    fun forceBargeIn() {
+        Log.i(TAG, "forceBargeIn: User interrupted assistant, immediate mic activation")
+        isPausedForTts = false
+        rearmJob?.cancel()
+        rearmJob = null
+        val onStarted = activeOnListeningStarted ?: {}
+        val onRes = activeOnResult ?: return
+        val onPart = activeOnPartialResult
+        val onErr = activeOnError ?: {}
+        startListeningSession(onStarted, onRes, onPart, onErr)
+    }
+
+    @Synchronized
+    private fun startListeningSession(
+        onListeningStarted: () -> Unit,
+        onResult: (String) -> Unit,
+        onPartialResult: ((String) -> Unit)?,
+        onError: (String) -> Unit
+    ) {
+        if (isPausedForTts) {
+            Log.d(TAG, "startListeningSession: Suppressed because assistant is currently speaking TTS.")
+            return
+        }
+
         refreshHardwareDiagnostics()
 
         val permGranted = ContextCompat.checkSelfPermission(
@@ -248,13 +365,29 @@ class MicrophoneEngine private constructor(private val context: Context) {
                         KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                         abandonAudioFocus()
                         withContext(Dispatchers.Main) {
-                            onResult(text)
+                            if (text.isBlank() && isContinuousMode && !isPausedForTts) {
+                                delay(200)
+                                if (isContinuousMode && !isPausedForTts) {
+                                    startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+                                }
+                            } else {
+                                onResult(text)
+                            }
                         }
                     }
                 },
                 onError = { err ->
                     abandonAudioFocus()
-                    onError(err)
+                    if (isContinuousMode && !isPausedForTts) {
+                        scope.launch {
+                            delay(500)
+                            if (isContinuousMode && !isPausedForTts) {
+                                startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+                            }
+                        }
+                    } else {
+                        onError(err)
+                    }
                 }
             )
             return
@@ -320,14 +453,38 @@ class MicrophoneEngine private constructor(private val context: Context) {
                         _amplitude.value = 0f
 
                         if (isSilentTimeout) {
-                            _micState.value = MicrophoneState.IDLE
-                            KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                            _status.value = _status.value.copy(isListening = false)
-                            onResult("")
+                            if (isContinuousMode && !isPausedForTts) {
+                                Log.d(TAG, "STT_SILENCE_TIMEOUT: Continuous mode active, automatically re-arming listener.")
+                                rearmJob?.cancel()
+                                rearmJob = scope.launch {
+                                    delay(180)
+                                    if (isContinuousMode && !isPausedForTts) {
+                                        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+                                    }
+                                }
+                            } else {
+                                _micState.value = MicrophoneState.IDLE
+                                KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                                _status.value = _status.value.copy(isListening = false)
+                                onResult("")
+                            }
+                        } else if (errorCode == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || errorCode == SpeechRecognizer.ERROR_CLIENT) {
+                            if (isContinuousMode && !isPausedForTts) {
+                                Log.w(TAG, "STT_RECOVERABLE_ERROR: Re-initializing recognizer after $errorCode")
+                                rearmJob?.cancel()
+                                rearmJob = scope.launch {
+                                    delay(350)
+                                    if (isContinuousMode && !isPausedForTts) {
+                                        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+                                    }
+                                }
+                            } else {
+                                _micState.value = MicrophoneState.IDLE
+                                KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                                onError(msg)
+                            }
                         } else if (errorCode == SpeechRecognizer.ERROR_AUDIO ||
-                            errorCode == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
-                            errorCode == SpeechRecognizer.ERROR_SERVER ||
-                            errorCode == SpeechRecognizer.ERROR_CLIENT
+                            errorCode == SpeechRecognizer.ERROR_SERVER
                         ) {
                             Log.w(TAG, "STT_FALLBACK_ON_ERROR: SpeechRecognizer error $errorCode, failing over to real hardware AudioRecord")
                             startRawAudioRecording(
@@ -347,7 +504,14 @@ class MicrophoneEngine private constructor(private val context: Context) {
                                         KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                                         abandonAudioFocus()
                                         withContext(Dispatchers.Main) {
-                                            onResult(text)
+                                            if (text.isBlank() && isContinuousMode && !isPausedForTts) {
+                                                delay(200)
+                                                if (isContinuousMode && !isPausedForTts) {
+                                                    startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+                                                }
+                                            } else {
+                                                onResult(text)
+                                            }
                                         }
                                     }
                                 },
@@ -380,18 +544,36 @@ class MicrophoneEngine private constructor(private val context: Context) {
                         Log.d(TAG, "STT_RESULT: Candidates=${matches?.size ?: 0}, Text=\"$text\"")
 
                         isRecognizing = false
-                        _micState.value = MicrophoneState.IDLE
                         _amplitude.value = 0f
-                        KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                        _status.value = _status.value.copy(
-                            isListening = false,
-                            lastRecognizedText = text,
-                            lastCallbackTimestamp = System.currentTimeMillis()
-                        )
-
                         abandonAudioFocus()
                         cleanupSpeechRecognizer()
-                        onResult(text)
+
+                        if (text.isBlank()) {
+                            if (isContinuousMode && !isPausedForTts) {
+                                Log.d(TAG, "STT_EMPTY_RESULT: Re-arming continuous listener.")
+                                rearmJob?.cancel()
+                                rearmJob = scope.launch {
+                                    delay(180)
+                                    if (isContinuousMode && !isPausedForTts) {
+                                        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+                                    }
+                                }
+                            } else {
+                                _micState.value = MicrophoneState.IDLE
+                                KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                                _status.value = _status.value.copy(isListening = false)
+                                onResult("")
+                            }
+                        } else {
+                            _micState.value = MicrophoneState.PROCESSING
+                            KavyaStateManager.updateVoiceState(VoiceState.THINKING)
+                            _status.value = _status.value.copy(
+                                isListening = false,
+                                lastRecognizedText = text,
+                                lastCallbackTimestamp = System.currentTimeMillis()
+                            )
+                            onResult(text)
+                        }
                     }
 
                     override fun onPartialResults(partialResults: Bundle?) {
@@ -439,7 +621,14 @@ class MicrophoneEngine private constructor(private val context: Context) {
                             KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                             abandonAudioFocus()
                             withContext(Dispatchers.Main) {
-                                onResult(text)
+                                if (text.isBlank() && isContinuousMode && !isPausedForTts) {
+                                    delay(200)
+                                    if (isContinuousMode && !isPausedForTts) {
+                                        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+                                    }
+                                } else {
+                                    onResult(text)
+                                }
                             }
                         }
                     },

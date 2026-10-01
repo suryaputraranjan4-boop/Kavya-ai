@@ -188,4 +188,72 @@ class AppResolverTest {
         assertTrue(web2.isWebsiteRequest)
         assertNull(web2.matchedApp)
     }
+
+    @Test
+    fun testJarvisNaturalLanguageAppVariations() {
+        // "Open YouTube."
+        assertEquals("YouTube", appResolver.extractAppNameFromNaturalLanguage("Open YouTube."))
+        val r1 = appResolver.resolve("Open YouTube.")
+        assertEquals("com.google.android.youtube", r1.matchedApp?.packageName)
+
+        // "Can you open YouTube?"
+        assertEquals("YouTube", appResolver.extractAppNameFromNaturalLanguage("Can you open YouTube?"))
+        val r2 = appResolver.resolve("Can you open YouTube?")
+        assertEquals("com.google.android.youtube", r2.matchedApp?.packageName)
+
+        // "Launch YouTube for me."
+        assertEquals("YouTube", appResolver.extractAppNameFromNaturalLanguage("Launch YouTube for me."))
+        val r3 = appResolver.resolve("Launch YouTube for me.")
+        assertEquals("com.google.android.youtube", r3.matchedApp?.packageName)
+
+        // "Go to YouTube."
+        assertEquals("YouTube", appResolver.extractAppNameFromNaturalLanguage("Go to YouTube."))
+        val r4 = appResolver.resolve("Go to YouTube.")
+        assertEquals("com.google.android.youtube", r4.matchedApp?.packageName)
+    }
+
+    @Test
+    fun testCommandInterpreterJarvisAgentCommands() {
+        // Natural app opening variations
+        val cmd1 = com.example.agent.CommandInterpreter.interpret("Can you open YouTube?")
+        assertTrue(cmd1 is com.example.agent.CommandIntent.OpenApp)
+        assertEquals("YouTube", (cmd1 as com.example.agent.CommandIntent.OpenApp).appName)
+
+        val cmd2 = com.example.agent.CommandInterpreter.interpret("Launch YouTube for me.")
+        assertTrue(cmd2 is com.example.agent.CommandIntent.OpenApp)
+        assertEquals("YouTube", (cmd2 as com.example.agent.CommandIntent.OpenApp).appName)
+
+        val cmd3 = com.example.agent.CommandInterpreter.interpret("Go to YouTube.")
+        assertTrue(cmd3 is com.example.agent.CommandIntent.OpenApp)
+        assertEquals("YouTube", (cmd3 as com.example.agent.CommandIntent.OpenApp).appName)
+
+        // Multi-step messaging: "Open WhatsApp and message my sister hello"
+        val cmdMsg = com.example.agent.CommandInterpreter.interpret("Open WhatsApp and message my sister hello")
+        assertTrue(cmdMsg is com.example.agent.CommandIntent.SendMessage)
+        val sendMsg = cmdMsg as com.example.agent.CommandIntent.SendMessage
+        assertEquals("WhatsApp", sendMsg.app)
+        assertEquals("my sister", sendMsg.recipient)
+        assertEquals("hello", sendMsg.messageText)
+
+        // Multi-step media: "Open Spotify and play Believer"
+        val cmdMedia = com.example.agent.CommandInterpreter.interpret("Open Spotify and play Believer")
+        assertTrue(cmdMedia is com.example.agent.CommandIntent.PlayMedia)
+        val playMedia = cmdMedia as com.example.agent.CommandIntent.PlayMedia
+        assertEquals("Spotify", playMedia.app)
+        assertEquals("Believer", playMedia.mediaQuery)
+
+        // Multi-step search: "Open YouTube and search for GTA 5"
+        val cmdSearch = com.example.agent.CommandInterpreter.interpret("Open YouTube and search for GTA 5")
+        assertTrue(cmdSearch is com.example.agent.CommandIntent.WebSearch)
+        val webSearch = cmdSearch as com.example.agent.CommandIntent.WebSearch
+        assertEquals("YouTube", webSearch.engineOrApp)
+        assertEquals("GTA 5", webSearch.query)
+
+        // Interruption & Stop commands
+        assertTrue(com.example.agent.CommandInterpreter.interpret("Stop Kavya") is com.example.agent.CommandIntent.Stop)
+        assertTrue(com.example.agent.CommandInterpreter.interpret("Stop") is com.example.agent.CommandIntent.Stop)
+        assertTrue(com.example.agent.CommandInterpreter.interpret("Cancel") is com.example.agent.CommandIntent.Stop)
+        assertTrue(com.example.agent.CommandInterpreter.interpret("Sleep Kavya") is com.example.agent.CommandIntent.Sleep)
+        assertTrue(com.example.agent.CommandInterpreter.interpret("so jao") is com.example.agent.CommandIntent.Sleep)
+    }
 }

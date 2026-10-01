@@ -39,6 +39,7 @@ class VisualActionEngine(private val context: Context) {
     val scrollController = ScrollController(gestureController)
     val actionVerifier = VisualActionVerifier(hierarchyAnalyzer)
     val safetyController = VisualSafetyController(context)
+    val precisionEngine = PrecisionComputerUseEngine(context, hierarchyAnalyzer = hierarchyAnalyzer)
 
     private val _engineStatus = MutableStateFlow(VisualEngineStatus())
     val engineStatus = _engineStatus.asStateFlow()
@@ -299,63 +300,66 @@ class VisualActionEngine(private val context: Context) {
         return when (action.type) {
             VisualActionType.TAP, VisualActionType.SELECT -> {
                 val norm = action.getNormalizedCoordinates()
-                touchController.performTap(action.target, norm, screenWidth, screenHeight)
+                if (norm != null) {
+                    val res = precisionEngine.performPreciseTap(action.target, norm.x, norm.y, normalized = true)
+                    Pair(res.success, res.detail)
+                } else {
+                    val selectRes = precisionEngine.performSelectElement(action.target)
+                    if (selectRes.success) {
+                        Pair(true, selectRes.detail)
+                    } else {
+                        touchController.performTap(action.target, null, screenWidth, screenHeight)
+                    }
+                }
             }
             VisualActionType.LONG_PRESS -> {
                 val norm = action.getNormalizedCoordinates()
-                touchController.performLongPress(action.target, norm, screenWidth, screenHeight)
+                if (norm != null) {
+                    val res = precisionEngine.performLongPress(action.target, norm.x, norm.y, normalized = true)
+                    Pair(res.success, res.detail)
+                } else {
+                    touchController.performLongPress(action.target, null, screenWidth, screenHeight)
+                }
             }
             VisualActionType.SWIPE -> {
-                gestureController.performSwipe(
-                    startXNorm = action.swipeStartX,
-                    startYNorm = action.swipeStartY,
-                    endXNorm = action.swipeEndX,
-                    endYNorm = action.swipeEndY,
+                val res = precisionEngine.performSwipe(
+                    startX = action.swipeStartX,
+                    startY = action.swipeStartY,
+                    endX = action.swipeEndX,
+                    endY = action.swipeEndY,
                     durationMs = action.swipeDurationMs,
-                    screenWidth = screenWidth,
-                    screenHeight = screenHeight
+                    normalized = true
                 )
+                Pair(res.success, res.detail)
             }
             VisualActionType.SCROLL -> {
-                scrollController.performScroll(action.scrollDirection, screenWidth, screenHeight)
+                val res = precisionEngine.performScroll(action.scrollDirection)
+                Pair(res.success, res.detail)
             }
             VisualActionType.TYPE -> {
-                textInputController.performType(action.target, action.textToType)
+                val res = precisionEngine.performTextInput(action.target, action.textToType)
+                Pair(res.success, res.detail)
             }
             VisualActionType.BACK -> {
-                val service = KavyaAccessibilityService.instance
-                val ok = service?.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK) ?: false
-                Pair(ok, "Pressed Back")
+                val res = precisionEngine.performBack()
+                Pair(res.success, res.detail)
             }
             VisualActionType.HOME -> {
-                val service = KavyaAccessibilityService.instance
-                val ok = service?.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME) ?: false
-                Pair(ok, "Pressed Home")
+                val res = precisionEngine.performHome()
+                Pair(res.success, res.detail)
             }
             VisualActionType.WAIT -> {
                 delay(action.waitDurationMs)
                 Pair(true, "Waited ${action.waitDurationMs}ms")
             }
             VisualActionType.OPEN -> {
-                val appResolver = AppResolver(context)
-                val resolved = appResolver.resolve(action.target)
-                val pkg = resolved.matchedApp?.packageName
-                if (pkg != null) {
-                    val launchIntent = context.packageManager.getLaunchIntentForPackage(pkg)
-                    if (launchIntent != null) {
-                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(launchIntent)
-                        Pair(true, "Launched ${action.target}")
-                    } else {
-                        Pair(false, "No launch intent for ${action.target}")
-                    }
-                } else {
-                    Pair(false, "Could not find app ${action.target}")
-                }
+                val res = precisionEngine.performAppLaunch(action.target)
+                Pair(res.success, res.detail)
             }
             VisualActionType.CLOSE, VisualActionType.STOP -> {
+                val res = precisionEngine.performDismissDialog()
                 stopAutomation("Action requested stop")
-                Pair(true, "Stopped")
+                Pair(true, "Stopped dialog or automation (${res.detail})")
             }
         }
     }

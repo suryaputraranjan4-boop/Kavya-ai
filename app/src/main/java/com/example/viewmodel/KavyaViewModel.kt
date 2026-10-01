@@ -3,6 +3,7 @@ package com.example.viewmodel
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,6 +18,7 @@ import com.example.agent.CommandCategory
 import com.example.agent.ExecutionPhase
 import com.example.agent.TaskExecutionContext
 import com.example.agent.UserCommandClassifier
+import com.example.agent.ClassifiedCommand
 import com.example.agent.AndroidAgent
 import com.example.agent.ContextEngine
 import com.example.agent.DiagnosticEngine
@@ -103,9 +105,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         context = application,
         onSpeakingStateChanged = { isSpeaking ->
             if (isSpeaking) {
+                bargeInController.onSpeakingStarted()
                 _voiceState.value = VoiceState.SPEAKING
                 com.example.state.KavyaStateManager.updateVoiceState(VoiceState.SPEAKING)
             } else {
+                bargeInController.onSpeakingFinished()
                 if (_voiceState.value == VoiceState.SPEAKING) {
                     _voiceState.value = VoiceState.IDLE
                     com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
@@ -119,6 +123,15 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     )
 
+    val bargeInController: com.example.ai.BargeInController = com.example.ai.BargeInController(
+        audioPlayer = geminiPlayer,
+        onBargeInTriggered = {
+            _latestKavyaCaption.value = "सुन रही हूँ... (Listening...)"
+            _voiceState.value = VoiceState.LISTENING
+            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
+        }
+    )
+
     val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, aiClient)
     val microphoneEngine = com.example.agent.MicrophoneEngine.getInstance(application)
     val micAmplitude: StateFlow<Float> = microphoneEngine.amplitude
@@ -127,6 +140,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
     val commandRouter = CommandRouter(application)
+
+    // Master Architecture Engines (Context, Session Search, Durable Tasks, Scheduler)
+    val sessionSearchEngine = com.example.agent.SessionSearchEngine(chatDao)
+    val contextManager = com.example.agent.ConversationContextManager(sessionSearchEngine)
+    val durableTaskEngine = com.example.agent.DurableTaskEngine(application, database.taskDao())
+    val schedulerEngine = com.example.scheduler.SchedulerEngine(application, database.taskDao())
 
     // Universal Agent & Memory Engines
     val memoryEngine = MemoryEngine(application)
@@ -203,6 +222,16 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             com.example.state.KavyaStateManager.state.collect { global ->
                 _voiceState.value = global.voiceState
+            }
+        }
+
+        viewModelScope.launch {
+            try {
+                schedulerEngine.executeDueSchedules { dueTask ->
+                    sendMessage(dueTask.promptOrAction)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error executing due schedules: ${e.message}")
             }
         }
     }
@@ -361,14 +390,28 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        Log.d(TAG, "MIC_INITIALIZING: User initiated voice input session")
+        // Start Foreground Service before backgrounding to comply with Android 14 restrictions
+        if (com.example.utils.AppPreferences.isBackgroundVoiceEnabled(app)) {
+            try {
+                val serviceIntent = Intent(app, com.example.services.KavyaVoiceService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    androidx.core.content.ContextCompat.startForegroundService(app, serviceIntent)
+                } else {
+                    app.startService(serviceIntent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start KavyaVoiceService: ${e.message}")
+            }
+        }
+
+        Log.d(TAG, "MIC_INITIALIZING: User initiated continuous hands-free voice input session")
         _latestKavyaCaption.value = "Starting microphone..."
 
-        microphoneEngine.startListening(
+        microphoneEngine.startContinuousListening(
             onListeningStarted = {
                 // Audio capture is confirmed active and Android green privacy indicator is visible
                 viewModelScope.launch(Dispatchers.Main) {
-                    Log.d(TAG, "MIC_STARTED: Microphone active, listening for speech")
+                    Log.d(TAG, "MIC_STARTED: Continuous microphone active, listening for speech")
                     _voiceState.value = VoiceState.LISTENING
                     com.example.state.KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
                     _latestKavyaCaption.value = "सुन रही हूँ... (Listening...)"
@@ -377,13 +420,14 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             onPartialResult = { partial ->
                 viewModelScope.launch(Dispatchers.Main) {
                     if (partial.isNotBlank()) {
+                        bargeInController.onUserSpeechDetected()
                         _latestKavyaCaption.value = partial
                     }
                 }
             },
             onResult = { recognizedText ->
                 viewModelScope.launch {
-                    Log.d(TAG, "STT_RESULT: Candidates received, final length=${recognizedText.length}")
+                    Log.d(TAG, "STT_RESULT: Candidates received, text=\"$recognizedText\"")
                     if (recognizedText.isNotBlank()) {
                         _voiceState.value = VoiceState.THINKING
                         com.example.state.KavyaStateManager.updateVoiceState(VoiceState.THINKING)
@@ -394,6 +438,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             com.example.utils.AppPreferences.setKavyaState(app, "SLEEP")
                             stopVoiceInput()
                             _latestKavyaCaption.value = "Kavya sleeping."
+                            microphoneEngine.pauseForTts()
                             voiceEngine.processAndSpeak("Going to sleep. Say 'Wake Kavya' whenever you need me.")
                             return@launch
                         }
@@ -401,9 +446,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         if (com.example.agent.SleepWakeDetector.isWakeCommand(recognizedText)) {
                             Log.d(TAG, "WAKE_COMMAND: Waking Kavya up")
                             com.example.utils.AppPreferences.setKavyaState(app, "ACTIVE")
-                            stopVoiceInput()
                             _latestKavyaCaption.value = "Kavya awake."
+                            microphoneEngine.pauseForTts()
                             voiceEngine.processAndSpeak("Kavya is awake and listening! How can I help you?")
+                            delay(350)
+                            microphoneEngine.resumeAfterTts(350L)
                             return@launch
                         }
 
@@ -811,56 +858,92 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 var launchDiagnostic: AppLaunchDiagnostic? = null
                 var executionResultStr = ""
 
-                // 0a. Primary Source: Direct User Command Classification & Verified Device Execution
-                val classified = UserCommandClassifier.classify(prompt, commandRouter.appResolver)
+                // 0a. Master Intent Gate (Requirements 1, 2, 3)
+                val gateDecision = com.example.agent.IntentGate.evaluate(prompt, commandRouter.appResolver)
+                val isConversationalTurn = gateDecision.category in listOf(
+                    com.example.agent.IntentCategory.CHAT,
+                    com.example.agent.IntentCategory.QUESTION,
+                    com.example.agent.IntentCategory.EXPLANATION
+                )
 
                 // Requirement 34: Automation Event Logging
                 com.example.agent.AutomationEventLogger.voice(prompt)
-                com.example.agent.AutomationEventLogger.parsed("Category=${classified.category}, Target=${classified.targetApp}, MultiStep=${classified.isMultiStep}")
-                com.example.agent.TaskStateMachine.update(
-                    phase = com.example.agent.TaskPhase.PARSING,
-                    currentTask = prompt,
-                    currentApp = classified.targetApp ?: "None"
-                )
+                com.example.agent.AutomationEventLogger.parsed("GateCategory=${gateDecision.category}, Target=${gateDecision.targetApp}, Reasoning=${gateDecision.reasoning}")
 
                 // Requirement 20: STOP and SLEEP Handling
-                if (classified.category == CommandCategory.STOP_AUTOMATION) {
+                if (gateDecision.category == com.example.agent.IntentCategory.STOP || gateDecision.category == com.example.agent.IntentCategory.CANCEL) {
                     com.example.agent.TaskStateMachine.update(
                         phase = com.example.agent.TaskPhase.INTERRUPTED,
                         lastAction = "STOP",
                         actionResult = "User stopped automation"
                     )
                     com.example.agent.AutomationEventLogger.task("Automation halted by user request.")
-                    val isDevanagari = prompt.any { it in '\u0900'..'\u097F' }
-                    val isHindiOrHinglish = isDevanagari || prompt.lowercase(java.util.Locale.ROOT).let {
-                        it.contains("ruko") || it.contains("rok") || it.contains("band") || it.contains("stop") || it.contains("karo")
-                    }
-                    voiceEngine.stop()
-                    microphoneEngine.stopListening()
-                    cleanResponse = if (isHindiOrHinglish) "हाँ sir, रोक दिया है।" else "Stopped, sir."
-                    if (_autoSpeak.value) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
-                    }
-                } else if (classified.category == CommandCategory.SLEEP) {
+                    emergencyStop("User requested stop")
+                    cleanResponse = "Stopped, sir."
+                    alreadySpoken = true
+                } else if (gateDecision.category == com.example.agent.IntentCategory.SLEEP) {
                     com.example.agent.TaskStateMachine.update(
                         phase = com.example.agent.TaskPhase.SLEEP,
                         lastAction = "SLEEP",
                         actionResult = "Entering sleep mode"
                     )
                     com.example.agent.AutomationEventLogger.task("Entering sleep mode.")
-                    val isDevanagari = prompt.any { it in '\u0900'..'\u097F' }
-                    val isHindiOrHinglish = isDevanagari || prompt.lowercase(java.util.Locale.ROOT).let {
-                        it.contains("so") || it.contains("jao") || it.contains("shubh") || it.contains("ratri") || it.contains("sleep")
-                    }
                     voiceEngine.stop()
                     microphoneEngine.stopListening()
-                    cleanResponse = if (isHindiOrHinglish) "शुभ रात्रि sir।" else "Good night, sir."
+                    cleanResponse = "Good night, sir. Going to sleep."
                     if (_autoSpeak.value) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
                     }
-                } else if (classified.isMultiStep && classified.steps.isNotEmpty()) {
+                } else if (gateDecision.category == com.example.agent.IntentCategory.SCHEDULE) {
+                    val skill = com.example.skills.SkillsRegistry.findSkillForIntent(gateDecision)
+                    val res = skill?.execute(gateDecision, getApplication())
+                    cleanResponse = res?.outputMessage ?: "Scheduled."
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (gateDecision.category == com.example.agent.IntentCategory.MEMORY_SAVE) {
+                    val skill = com.example.skills.SkillsRegistry.findSkillForIntent(gateDecision)
+                    val res = skill?.execute(gateDecision, getApplication())
+                    cleanResponse = res?.outputMessage ?: "Memory saved."
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (gateDecision.category == com.example.agent.IntentCategory.MEMORY_RECALL) {
+                    val pastSnippets = sessionSearchEngine.searchPastConversations(prompt)
+                    val storedMems = memoryEngine.retrieveRelevantMemories(prompt)
+                    if (pastSnippets.isNotEmpty()) {
+                        cleanResponse = "Pichli baat-cheet ke anusaar:\n" + pastSnippets.take(2).joinToString("\n") { "• ${it.formattedDate}: ${it.snippet}" }
+                    } else if (storedMems.isNotEmpty()) {
+                        cleanResponse = "Aapki saved preference: " + storedMems.first().content
+                    }
+                    if (cleanResponse.isNotBlank() && _autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (gateDecision.category == com.example.agent.IntentCategory.UNKNOWN_OR_AMBIGUOUS && gateDecision.isAmbiguous) {
+                    isAmbiguous = true
+                    candidateApps = gateDecision.candidateApps
+                    cleanResponse = "Which app would you like to open? Found: " + candidateApps.joinToString(", ") { it.appName }
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                }
+
+                // 0b. Primary Source: Direct User Command Classification (only for explicit actions)
+                val classified = if (!isConversationalTurn) {
+                    UserCommandClassifier.classify(prompt, commandRouter.appResolver)
+                } else {
+                    ClassifiedCommand(CommandCategory.CONVERSATION, rawPrompt = prompt)
+                }
+
+                if (!isConversationalTurn && cleanResponse.isBlank() && classified.isMultiStep && classified.steps.isNotEmpty()) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        durableTaskEngine.createAndPersistTask(prompt, gateDecision.category, gateDecision.steps)
+                    }
                     val firstStep = classified.steps[0]
                     val secondStep = classified.steps.getOrNull(1)
 
@@ -1368,7 +1451,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     val extractedClean = voiceEngine.cleanText(fullResponse)
                     cleanResponse = if (extractedClean.isNotBlank()) extractedClean else cleanResponseBuilder.toString()
                     
-                    if (structuredActions.isNotEmpty()) {
+                    if (structuredActions.isNotEmpty() && !isConversationalTurn) {
                         val taskSteps = structuredActions.mapIndexed { index, action ->
                             val mappedAction = when (action.action) {
                                 "OPEN_APP", "OPEN" -> com.example.agent.UniversalActionType.OPEN_APP
@@ -1521,7 +1604,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             executePlan()
                         }
-                    } else {
+                    } else if (!isConversationalTurn) {
                         // Fallback check: Did taskPlanner detect a real automation intent?
                         val relevantMems = memoryEngine.findRelevantTaskMemories(
                             targetApp = null,
@@ -1550,8 +1633,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
                     // Auto-speak the AI response if not already spoken during streaming
                     if (cleanResponse.isNotBlank() && !alreadySpoken) {
+                        microphoneEngine.pauseForTts()
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
+                        microphoneEngine.resumeAfterTts(350L)
                     }
                 }
                 

@@ -8,6 +8,9 @@ interface ChatDao {
     @Query("SELECT * FROM chats ORDER BY timestamp DESC")
     fun getAllChats(): Flow<List<ChatEntity>>
 
+    @Query("SELECT * FROM chats ORDER BY timestamp DESC LIMIT 1")
+    suspend fun getLatestChat(): ChatEntity?
+
     @Query("SELECT * FROM chats WHERE title LIKE '%' || :query || '%' ORDER BY timestamp DESC")
     fun searchChats(query: String): Flow<List<ChatEntity>>
 
@@ -31,6 +34,9 @@ interface ChatDao {
 
     @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY timestamp ASC")
     fun getMessagesForChat(chatId: String): Flow<List<MessageEntity>>
+
+    @Query("SELECT * FROM messages WHERE text LIKE '%' || :query || '%' ORDER BY timestamp DESC LIMIT 50")
+    suspend fun searchMessages(query: String): List<MessageEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)

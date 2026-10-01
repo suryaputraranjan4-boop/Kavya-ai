@@ -9,10 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -25,19 +23,14 @@ import androidx.savedstate.SavedStateRegistryOwner
 import com.example.MainActivity
 import com.example.agent.AndroidAgent
 import com.example.agent.ContextEngine
+import com.example.agent.KavyaAssistantPipeline
 import com.example.agent.MemoryEngine
 import com.example.agent.MicrophoneEngine
-import com.example.agent.MicrophoneState
 import com.example.agent.ScreenInspector
-import com.example.agent.SleepWakeDetector
-import com.example.agent.TaskPlanner
 import com.example.agent.VerificationEngine
-import com.example.ai.GeminiLiveClient
 import com.example.ai.KavyaAI
 import com.example.ai.KavyaVoiceEngine
-import com.example.api.ApiSystem
 import com.example.state.KavyaStateManager
-import com.example.state.TaskState
 import com.example.ui.components.VoiceState
 import com.example.utils.AppPreferences
 import com.example.utils.CommandRouter
@@ -48,44 +41,19 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.util.Locale
 
 /**
- * Production-grade background voice assistant service for Kavya AI.
+ * Production-grade Continuous Background Voice Assistant Service for Kavya AI.
  *
- * Responsibilities:
+ * Implements Sanna / Hark / Nova voice-first architecture:
  * 1. Persistent Foreground Service with FOREGROUND_SERVICE_TYPE_MICROPHONE.
- * 2. Continuously listens for voice commands while other apps (YouTube, WhatsApp, Instagram, Spotify, etc.) are in the foreground.
- * 3. Understands compound user intents and executes real multi-step tasks via [AndroidAgent] and [KavyaAccessibilityService].
- * 4. Explicit two-state Sleep / Wake engine (ACTIVE vs SLEEPING) to conserve battery and avoid false executions.
- * 5. Full system compliance: visible Android microphone indicator, interactive foreground notification.
- * 6. Prevents acoustic feedback loops by pausing microphone during assistant speech playback.
+ * 2. Continuous listening across any Android app, Home Screen, or screen-off state (Partial WakeLock).
+ * 3. Unified assistant pipeline: Speech -> Real Text -> Room Database -> IntentGate -> Skill/AI -> TTS.
+ * 4. Acoustic echo prevention: pauses microphone capture during TTS, re-arms after speech finishes.
+ * 5. Full system compliance: triggers native Android green privacy indicator with real hardware access.
+ * 6. Interactive foreground notification with Sleep/Wake, Mute/Unmute, and Open Kavya controls.
  */
 class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
-
-    private val serviceJob = SupervisorJob()
-    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
-
-    private lateinit var router: CommandRouter
-    private lateinit var contextEngine: ContextEngine
-    private lateinit var screenInspector: ScreenInspector
-    private lateinit var verificationEngine: VerificationEngine
-    private lateinit var androidAgent: AndroidAgent
-    private lateinit var taskPlanner: TaskPlanner
-    private lateinit var memoryEngine: MemoryEngine
-    private lateinit var apiSystem: ApiSystem
-    private lateinit var voiceEngine: KavyaVoiceEngine
-
-    private var geminiLiveClient: GeminiLiveClient? = null
-    private var voiceState by mutableStateOf(VoiceState.IDLE)
-
-    private val lifecycleRegistry = LifecycleRegistry(this)
-    private val savedStateRegistryController = SavedStateRegistryController.create(this)
-    private val store = ViewModelStore()
-
-    override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
-    override val lifecycle: Lifecycle get() = lifecycleRegistry
-    override val viewModelStore: ViewModelStore get() = store
 
     companion object {
         const val CHANNEL_ID = "kavya_voice_service_channel"
@@ -101,6 +69,29 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             private set
     }
 
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
+
+    private lateinit var router: CommandRouter
+    private lateinit var contextEngine: ContextEngine
+    private lateinit var screenInspector: ScreenInspector
+    private lateinit var verificationEngine: VerificationEngine
+    private lateinit var androidAgent: AndroidAgent
+    private lateinit var memoryEngine: MemoryEngine
+    private lateinit var voiceEngine: KavyaVoiceEngine
+    private lateinit var micEngine: MicrophoneEngine
+    private lateinit var assistantPipeline: KavyaAssistantPipeline
+
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+    private val store = ViewModelStore()
+
+    override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
+    override val viewModelStore: ViewModelStore get() = store
+
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "KavyaVoiceService creating...")
@@ -110,10 +101,18 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
         screenInspector = ScreenInspector()
         verificationEngine = VerificationEngine(screenInspector)
         androidAgent = AndroidAgent(this, router.appResolver, contextEngine, screenInspector, verificationEngine)
-        taskPlanner = TaskPlanner(router.appResolver)
         memoryEngine = MemoryEngine(this)
-        apiSystem = ApiSystem()
         voiceEngine = KavyaVoiceEngine(this, null, KavyaAI(this))
+        micEngine = MicrophoneEngine.getInstance(this)
+
+        assistantPipeline = KavyaAssistantPipeline.getInstance(
+            context = this,
+            voiceEngine = voiceEngine,
+            microphoneEngine = micEngine,
+            commandRouter = router,
+            androidAgent = androidAgent,
+            memoryEngine = memoryEngine
+        )
 
         savedStateRegistryController.performRestore(null)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
@@ -140,10 +139,12 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             }
         }
 
+        acquireWakeLock()
+
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
 
-        // Start continuous background listening loop
+        // Start continuous background listening loop if enabled
         if (AppPreferences.isMicListeningEnabled(this)) {
             startListening()
         }
@@ -152,26 +153,28 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_WAKE -> {
-                Log.i(TAG, "Received ACTION_WAKE")
+                Log.i(TAG, "Received ACTION_WAKE from notification or app")
                 AppPreferences.setKavyaState(this, "ACTIVE")
-                voiceState = VoiceState.IDLE
                 KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                 updateNotification(getNotificationTitle(), "Kavya is awake and listening.")
                 serviceScope.launch {
+                    micEngine.pauseForTts()
                     voiceEngine.speakSuspending("Kavya is awake and listening! How can I help you?")
-                    delay(300)
+                    delay(350)
+                    micEngine.resumeAfterTts(350L)
                     startListening()
                 }
             }
             ACTION_SLEEP -> {
-                Log.i(TAG, "Received ACTION_SLEEP")
+                Log.i(TAG, "Received ACTION_SLEEP from notification or app")
                 AppPreferences.setKavyaState(this, "SLEEP")
-                voiceState = VoiceState.IDLE
                 KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                 updateNotification(getNotificationTitle(), "Kavya is sleeping (Say 'Wake Kavya' to resume)")
                 serviceScope.launch {
-                    voiceEngine.speakSuspending("Kavya is now sleeping. Say 'Wake Kavya' whenever you need me.")
-                    delay(300)
+                    micEngine.pauseForTts()
+                    voiceEngine.speakSuspending("Going to sleep. Say 'Wake Kavya' whenever you need me.")
+                    delay(350)
+                    micEngine.resumeAfterTts(350L)
                     startListening() // Remains listening in SLEEP mode for the wake phrase
                 }
             }
@@ -201,7 +204,7 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
 
     /**
      * Continuous background audio capture loop.
-     * Keeps listening across apps until user sleeps or mutes Kavya.
+     * Uses native SpeechRecognizer / AudioRecord to capture speech across any Android app.
      */
     @Synchronized
     private fun startListening() {
@@ -218,228 +221,103 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
         }
 
         if (isListening) {
-            Log.d(TAG, "startListening: Already listening.")
+            Log.d(TAG, "startListening: Already active in continuous mode.")
             return
         }
 
-        serviceScope.launch {
-            // Guard: wait if Kavya TTS is currently speaking to prevent acoustic feedback loop
-            var waitCount = 0
-            while (voiceEngine.isSpeaking && waitCount < 50) {
-                delay(200)
-                waitCount++
-            }
-            delay(350) // Acoustic dissipating delay
+        isListening = true
+        acquireWakeLock()
 
-            if (isListening) return@launch
-            isListening = true
+        val isSleep = AppPreferences.getKavyaState(this) == "SLEEP"
 
-            val micEngine = MicrophoneEngine.getInstance(this@KavyaVoiceService)
-            val isSleep = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
-
-            if (micEngine.micState.value == MicrophoneState.IDLE) {
-                micEngine.startRecording(
-                    onRecordingStarted = {
-                        voiceState = if (isSleep) VoiceState.IDLE else VoiceState.LISTENING
-                        KavyaStateManager.updateVoiceState(if (isSleep) VoiceState.IDLE else VoiceState.LISTENING)
-                        if (!isSleep) {
-                            updateNotification("Kavya AI Companion", "Listening... (Say a command or 'Sleep Kavya')")
-                        } else {
-                            updateNotification("Kavya AI Companion", "Kavya is sleeping (Say 'Wake Kavya' to resume)")
-                        }
-                    },
-                    onAudioCaptured = { pcmBytes, sampleRate ->
-                        handleCapturedAudio(pcmBytes, sampleRate)
-                    },
-                    onError = { err ->
-                        Log.w(TAG, "Service microphone error: $err")
-                        isListening = false
-                        voiceState = VoiceState.ERROR
-                        KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-                        updateNotification("Kavya AI Companion", "Microphone error: $err")
-
-                        // Bounded auto-recover after 2.5s cooldown
-                        serviceScope.launch {
-                            delay(2500)
-                            if (AppPreferences.isMicListeningEnabled(this@KavyaVoiceService)) {
-                                startListening()
-                            }
-                        }
+        micEngine.startContinuousListening(
+            onListeningStarted = {
+                serviceScope.launch(Dispatchers.Main) {
+                    val currentSleep = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
+                    val vState = if (currentSleep) VoiceState.IDLE else VoiceState.LISTENING
+                    KavyaStateManager.updateVoiceState(vState)
+                    val statusMsg = if (currentSleep) {
+                        "Kavya is sleeping (Say 'Wake Kavya' to resume)"
+                    } else {
+                        "Listening... (Say a command or 'Sleep Kavya')"
                     }
-                )
-            } else {
-                isListening = false
+                    updateNotification(getNotificationTitle(), statusMsg)
+                }
+            },
+            onPartialResult = { partial ->
+                serviceScope.launch(Dispatchers.Main) {
+                    if (partial.isNotBlank()) {
+                        updateNotification(getNotificationTitle(), partial)
+                    }
+                }
+            },
+            onResult = { recognizedText ->
+                if (recognizedText.isNotBlank()) {
+                    Log.i(TAG, "VOICE_INPUT_RECEIVED: \"$recognizedText\"")
+                    serviceScope.launch(Dispatchers.Main) {
+                        updateNotification(getNotificationTitle(), "Executing: $recognizedText")
+                    }
+                    assistantPipeline.processUtterance(
+                        rawText = recognizedText,
+                        autoSpeak = true,
+                        onProgress = { ann ->
+                            updateNotification(getNotificationTitle(), ann)
+                        },
+                        onTurnFinished = { reply ->
+                            val currentSleep = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
+                            val statusMsg = if (currentSleep) {
+                                "Kavya is sleeping (Say 'Wake Kavya' to resume)"
+                            } else {
+                                "Listening and ready to assist..."
+                            }
+                            updateNotification(getNotificationTitle(), statusMsg)
+                        }
+                    )
+                }
+            },
+            onError = { err ->
+                Log.w(TAG, "Continuous listening notice: $err")
+                serviceScope.launch(Dispatchers.Main) {
+                    updateNotification(getNotificationTitle(), "Listening standby...")
+                }
             }
-        }
+        )
     }
 
     private fun stopListening() {
         if (isListening) {
             isListening = false
-            MicrophoneEngine.getInstance(this).stopRecording()
-            voiceState = VoiceState.IDLE
+            micEngine.setContinuousListening(false)
+            micEngine.stopListening()
             KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+            releaseWakeLock()
         }
     }
 
-    /**
-     * Core Voice Command Engine:
-     * Transcribes audio, checks Sleep/Wake state, parses multi-step tasks, and executes via real Android mechanisms.
-     */
-    private fun handleCapturedAudio(pcmBytes: ByteArray, sampleRate: Int) {
-        val isSleep = AppPreferences.getKavyaState(this) == "SLEEP"
-        if (!isSleep) {
-            voiceState = VoiceState.THINKING
-            KavyaStateManager.updateVoiceState(VoiceState.THINKING)
-            updateNotification("Kavya AI Companion", "Understanding voice command...")
-        }
-
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val ai = KavyaAI(this@KavyaVoiceService)
-                val text = ai.transcribeAudio(pcmBytes, sampleRate)
-                Log.d(TAG, "Audio transcribed: \"$text\" (State=$isSleep)")
-
-                if (text.isBlank()) {
-                    isListening = false
-                    voiceState = VoiceState.IDLE
-                    KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                    delay(300)
-                    startListening()
-                    return@launch
+    private fun acquireWakeLock() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Kavya::VoiceServiceWakeLock")?.apply {
+                    setReferenceCounted(false)
+                    acquire(60 * 60 * 1000L) // 60 min safety max
                 }
-
-                val currentSleepState = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
-
-                // ==========================================
-                // 1. SLEEPING STATE LOGIC
-                // ==========================================
-                if (currentSleepState) {
-                    if (SleepWakeDetector.isWakeCommand(text)) {
-                        Log.i(TAG, "Wake command recognized: \"$text\"")
-                        AppPreferences.setKavyaState(this@KavyaVoiceService, "ACTIVE")
-                        voiceState = VoiceState.IDLE
-                        KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                        updateNotification("Kavya AI Companion", "Listening and ready to assist...")
-                        voiceEngine.speakSuspending("Kavya is awake and listening! What can I do for you?")
-                        delay(400)
-                        isListening = false
-                        startListening()
-                    } else {
-                        // Sleeping: Ignore regular chatter/noise silently
-                        Log.d(TAG, "Sleeping: Ignored non-wake phrase: \"$text\"")
-                        isListening = false
-                        delay(250)
-                        startListening()
-                    }
-                    return@launch
-                }
-
-                // ==========================================
-                // 2. ACTIVE STATE: SLEEP COMMAND CHECK
-                // ==========================================
-                if (SleepWakeDetector.isSleepCommand(text)) {
-                    Log.i(TAG, "Sleep command recognized: \"$text\"")
-                    AppPreferences.setKavyaState(this@KavyaVoiceService, "SLEEP")
-                    voiceState = VoiceState.IDLE
-                    KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                    updateNotification("Kavya AI Companion", "Kavya is sleeping (Say 'Wake Kavya' to resume)")
-                    voiceEngine.speakSuspending("Going to sleep. Say 'Wake Kavya' whenever you need me.")
-                    delay(400)
-                    isListening = false
-                    startListening() // Now listens in SLEEP mode
-                    return@launch
-                }
-
-                // ==========================================
-                // 3. EMERGENCY STOP CHECK
-                // ==========================================
-                val lower = text.lowercase(Locale.ROOT)
-                if (lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
-                    lower == "stop kavya" || lower == "kavya stop") {
-                    Log.i(TAG, "Emergency stop recognized: \"$text\"")
-                    androidAgent.stopExecution("Voice stop command: $text")
-                    voiceEngine.speakSuspending("Action stopped.")
-                    isListening = false
-                    voiceState = VoiceState.IDLE
-                    KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                    delay(400)
-                    startListening()
-                    return@launch
-                }
-
-                // ==========================================
-                // 4. ACTIVE COMMAND EXECUTION
-                // ==========================================
-                updateNotification("Kavya AI Companion", "Executing: $text")
-                KavyaStateManager.updateTaskState(TaskState.EXECUTING, text)
-
-                // Check for multi-step structured task plan (e.g. "YouTube खोलो, इस गाने को search करो और video खोलो")
-                val plan = taskPlanner.createPlan(text, contextEngine)
-                if (plan != null && plan.steps.isNotEmpty()) {
-                    Log.i(TAG, "Executing planned multi-step task (${plan.steps.size} steps): \"$text\"")
-                    val outcome = androidAgent.executeTaskPlan(
-                        plan,
-                        onSpeakProgress = { spokenAnnouncement ->
-                            voiceEngine.speak(spokenAnnouncement)
-                        }
-                    )
-                    if (outcome.finalSpokenMessage.isNotBlank()) {
-                        voiceEngine.speakSuspending(outcome.finalSpokenMessage)
-                    }
-                } else if (router.isDirectDeviceCommand(text)) {
-                    Log.i(TAG, "Executing direct device action: \"$text\"")
-                    val directResult = router.executeDirectUserCommand(
-                        text,
-                        onBeforeExecute = { spokenAnnouncement ->
-                            voiceEngine.speak(spokenAnnouncement)
-                        }
-                    )
-                    if (directResult.output.isNotBlank()) {
-                        voiceEngine.speakSuspending(directResult.output)
-                    }
-                } else {
-                    Log.i(TAG, "Executing conversational AI request: \"$text\"")
-                    try {
-                        val relevant = memoryEngine.retrieveRelevantMemories(text, screenInspector.getCurrentForegroundPackage())
-                        val memoryBlock = if (relevant.isNotEmpty()) relevant.joinToString("\n") { "- ${it.key}: ${it.content}" } else ""
-                        val aiResponse = ai.chat(
-                            prompt = text,
-                            history = emptyList(),
-                            screenContext = screenInspector.getCurrentForegroundPackage(),
-                            memoryContext = memoryBlock,
-                            isProactiveMode = false
-                        )
-                        val clean = voiceEngine.cleanText(aiResponse)
-                        if (clean.isNotBlank()) {
-                            voiceEngine.speakSuspending(clean)
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Conversational AI failed: ${e.message}")
-                    }
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Error handling captured audio: ${e.message}", e)
-            } finally {
-                voiceState = VoiceState.IDLE
-                KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                KavyaStateManager.updateTaskState(TaskState.IDLE)
-                isListening = false
-
-                val isSleepNow = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
-                if (!isSleepNow) {
-                    updateNotification("Kavya AI Companion", "Listening and ready to assist...")
-                } else {
-                    updateNotification("Kavya AI Companion", "Kavya is sleeping (Say 'Wake Kavya' to resume)")
-                }
-
-                // Resume continuous listening for the next voice command
-                delay(400)
-                if (AppPreferences.isMicListeningEnabled(this@KavyaVoiceService)) {
-                    startListening()
-                }
+                Log.d(TAG, "WakeLock acquired for background voice service")
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire WakeLock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                wakeLock = null
+                Log.d(TAG, "WakeLock released")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release WakeLock: ${e.message}")
         }
     }
 
@@ -527,9 +405,8 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
         Log.i(TAG, "KavyaVoiceService onDestroy")
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         stopListening()
-        MicrophoneEngine.getInstance(this).cancelRecording()
-        geminiLiveClient?.stopSession()
         voiceEngine.stop()
+        releaseWakeLock()
         serviceJob.cancel()
     }
 }

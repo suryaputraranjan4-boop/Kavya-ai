@@ -380,12 +380,17 @@ object CommandInterpreter {
         // "Chrome kholo", "YouTube kholo", "WhatsApp kholo", "YouTube Create kholo"
         // MUST have explicit opening evidence!
         // ====================================================
+        val naturalExtracted = com.example.utils.AppResolver.extractAppNameFromNaturalLanguage(trimmed)
+
         val isExplicitAppOpen = lower.startsWith("open ") || lower.startsWith("launch ") ||
                 lower.startsWith("start ") || lower.startsWith("run ") ||
+                lower.startsWith("go to ") || lower.startsWith("can you open ") ||
+                lower.startsWith("can you launch ") || lower.startsWith("please open ") ||
                 lower.endsWith(" kholo") || lower.endsWith(" khol do") ||
                 lower.endsWith(" open karo") || lower.endsWith(" open kar") ||
                 lower.endsWith(" खोलो") || lower.endsWith(" चालू करो") ||
-                lower.endsWith(" app") || lower.endsWith(" ऐप")
+                lower.endsWith(" app") || lower.endsWith(" ऐप") ||
+                (naturalExtracted.isNotBlank() && naturalExtracted.lowercase(java.util.Locale.ROOT) != lower)
 
         val knownCanonicalApps = listOf(
             "youtube create" to "YouTube Create",
@@ -418,16 +423,20 @@ object CommandInterpreter {
             "x" to "Twitter"
         )
 
-        // Check canonical apps with explicit launch intent OR direct standalone app label
+        // Check canonical apps with explicit launch intent
+        val candidateLower = naturalExtracted.lowercase(java.util.Locale.ROOT)
         for ((alias, canonical) in knownCanonicalApps) {
-            val matchesAlias = lower == alias ||
-                    lower == "$alias app" ||
+            val matchesAlias = isExplicitAppOpen && (candidateLower == alias ||
                     lower == "open $alias" ||
+                    lower == "launch $alias" ||
+                    lower == "start $alias" ||
                     lower == "$alias kholo" ||
                     lower == "$alias open karo" ||
                     lower == "$alias khol do" ||
                     lower == "$alias chalao" ||
-                    lower == "launch $alias"
+                    lower == "$alias chalaye" ||
+                    lower == "खोलो $alias" ||
+                    lower == "$alias खोलो")
 
             if (matchesAlias) {
                 return CommandIntent.OpenApp(

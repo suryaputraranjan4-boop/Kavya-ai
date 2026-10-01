@@ -22,6 +22,17 @@ enum class VisualActionType {
 }
 
 /**
+ * Keyboard action types for software IME interactions.
+ */
+enum class KeyboardAction {
+    ENTER,
+    SEARCH,
+    SEND,
+    DONE,
+    HIDE
+}
+
+/**
  * Normalized coordinates (0.0 to 1.0) relative to device screen dimensions.
  */
 data class NormalizedCoordinates(

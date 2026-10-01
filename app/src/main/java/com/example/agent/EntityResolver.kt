@@ -90,6 +90,7 @@ object EntityResolver {
         // 6. Contact Detection
         var contactMention: String? = null
         val candidates = listOf(
+            "my sister", "my brother", "my mom", "my dad", "my friend",
             "didi", "rohan", "mummy", "mom", "papa", "dad", "bhai", "sister",
             "brother", "rahul", "priya", "amit", "neha", "boss", "friend"
         )

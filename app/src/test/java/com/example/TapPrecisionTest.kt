@@ -90,4 +90,41 @@ class TapPrecisionTest {
         assertEquals(540f, device.x, 0.1f)
         assertEquals(600f, device.y, 0.1f)
     }
+
+    @Test
+    fun testPrecisionCoordinateMapper() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val mapper = com.example.visual.PrecisionCoordinateMapper(context)
+
+        // Test safe center calculation
+        val bounds = Rect(100, 200, 300, 400)
+        val center = mapper.getSafeCenter(bounds)
+        assertEquals(200f, center.x, 0.1f)
+        assertEquals(300f, center.y, 0.1f)
+
+        // Test inside bounds check
+        assertTrue(mapper.isInsideBounds(center, bounds))
+        assertFalse(mapper.isInsideBounds(com.example.visual.DeviceCoordinates(50f, 50f), bounds))
+
+        // Test screenshot mapping
+        val mappedFromShot = mapper.fromScreenshotCoordinates(
+            screenshotX = 230f,
+            screenshotY = 512f,
+            screenshotWidth = 460,
+            screenshotHeight = 1024
+        )
+        val dims = mapper.getPhysicalDimensions()
+        assertEquals((dims.width * 0.5f), mappedFromShot.x, 1.0f)
+        assertEquals((dims.height * 0.5f), mappedFromShot.y, 1.0f)
+    }
+
+    @Test
+    fun testKeyboardActionValues() {
+        val actions = com.example.visual.KeyboardAction.values()
+        assertTrue(actions.contains(com.example.visual.KeyboardAction.ENTER))
+        assertTrue(actions.contains(com.example.visual.KeyboardAction.SEARCH))
+        assertTrue(actions.contains(com.example.visual.KeyboardAction.SEND))
+        assertTrue(actions.contains(com.example.visual.KeyboardAction.DONE))
+        assertTrue(actions.contains(com.example.visual.KeyboardAction.HIDE))
+    }
 }

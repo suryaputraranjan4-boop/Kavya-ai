@@ -130,12 +130,22 @@ class AppResolver(private val context: Context) {
             val suffixRegex = listOf(
                 "\\s+(?:par\\s+jao|pe\\s+jao|me\\s+jao|mein\\s+jao|jao|par\\s+le\\s+chalo|pe\\s+le\\s+chalo|le\\s+chalo|khol do|khol|kholo|chalao|chalaye|chalado|start karo|start kar|open karo|open kar)$".toRegex(RegexOption.IGNORE_CASE),
                 "\\s+(?:पर\\s+जाओ|पे\\s+जाओ|में\\s+जाओ|जाओ|ले\\s+चलो|खोलो|खोलिए|खोल|चलाओ|चालू करो|चालू कर)$".toRegex(RegexOption.IGNORE_CASE),
+                "\\s+(?:for\\s+me|for\\s+us|please|now)$".toRegex(RegexOption.IGNORE_CASE),
                 "\\s+(application|app|एप|ऐप)$".toRegex(RegexOption.IGNORE_CASE),
                 "[.?!]+$".toRegex()
             )
 
-            for (pattern in suffixRegex) {
-                text = text.replace(pattern, "").trim()
+            var previous = ""
+            var loops = 0
+            while (text != previous && loops < 5) {
+                previous = text
+                loops++
+                for (pattern in prefixRegex) {
+                    text = text.replace(pattern, "").trim()
+                }
+                for (pattern in suffixRegex) {
+                    text = text.replace(pattern, "").trim()
+                }
             }
 
             return text
@@ -838,12 +848,30 @@ class AppResolver(private val context: Context) {
             return true
         }
 
-        // Direct app name match
+        // Conversational mentions or questions must NEVER launch an app
+        val conversationalMarkers = listOf(
+            "what is", "who is", "why", "how to", "how do", "explain", "tell me about",
+            "kya hai", "kyun", "kaise", "talking about", "talked about", "heard about",
+            "yesterday", "last week", "kal maine", "baat kar raha tha", "baat ho rahi thi",
+            "kaisa app hai", "kaisi app hai", "meaning of", "matlab kya"
+        )
+        if (conversationalMarkers.any { trimmed.contains(it) }) {
+            return false
+        }
+
+        // Direct standalone app name match (only if input is essentially just the app name or "X app")
         val extracted = extractAppNameFromNaturalLanguage(input)
         val normalizedExtracted = normalizeString(extracted)
         if (CONVERSATIONAL_STOP_WORDS.contains(normalizedExtracted) && !hasAppKeyword) {
             return false
         }
+
+        val wordCount = trimmed.split("\\s+".toRegex()).size
+        val isStandalone = wordCount <= 2 || (wordCount <= 3 && hasAppKeyword)
+        if (!isStandalone) {
+            return false
+        }
+
         return OFFICIAL_ALIASES.containsKey(normalizedExtracted) ||
                installedAppIndex.any { it.normalizedName == normalizedExtracted }
     }

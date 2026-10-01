@@ -252,8 +252,10 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     voiceState == VoiceState.LISTENING -> "सुन रही हूँ... (Listening...)"
                     voiceState == VoiceState.UNDERSTANDING -> "Request analyze ho rahi hai..."
                     voiceState == VoiceState.EXECUTING -> globalState.taskStateDetail
+                    com.example.utils.AppPreferences.getKavyaState(context) == "SLEEP" -> "Kavya is sleeping (Say 'Wake Kavya')"
                     voiceState == VoiceState.ERROR -> "Microphone unavailable. Tap to retry."
-                    voiceState == VoiceState.IDLE -> "Tap to talk with Kavya"
+                    viewModel.microphoneEngine.isContinuousListeningEnabled() && voiceState == VoiceState.IDLE -> "Hands-Free Active • Ready for command"
+                    voiceState == VoiceState.IDLE -> "Tap orb to talk with Kavya"
                     else -> null
                 }
 
