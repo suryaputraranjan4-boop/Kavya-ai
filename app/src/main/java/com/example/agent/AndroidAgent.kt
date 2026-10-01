@@ -920,6 +920,8 @@ class AndroidAgent(
         }
 
         val verif = verificationEngine.verifyUiInteraction(UniversalActionType.TYPE, textToType, screenBefore)
+        val postRoot = service.rootInActiveWindow
+        val fieldHasText = postRoot != null && (service.findNodeRecursively(postRoot, textToType) != null || verif.screenSummary.contains(textToType, ignoreCase = true))
         
         delay(100)
         val root = service.rootInActiveWindow
@@ -934,7 +936,14 @@ class AndroidAgent(
             delay(100)
         }
         
-        return StepExecutionResult(step.id, true, UniversalActionType.TYPE, "Typed '$textToType'")
+        val isVerified = verif.passed || fieldHasText || typed
+        return StepExecutionResult(
+            step.id,
+            isVerified,
+            UniversalActionType.TYPE,
+            if (isVerified) "Typed '$textToType'" else "Could not verify typed text in field",
+            screenSummary = verif.screenSummary
+        )
     }
 
     private fun handleClearText(): StepExecutionResult {
@@ -957,10 +966,16 @@ class AndroidAgent(
     private suspend fun handleSubmitSearch(): StepExecutionResult {
         val service = KavyaAccessibilityService.instance ?: return StepExecutionResult(3, false, UniversalActionType.SUBMIT, "Accessibility Service off")
         val submitted = service.clickSearchOrSubmitButton()
-        delay(200) // Fast wait for search results to render
+        delay(400) // Wait for search results to render
         val screenAfter = screenInspector.inspectScreen()
         val hasResults = screenAfter.elementSummaries.isNotEmpty()
-        return StepExecutionResult(3, true, UniversalActionType.SUBMIT, if (hasResults) "Search submitted and results rendered" else "Search submitted")
+        val isSuccess = submitted || hasResults
+        return StepExecutionResult(
+            3,
+            isSuccess,
+            UniversalActionType.SUBMIT,
+            if (hasResults) "Search submitted and results rendered" else if (submitted) "Search submitted" else "Search submission unconfirmed"
+        )
     }
 
     private suspend fun handleSelectOrdinalResult(step: TaskStep): StepExecutionResult {

@@ -88,23 +88,37 @@ object TapEngine {
             }
 
             // Step 5: Post-Action State Verification
-            delay(500)
+            delay(400)
             val postRoot = service.rootInActiveWindow
             val postSnapshot = ScreenUnderstanding.capture(postRoot, currentPackage)
             
             // Check if UI changed or target state altered
             val uiChanged = postSnapshot.visibleTexts != snapshot.visibleTexts || 
                             postSnapshot.allElements.size != snapshot.allElements.size ||
-                            postSnapshot.editableFields.any { it.isFocused }
+                            postSnapshot.editableFields.any { it.isFocused } ||
+                            postSnapshot.foregroundPackage != snapshot.foregroundPackage
 
             Log.d(TAG, "Tap verification for '$target': uiChanged=$uiChanged")
-            return TapResult(
-                success = true,
-                targetLabel = candidate.primaryLabel,
-                verified = true,
-                bounds = candidate.bounds,
-                diagnostic = "Tapped '${candidate.primaryLabel}' at bounds ${candidate.bounds}"
-            )
+            if (uiChanged) {
+                return TapResult(
+                    success = true,
+                    targetLabel = candidate.primaryLabel,
+                    verified = true,
+                    bounds = candidate.bounds,
+                    diagnostic = "Tapped '${candidate.primaryLabel}' and verified UI change"
+                )
+            } else if (attempt < MAX_RETRIES) {
+                delay(400)
+                continue
+            } else {
+                return TapResult(
+                    success = false,
+                    targetLabel = candidate.primaryLabel,
+                    verified = false,
+                    bounds = candidate.bounds,
+                    diagnostic = "Tap dispatched on '${candidate.primaryLabel}', but no UI state change was observed"
+                )
+            }
         }
 
         return TapResult(false, target, false, null, "Action timed out for '$target'")
@@ -155,14 +169,34 @@ object TapEngine {
             }
 
             // Verify that message input cleared or message appeared
-            delay(500)
-            return TapResult(
-                success = true,
-                targetLabel = "Send",
-                verified = true,
-                bounds = sendBtn.bounds,
-                diagnostic = "Send button clicked successfully at ${sendBtn.bounds}"
-            )
+            delay(450)
+            val postRoot = service.rootInActiveWindow
+            val postSnapshot = ScreenUnderstanding.capture(postRoot, currentPackage)
+            val inputCleared = postSnapshot.editableFields.all { it.text.isBlank() } ||
+                    postSnapshot.editableFields.none { it.text == snapshot.editableFields.firstOrNull()?.text }
+            val sendButtonTransformed = postSnapshot.sendButtons.isEmpty() ||
+                    postSnapshot.allElements.any { it.contentDescription.contains("Voice message", ignoreCase = true) || it.contentDescription.contains("voice", ignoreCase = true) }
+
+            if (inputCleared || sendButtonTransformed || postSnapshot.visibleTexts.size != snapshot.visibleTexts.size) {
+                return TapResult(
+                    success = true,
+                    targetLabel = "Send",
+                    verified = true,
+                    bounds = sendBtn.bounds,
+                    diagnostic = "Send button clicked and message dispatch confirmed"
+                )
+            } else if (attempt < MAX_RETRIES) {
+                delay(400)
+                continue
+            } else {
+                return TapResult(
+                    success = false,
+                    targetLabel = "Send",
+                    verified = false,
+                    bounds = sendBtn.bounds,
+                    diagnostic = "Send button clicked but message composer text remained uncleared"
+                )
+            }
         }
 
         return TapResult(false, "Send", false, null, "Send button interaction failed")

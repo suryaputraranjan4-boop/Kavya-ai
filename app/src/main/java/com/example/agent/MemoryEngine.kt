@@ -787,20 +787,31 @@ class MemoryEngine(private val context: Context) {
         memoryDao.updateMemory(memory)
     }
 
-    suspend fun autoLearnTaskProgress(userPrompt: String, aiResponse: String) = withContext(Dispatchers.IO) {
-        val lower = userPrompt.lowercase(Locale.ROOT)
-        if (lower.contains("create") || lower.contains("add") || lower.contains("implement") || lower.contains("build") || lower.contains("fix") || lower.contains("feature") || lower.contains("bana") || lower.contains("joda")) {
+    suspend fun autoLearnTaskProgress(userPrompt: String, aiResponse: String, isSuccess: Boolean = true) = withContext(Dispatchers.IO) {
+        val lowerPrompt = userPrompt.lowercase(Locale.ROOT)
+        val lowerResp = aiResponse.lowercase(Locale.ROOT)
+        val isFailureResponse = lowerResp.contains("failed") || lowerResp.contains("error") || 
+                lowerResp.contains("nahi ho paya") || lowerResp.contains("rukawat") || lowerResp.contains("ruk gaya")
+        val effectiveSuccess = isSuccess && !isFailureResponse
+
+        val isProjectTask = lowerPrompt.contains("create") || lowerPrompt.contains("add") || 
+                lowerPrompt.contains("implement") || lowerPrompt.contains("build") || 
+                lowerPrompt.contains("fix") || lowerPrompt.contains("feature") || 
+                lowerPrompt.contains("bana") || lowerPrompt.contains("joda")
+
+        if (isProjectTask) {
+            val outcomeStr = if (effectiveSuccess) "Completed / Verified" else "Attempted (Unverified/Halted): ${aiResponse.take(100)}"
             val taskKey = "project_task_" + System.currentTimeMillis()
-            val summary = "Task: $userPrompt | Outcome: Completed/Processed successfully."
+            val summary = "Task: $userPrompt | Status: $outcomeStr"
             val existing = memoryDao.getAllMemories().filter { it.content.contains(userPrompt, ignoreCase = true) }
             if (existing.isEmpty()) {
                 val entity = MemoryEntity(
                     key = taskKey,
                     content = summary,
                     category = "PROJECT_PROGRESS",
-                    importance = 4,
+                    importance = if (effectiveSuccess) 4 else 2,
                     sourceConversation = userPrompt,
-                    confidence = 0.9f,
+                    confidence = if (effectiveSuccess) 0.9f else 0.5f,
                     userConfirmed = false
                 )
                 memoryDao.insertMemory(entity)
@@ -808,7 +819,7 @@ class MemoryEngine(private val context: Context) {
                     key = taskKey,
                     content = summary,
                     category = OkfCategory.fromString("PROJECT_PROGRESS"),
-                    importance = 4,
+                    importance = if (effectiveSuccess) 4 else 2,
                     provenance = OkfProvenance(source = "AUTO_LEARN", author = "Kavya AGI Engine")
                 )
             }

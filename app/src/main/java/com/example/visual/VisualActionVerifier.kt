@@ -48,8 +48,10 @@ class VisualActionVerifier(
                     val (nodeAfter, _) = hierarchyAnalyzer.findMatchingNode(action.target, root)
                     if (nodeAfter == null) {
                         Pair(true, "Verified: Target '${action.target}' is no longer displayed (navigated forward)")
+                    } else if (nodeAfter.isSelected || nodeAfter.isFocused) {
+                        Pair(true, "Verified: Target '${action.target}' selection/focus state toggled")
                     } else {
-                        Pair(true, "Verified: Tap action dispatched to target '${action.target}'")
+                        Pair(false, "Unverified: Tap dispatched on '${action.target}' but no UI transition or state change detected")
                     }
                 }
             }
@@ -59,14 +61,14 @@ class VisualActionVerifier(
                 } else if (screenTransitioned) {
                     Pair(true, "Verified: Screen transitioned after entering text")
                 } else {
-                    Pair(true, "Verified: Text injection completed")
+                    Pair(false, "Unverified: Typed text '${action.textToType}' could not be confirmed in target field")
                 }
             }
             VisualActionType.SWIPE, VisualActionType.SCROLL -> {
                 if (screenTransitioned) {
                     Pair(true, "Verified: Screen content scrolled / shifted")
                 } else {
-                    Pair(true, "Verified: Gesture dispatched")
+                    Pair(false, "Unverified: Scroll gesture executed but viewport content did not change")
                 }
             }
             VisualActionType.OPEN -> {

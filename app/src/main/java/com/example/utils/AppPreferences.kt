@@ -167,15 +167,13 @@ object AppPreferences {
     }
 
     fun getCustomApiKey(context: Context): String {
-        val secure = com.example.security.SecureStorage.getSecret(context, "gemini_api_key")
-        if (secure.isNotBlank()) return secure
-        return getPrefs(context).getString(KEY_CUSTOM_API_KEY, "") ?: ""
+        return com.example.security.SecureStorage.getSecret(context, "gemini_api_key")
     }
 
     fun setCustomApiKey(context: Context, key: String) {
         val trimmed = key.trim()
         com.example.security.SecureStorage.saveSecret(context, "gemini_api_key", trimmed)
-        getPrefs(context).edit().putString(KEY_CUSTOM_API_KEY, trimmed).apply()
+        getPrefs(context).edit().remove(KEY_CUSTOM_API_KEY).apply()
     }
 
     fun clearCustomApiKey(context: Context) {
@@ -184,15 +182,13 @@ object AppPreferences {
     }
     
     fun getOpenRouterApiKey(context: Context): String {
-        val secure = com.example.security.SecureStorage.getSecret(context, "openrouter_api_key")
-        if (secure.isNotBlank()) return secure
-        return getPrefs(context).getString(KEY_OPENROUTER_API_KEY, "") ?: ""
+        return com.example.security.SecureStorage.getSecret(context, "openrouter_api_key")
     }
 
     fun setOpenRouterApiKey(context: Context, key: String) {
         val trimmed = key.trim()
         com.example.security.SecureStorage.saveSecret(context, "openrouter_api_key", trimmed)
-        getPrefs(context).edit().putString(KEY_OPENROUTER_API_KEY, trimmed).apply()
+        getPrefs(context).edit().remove(KEY_OPENROUTER_API_KEY).apply()
     }
 
     fun clearOpenRouterApiKey(context: Context) {
@@ -201,15 +197,13 @@ object AppPreferences {
     }
 
     fun getHuggingFaceApiKey(context: Context): String {
-        val secure = com.example.security.SecureStorage.getSecret(context, "huggingface_api_key")
-        if (secure.isNotBlank()) return secure
-        return getPrefs(context).getString(KEY_HUGGINGFACE_API_KEY, "") ?: ""
+        return com.example.security.SecureStorage.getSecret(context, "huggingface_api_key")
     }
 
     fun setHuggingFaceApiKey(context: Context, key: String) {
         val trimmed = key.trim()
         com.example.security.SecureStorage.saveSecret(context, "huggingface_api_key", trimmed)
-        getPrefs(context).edit().putString(KEY_HUGGINGFACE_API_KEY, trimmed).apply()
+        getPrefs(context).edit().remove(KEY_HUGGINGFACE_API_KEY).apply()
     }
 
     fun clearHuggingFaceApiKey(context: Context) {
