@@ -10,33 +10,25 @@ object ModelRegistry {
         // Gemini Models (Main Brain)
         RegisteredModel(
             providerId = "gemini",
-            modelId = "gemini-3.1-flash-lite-preview",
-            displayName = "Gemini 3.1 Flash Lite",
-            task = "Ultra-Fast Orchestration & Planning",
-            capabilities = listOf("Chat", "Reasoning", "Planning", "Tools", "Fast"),
+            modelId = com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL,
+            displayName = "Gemini 2.5 Flash",
+            task = "Primary Multimodal Orchestration & Planning",
+            capabilities = listOf("Chat", "Reasoning", "Planning", "Tools", "Fast", "Vision"),
             isFree = true
         ),
         RegisteredModel(
             providerId = "gemini",
-            modelId = "gemini-3.5-flash-lite",
-            displayName = "Gemini 3.5 Flash Lite",
-            task = "Fast Reasoning & Tool Execution",
-            capabilities = listOf("Chat", "Reasoning", "Vision", "Tools"),
-            isFree = true
+            modelId = com.example.ai.GeminiModelRegistry.PRO_REASONING_MODEL,
+            displayName = "Gemini 2.5 Pro",
+            task = "Deep Reasoning & Complex Architecture Planning",
+            capabilities = listOf("Chat", "Deep Reasoning", "Vision", "Tools"),
+            isFree = false
         ),
         RegisteredModel(
             providerId = "gemini",
-            modelId = "gemini-flash-latest",
-            displayName = "Gemini Flash Latest",
-            task = "Primary Orchestration & Vision",
-            capabilities = listOf("Chat", "Reasoning", "Vision", "Planning", "Tools"),
-            isFree = true
-        ),
-        RegisteredModel(
-            providerId = "gemini",
-            modelId = "gemini-2.5-flash-preview-tts",
-            displayName = "Gemini Voice Synthesis",
-            task = "Direct Audio & Voice Output",
+            modelId = com.example.ai.GeminiModelRegistry.PRIMARY_TTS_MODEL,
+            displayName = "Gemini Voice Synthesis (TTS)",
+            task = "Direct Speech & Voice Output",
             capabilities = listOf("TTS Audio", "Realtime Voice"),
             isFree = true
         ),

@@ -300,9 +300,11 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
                 val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
                 wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Kavya::VoiceServiceWakeLock")?.apply {
                     setReferenceCounted(false)
-                    acquire(60 * 60 * 1000L) // 60 min safety max
                 }
-                Log.d(TAG, "WakeLock acquired for background voice service")
+            }
+            if (wakeLock?.isHeld != true) {
+                wakeLock?.acquire()
+                Log.d(TAG, "WakeLock acquired for background voice service (isHeld=${wakeLock?.isHeld})")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to acquire WakeLock: ${e.message}")

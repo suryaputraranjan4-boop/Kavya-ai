@@ -200,24 +200,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
     companion object {
         private const val TAG = "KavyaAI"
         // Ordered list of verified working, high-availability Gemini models
-        // Prioritizing ultra-fast flash-lite tiers with separate quota pools
-        private val MODEL_TIERS = listOf(
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3.5-flash-lite",
-            "gemini-flash-lite-latest",
-            "gemini-flash-latest",
-            "gemini-3.5-flash",
-            "gemini-2.5-flash",
-            "gemini-3.1-pro-preview"
-        )
+        private val MODEL_TIERS = GeminiModelRegistry.CHAT_MODEL_TIERS
 
         // Official Gemini models supporting audio modality generation
-        private val AUDIO_MODEL_TIERS = listOf(
-            "gemini-flash-lite-latest",
-            "gemini-flash-latest",
-            "gemini-2.5-flash",
-            "gemini-3.5-flash"
-        )
+        private val AUDIO_MODEL_TIERS = GeminiModelRegistry.AUDIO_MODEL_TIERS
 
         private val modelCooldowns = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
@@ -722,13 +708,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
             else -> "in a natural, comfortable pitch"
         }
 
-        val audioInstruction = """
-            Speak the following text with a sweet, lively, and adorable anime girl voice in natural, clear Hindi and Indian English accent with real human emotion and charm.
-            Act with a $emotionLabel feeling. Speak $speedDesc, and $pitchDesc to match the feeling.
-            Do not read out asterisks or emojis, just speak naturally.
-            Text: 
-            $cleanPrompt
-        """.trimIndent()
+        val audioInstruction = KavyaVoiceProfile.buildVoiceDirectionPrompt(
+            cleanText = cleanPrompt,
+            emotionLabel = emotionLabel,
+            speedDesc = speedDesc,
+            pitchDesc = pitchDesc
+        )
 
         val request = GenerateContentRequest(
             contents = listOf(

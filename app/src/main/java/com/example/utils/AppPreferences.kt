@@ -242,7 +242,7 @@ object AppPreferences {
     }
 
     fun getGeminiModel(context: Context): String {
-        return getPrefs(context).getString(KEY_GEMINI_MODEL, "gemini-3.1-flash-lite-preview") ?: "gemini-3.1-flash-lite-preview"
+        return getPrefs(context).getString(KEY_GEMINI_MODEL, com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL) ?: com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL
     }
 
     fun setGeminiModel(context: Context, model: String) {

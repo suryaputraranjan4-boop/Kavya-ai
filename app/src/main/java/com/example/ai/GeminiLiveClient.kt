@@ -91,7 +91,7 @@ class GeminiLiveClient(
         try {
             val setupMsg = JSONObject().apply {
                 put("setup", JSONObject().apply {
-                    put("model", "models/gemini-2.0-flash-exp") // Use Live API capable model
+                    put("model", GeminiModelRegistry.LIVE_STREAM_MODEL)
                     put("systemInstruction", JSONObject().apply {
                         put("parts", JSONArray().put(JSONObject().apply {
                             put("text", "You are Kavya, an intelligent Android voice assistant. When a user gives a command like 'Open YouTube and search Hi' or 'Go to Instagram and search for football', you MUST break it down into sequential steps. CRITICAL RULES: 1. For OPEN_APP, the param MUST ONLY be the exact app name (e.g. 'YouTube'). NEVER pass the whole sentence to OPEN_APP. 2. Issue actions sequentially: first OPEN_APP, wait, then TAP/TYPE for the subsequent actions like searching.")
