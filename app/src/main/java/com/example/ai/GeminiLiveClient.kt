@@ -389,12 +389,11 @@ class GeminiLiveClient(
         }
 
         try {
-            val coordinator = com.example.agent.VoiceCaptureCoordinator.getInstance(context)
-            coordinator.subscribeAudioFrames(frameSubscriber)
-            coordinator.startListening(
-                mode = com.example.agent.CaptureMode.GEMINI_LIVE_STREAM,
-                onStarted = { isRecording = true },
-                onResult = {},
+            val micEngine = com.example.agent.MicrophoneEngine.getInstance(context)
+            micEngine.subscribeAudioFrames(frameSubscriber)
+            micEngine.startRecording(
+                onRecordingStarted = { isRecording = true },
+                onAudioCaptured = { _, _ -> },
                 onError = { onStateChange("ERROR") }
             )
             isRecording = true
@@ -407,8 +406,9 @@ class GeminiLiveClient(
     private fun stopRecording() {
         if (!isRecording) return
         isRecording = false
-        val coordinator = com.example.agent.VoiceCaptureCoordinator.getInstance(context)
-        coordinator.unsubscribeAudioFrames(frameSubscriber)
+        val micEngine = com.example.agent.MicrophoneEngine.getInstance(context)
+        micEngine.unsubscribeAudioFrames(frameSubscriber)
+        micEngine.stopRecording()
     }
     
     private fun startPlaybackSystem() {

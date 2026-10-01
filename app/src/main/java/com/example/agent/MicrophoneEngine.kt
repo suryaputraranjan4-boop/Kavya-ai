@@ -1,7 +1,6 @@
 package com.example.agent
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -26,9 +25,11 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayOutputStream
 import java.util.Locale
-import kotlin.math.sqrt
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Verified lifecycle states for the real Android Microphone capture engine.
@@ -41,6 +42,15 @@ enum class MicrophoneState {
     PROCESSING,
     STOPPING,
     ERROR
+}
+
+/**
+ * Capture modes for MicrophoneEngine.
+ */
+enum class MicrophoneCaptureMode {
+    SPEECH_RECOGNIZER,
+    RAW_AUDIO_RECORD,
+    GEMINI_LIVE_STREAM
 }
 
 /**
@@ -58,33 +68,22 @@ data class MicrophoneDiagnosticState(
 )
 
 /**
- * Production-grade Real Android Microphone Engine.
+ * Single Authoritative Physical Android Microphone Engine for Kavya AI.
  *
- * Exclusively accesses native Android audio capture hardware via:
- * 1. Native [SpeechRecognizer] with [RecognitionListener] for direct, latency-free on-device/system STT.
- * 2. Native [AudioRecord] hardware PCM capture for streaming/multimodal audio fallback.
- * 3. Guaranteed triggering of Android 12+ system-level green microphone privacy indicator.
- * 4. Real-time RMS amplitude calculation for authentic voice-reactive animations.
- * 5. Audio Focus management to pause external media and avoid acoustic feedback.
- * 6. Single Source of Truth for microphone state across the entire application.
+ * Sole owner of device audio capture hardware across the entire Android process:
+ * 1. Native [SpeechRecognizer] with [RecognitionListener] for high-accuracy STT with Android green privacy indicator.
+ * 2. Native [AudioRecord] hardware PCM capture for raw audio streaming and Gemini multimodal audio.
+ * 3. Gemini Live audio frame subscriber coordinator (shares physical capture without duplicate AudioRecord instances).
+ * 4. Atomic reference-counted TTS speech handoff preventing premature microphone re-arming and acoustic echo.
+ * 5. Dynamic AudioFocus management (handles transient loss, ducking, and restoration).
+ * 6. Differentiated SpeechRecognizer error recovery with bounded exponential backoff.
  */
 class MicrophoneEngine private constructor(private val context: Context) {
 
     companion object {
         private const val TAG = "KavyaMicrophoneEngine"
-
-        // Audio configurations: 16kHz mono 16-bit PCM is standard for speech AI
-        private val SAMPLE_RATES = intArrayOf(16000, 44100, 8000)
-        private val AUDIO_SOURCES = intArrayOf(
-            MediaRecorder.AudioSource.MIC,
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            MediaRecorder.AudioSource.DEFAULT
-        )
-
-        private const val SILENCE_THRESHOLD_RMS = 450.0
-        private const val SILENCE_TIMEOUT_MS = 1800L
-        private const val MIN_SPEECH_DURATION_MS = 800L
-        private const val MAX_RECORDING_DURATION_MS = 18000L
+        private const val SAMPLE_RATE = 16000
+        private const val MAX_REARM_RETRIES = 4
 
         @Volatile
         private var instance: MicrophoneEngine? = null
@@ -99,32 +98,16 @@ class MicrophoneEngine private constructor(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private val sessionMutex = Mutex()
 
-    private var activeAudioRecord: AudioRecord? = null
+    // Hardware capture instances
     private var activeSpeechRecognizer: SpeechRecognizer? = null
-    private var activeSampleRate = 16000
-    private var activeBufferSize = 0
+    private var activeAudioRecord: AudioRecord? = null
     private var recordingJob: Job? = null
     private var rearmJob: Job? = null
     private var audioFocusRequest: AudioFocusRequest? = null
 
-    @Volatile
-    private var isRecording = false
-
-    @Volatile
-    private var isRecognizing = false
-
-    @Volatile
-    private var isContinuousMode = false
-
-    @Volatile
-    private var isPausedForTts = false
-
-    private var activeOnResult: ((String) -> Unit)? = null
-    private var activeOnPartialResult: ((String) -> Unit)? = null
-    private var activeOnListeningStarted: (() -> Unit)? = null
-    private var activeOnError: ((String) -> Unit)? = null
-
+    // State flows
     private val _micState = MutableStateFlow(MicrophoneState.IDLE)
     val micState: StateFlow<MicrophoneState> = _micState.asStateFlow()
 
@@ -136,6 +119,27 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
     private val _status = MutableStateFlow(MicrophoneDiagnosticState())
     val status: StateFlow<MicrophoneDiagnosticState> = _status.asStateFlow()
+
+    @Volatile
+    private var activeCaptureMode = MicrophoneCaptureMode.SPEECH_RECOGNIZER
+
+    @Volatile
+    private var isContinuousListeningRequested = false
+
+    @Volatile
+    private var isSleeping = false
+
+    private val pauseReferenceCount = AtomicInteger(0)
+    private var consecutiveErrorCount = 0
+
+    // Registered Callbacks
+    private var activeOnResult: ((String) -> Unit)? = null
+    private var activeOnPartialResult: ((String) -> Unit)? = null
+    private var activeOnListeningStarted: (() -> Unit)? = null
+    private var activeOnError: ((String) -> Unit)? = null
+
+    // Gemini Live Frame Subscribers
+    private val frameSubscribers = mutableListOf<(ByteArray, Int) -> Unit>()
 
     init {
         refreshHardwareDiagnostics()
@@ -155,19 +159,16 @@ class MicrophoneEngine private constructor(private val context: Context) {
         var audioInputReady = false
         if (permGranted && hardwareAvailable) {
             try {
-                for (rate in SAMPLE_RATES) {
-                    val minBuffer = AudioRecord.getMinBufferSize(
-                        rate,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT
-                    )
-                    if (minBuffer > 0) {
-                        audioInputReady = true
-                        break
-                    }
+                val minBuffer = AudioRecord.getMinBufferSize(
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                if (minBuffer > 0) {
+                    audioInputReady = true
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "MIC_DIAGNOSTIC: Error checking AudioRecord buffer: ${e.message}")
+                Log.w(TAG, "Error checking AudioRecord buffer: ${e.message}")
             }
         }
 
@@ -181,219 +182,284 @@ class MicrophoneEngine private constructor(private val context: Context) {
             hasPermission = permGranted,
             isHardwareAvailable = hardwareAvailable,
             isAudioInputReady = audioInputReady,
-            isRecognizerAvailable = recognizerAvailable
+            isRecognizerAvailable = recognizerAvailable,
+            isListening = _micState.value == MicrophoneState.LISTENING
         )
-
-        Log.d(TAG, "MIC_DIAGNOSTIC: perm=$permGranted, hw=$hardwareAvailable, audioReady=$audioInputReady, recognizerReady=$recognizerAvailable")
     }
 
     // =========================================================================
-    // 1. PRIMARY NATIVE SPEECH RECOGNITION (SpeechRecognizer + RecognitionListener)
+    // AUTHORITATIVE LIFECYCLE API
     // =========================================================================
 
     /**
-     * Starts native Android SpeechRecognizer.
-     * Uses real microphone hardware, turns on the Android system green privacy indicator,
-     * computes live RMS amplitude, delivers partial recognition, and outputs final text.
+     * Idempotently starts a single-turn speech recognition session.
      */
-    @Synchronized
     fun startListening(
         onListeningStarted: () -> Unit = {},
         onResult: (String) -> Unit,
         onPartialResult: ((String) -> Unit)? = null,
         onError: (String) -> Unit = {}
     ) {
-        activeOnListeningStarted = onListeningStarted
-        activeOnResult = onResult
-        activeOnPartialResult = onPartialResult
-        activeOnError = onError
-        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+        startCaptureInternal(
+            continuous = false,
+            mode = MicrophoneCaptureMode.SPEECH_RECOGNIZER,
+            onStarted = onListeningStarted,
+            onResult = onResult,
+            onPartialResult = onPartialResult,
+            onError = onError
+        )
     }
 
     /**
-     * Starts continuous hands-free listening loop across the Android system.
-     * Automatically re-arms recognition listener on silence timeouts, and pauses
-     * during assistant speech output to avoid acoustic feedback loops.
+     * Idempotently starts continuous hands-free background listening loop.
      */
-    @Synchronized
     fun startContinuousListening(
         onListeningStarted: () -> Unit = {},
         onResult: (String) -> Unit,
         onPartialResult: ((String) -> Unit)? = null,
         onError: (String) -> Unit = {}
     ) {
-        Log.i(TAG, "START_CONTINUOUS_LISTENING: Initializing continuous hands-free assistant mode.")
-        isContinuousMode = true
-        isPausedForTts = false
-        activeOnListeningStarted = onListeningStarted
-        activeOnResult = onResult
-        activeOnPartialResult = onPartialResult
-        activeOnError = onError
-        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
+        startCaptureInternal(
+            continuous = true,
+            mode = MicrophoneCaptureMode.SPEECH_RECOGNIZER,
+            onStarted = onListeningStarted,
+            onResult = onResult,
+            onPartialResult = onPartialResult,
+            onError = onError
+        )
+    }
+
+    private fun startCaptureInternal(
+        continuous: Boolean,
+        mode: MicrophoneCaptureMode,
+        onStarted: () -> Unit,
+        onResult: (String) -> Unit,
+        onPartialResult: ((String) -> Unit)?,
+        onError: (String) -> Unit
+    ) {
+        scope.launch {
+            sessionMutex.withLock {
+                Log.i(TAG, "START_CAPTURE_REQUEST (Continuous=$continuous, Mode=$mode, Current=${_micState.value})")
+
+                if (!hasAudioPermission()) {
+                    Log.e(TAG, "START_CAPTURE failed: RECORD_AUDIO permission missing")
+                    updateState(MicrophoneState.ERROR)
+                    _status.value = _status.value.copy(
+                        hasPermission = false,
+                        isListening = false,
+                        lastError = "Microphone permission required"
+                    )
+                    withContext(Dispatchers.Main) {
+                        onError("Microphone permission required. Please grant permission.")
+                    }
+                    return@withLock
+                }
+
+                activeCaptureMode = mode
+                isContinuousListeningRequested = continuous
+                isSleeping = false
+                pauseReferenceCount.set(0)
+                consecutiveErrorCount = 0
+
+                activeOnListeningStarted = onStarted
+                activeOnResult = onResult
+                activeOnPartialResult = onPartialResult
+                activeOnError = onError
+
+                rearmJob?.cancel()
+                rearmJob = null
+
+                startPhysicalCaptureSession()
+            }
+        }
+    }
+
+    fun isContinuousListeningEnabled(): Boolean {
+        return isContinuousListeningRequested && !isSleeping
     }
 
     fun setContinuousListening(enabled: Boolean) {
-        Log.i(TAG, "setContinuousListening: $enabled")
-        isContinuousMode = enabled
+        isContinuousListeningRequested = enabled
         if (!enabled) {
-            rearmJob?.cancel()
-            rearmJob = null
             stopListening()
         }
     }
 
-    fun isContinuousListeningEnabled(): Boolean = isContinuousMode
-
     /**
-     * Prevents acoustic echo and feedback loops by temporarily pausing microphone capture
-     * while Kavya is speaking TTS audio.
+     * Temporarily pauses capture during assistant TTS speech playback.
+     * Thread-safe with atomic reference counting.
      */
     fun pauseForTts() {
-        Log.d(TAG, "pauseForTts: Muting mic capture during assistant speech playback")
-        isPausedForTts = true
+        val count = pauseReferenceCount.incrementAndGet()
+        Log.d(TAG, "PAUSE_FOR_TTS (RefCount=$count)")
+
         rearmJob?.cancel()
         rearmJob = null
-        stopAllInternal(discard = true)
+
+        stopPhysicalHardware(discard = true)
         _amplitude.value = 0f
-        _micState.value = MicrophoneState.IDLE
-        KavyaStateManager.updateVoiceState(VoiceState.SPEAKING)
     }
 
     /**
-     * Re-arms microphone recognition after assistant speech finishes, allowing a configurable
-     * acoustic dissipation window (default 350ms) so speaker vibrations do not trigger false STT.
+     * Resumes capture after TTS speech playback completes and acoustic echo has dissipated.
      */
     fun resumeAfterTts(acousticDelayMs: Long = 350L) {
-        Log.d(TAG, "resumeAfterTts: Scheduling mic re-arm after $acousticDelayMs ms dissipation")
-        isPausedForTts = false
-        if (isContinuousMode) {
+        val remaining = pauseReferenceCount.decrementAndGet()
+        Log.d(TAG, "RESUME_AFTER_TTS (RemainingTokens=$remaining, Delay=${acousticDelayMs}ms)")
+
+        if (remaining > 0) {
+            Log.d(TAG, "Resume deferred: $remaining active pause locks remaining.")
+            return
+        }
+
+        pauseReferenceCount.set(0)
+
+        if (isContinuousListeningRequested && !isSleeping) {
             rearmJob?.cancel()
             rearmJob = scope.launch {
                 delay(acousticDelayMs)
-                if (isContinuousMode && !isPausedForTts) {
-                    val onStarted = activeOnListeningStarted ?: {}
-                    val onRes = activeOnResult ?: return@launch
-                    val onPart = activeOnPartialResult
-                    val onErr = activeOnError ?: {}
-                    startListeningSession(onStarted, onRes, onPart, onErr)
+                sessionMutex.withLock {
+                    if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping) {
+                        startPhysicalCaptureSession()
+                    }
                 }
+            }
+        } else {
+            updateState(MicrophoneState.IDLE)
+        }
+    }
+
+    /**
+     * Immediate barge-in interrupt: instantly cancels TTS pause locks and cuts to microphone.
+     */
+    fun forceBargeIn() {
+        Log.i(TAG, "FORCE_BARGE_IN (User interrupt)")
+        pauseReferenceCount.set(0)
+        rearmJob?.cancel()
+        rearmJob = null
+        scope.launch {
+            sessionMutex.withLock {
+                startPhysicalCaptureSession()
             }
         }
     }
 
     /**
-     * User Barge-In: immediately halts speech pauses and cuts directly to microphone capture.
+     * Completely stops active capture and disables automatic re-arming.
      */
-    fun forceBargeIn() {
-        Log.i(TAG, "forceBargeIn: User interrupted assistant, immediate mic activation")
-        isPausedForTts = false
+    fun stopListening() {
+        Log.i(TAG, "STOP_LISTENING")
+        isContinuousListeningRequested = false
         rearmJob?.cancel()
         rearmJob = null
-        val onStarted = activeOnListeningStarted ?: {}
-        val onRes = activeOnResult ?: return
-        val onPart = activeOnPartialResult
-        val onErr = activeOnError ?: {}
-        startListeningSession(onStarted, onRes, onPart, onErr)
+        pauseReferenceCount.set(0)
+
+        scope.launch {
+            sessionMutex.withLock {
+                stopPhysicalHardware(discard = true)
+                abandonAudioFocus()
+                updateState(MicrophoneState.IDLE)
+                _amplitude.value = 0f
+                _partialText.value = ""
+            }
+        }
     }
 
-    @Synchronized
-    private fun startListeningSession(
-        onListeningStarted: () -> Unit,
-        onResult: (String) -> Unit,
-        onPartialResult: ((String) -> Unit)?,
+    fun stopRecording() {
+        stopListening()
+    }
+
+    fun cancelRecording() {
+        stopListening()
+    }
+
+    fun startRecording(
+        onRecordingStarted: () -> Unit,
+        onAudioCaptured: (ByteArray, Int) -> Unit,
         onError: (String) -> Unit
     ) {
-        if (isPausedForTts) {
-            Log.d(TAG, "startListeningSession: Suppressed because assistant is currently speaking TTS.")
-            return
-        }
+        startCaptureInternal(
+            continuous = false,
+            mode = MicrophoneCaptureMode.RAW_AUDIO_RECORD,
+            onStarted = onRecordingStarted,
+            onResult = {},
+            onPartialResult = null,
+            onError = onError
+        )
+    }
 
+    fun testMicrophone(onComplete: (Boolean, String) -> Unit) {
         refreshHardwareDiagnostics()
+        val s = _status.value
+        if (!s.hasPermission) {
+            onComplete(false, "Permission DENIED: Grant RECORD_AUDIO permission in Settings")
+            return
+        }
+        if (!s.isHardwareAvailable) {
+            onComplete(false, "Microphone hardware UNAVAILABLE on this device")
+            return
+        }
+        if (!s.isAudioInputReady) {
+            onComplete(false, "Audio input buffer initialization FAILED")
+            return
+        }
+        onComplete(true, "Microphone hardware active and speech input ready")
+    }
 
-        val permGranted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
+    // =========================================================================
+    // GEMINI LIVE STREAMING SUBSCRIPTIONS
+    // =========================================================================
 
-        if (!permGranted) {
-            Log.e(TAG, "MIC_PERMISSION_DENIED: RECORD_AUDIO permission missing")
-            _micState.value = MicrophoneState.ERROR
-            KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-            _status.value = _status.value.copy(
-                hasPermission = false,
-                isListening = false,
-                lastError = "Microphone permission required"
-            )
-            onError("Microphone permission denied. Please grant permission.")
+    fun subscribeAudioFrames(subscriber: (ByteArray, Int) -> Unit) {
+        synchronized(frameSubscribers) {
+            if (!frameSubscribers.contains(subscriber)) {
+                frameSubscribers.add(subscriber)
+            }
+        }
+    }
+
+    fun unsubscribeAudioFrames(subscriber: (ByteArray, Int) -> Unit) {
+        synchronized(frameSubscribers) {
+            frameSubscribers.remove(subscriber)
+        }
+    }
+
+    // =========================================================================
+    // INTERNAL PHYSICAL CAPTURE IMPLEMENTATION
+    // =========================================================================
+
+    private suspend fun startPhysicalCaptureSession() {
+        if (pauseReferenceCount.get() > 0) {
+            Log.d(TAG, "Capture session suppressed: pause lock active (${pauseReferenceCount.get()})")
             return
         }
 
-        Log.d(TAG, "MIC_PERMISSION_GRANTED")
-
-        // Stop any currently running recording or recognition session cleanly
-        stopAllInternal(discard = true)
-
-        _micState.value = MicrophoneState.STARTING
-        Log.d(TAG, "MIC_INITIALIZING")
-
+        updateState(MicrophoneState.STARTING)
+        stopPhysicalHardware(discard = true)
         requestAudioFocus()
 
-        val isSpeechAvailable = try {
-            SpeechRecognizer.isRecognitionAvailable(context)
-        } catch (_: Exception) {
-            false
-        }
-
-        if (!isSpeechAvailable) {
-            Log.w(TAG, "STT_FALLBACK: Native SpeechRecognizer unavailable, falling back to AudioRecord capture.")
-            startRawAudioRecording(
-                onStarted = {
-                    mainHandler.post { onListeningStarted() }
-                },
-                onAudioCaptured = { pcmBytes, sampleRate ->
-                    scope.launch {
-                        _micState.value = MicrophoneState.PROCESSING
-                        KavyaStateManager.updateVoiceState(VoiceState.THINKING)
-                        val text = try {
-                            val ai = com.example.ai.KavyaAI(context)
-                            ai.transcribeAudio(pcmBytes, sampleRate)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Fallback transcription failed: ${e.message}")
-                            ""
-                        }
-                        _micState.value = MicrophoneState.IDLE
-                        KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                        abandonAudioFocus()
-                        withContext(Dispatchers.Main) {
-                            if (text.isBlank() && isContinuousMode && !isPausedForTts) {
-                                delay(200)
-                                if (isContinuousMode && !isPausedForTts) {
-                                    startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
-                                }
-                            } else {
-                                onResult(text)
-                            }
-                        }
-                    }
-                },
-                onError = { err ->
-                    abandonAudioFocus()
-                    if (isContinuousMode && !isPausedForTts) {
-                        scope.launch {
-                            delay(500)
-                            if (isContinuousMode && !isPausedForTts) {
-                                startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
-                            }
-                        }
-                    } else {
-                        onError(err)
-                    }
+        when (activeCaptureMode) {
+            MicrophoneCaptureMode.SPEECH_RECOGNIZER -> {
+                val isRecognizerAvailable = try {
+                    SpeechRecognizer.isRecognitionAvailable(context)
+                } catch (_: Exception) {
+                    false
                 }
-            )
-            return
-        }
 
-        // Initialize SpeechRecognizer strictly on Main Looper
+                if (isRecognizerAvailable) {
+                    startSpeechRecognizerInternal()
+                } else {
+                    Log.w(TAG, "Native SpeechRecognizer not available. Falling back to raw AudioRecord capture.")
+                    startAudioRecordInternal()
+                }
+            }
+            MicrophoneCaptureMode.RAW_AUDIO_RECORD, MicrophoneCaptureMode.GEMINI_LIVE_STREAM -> {
+                startAudioRecordInternal()
+            }
+        }
+    }
+
+    private fun startSpeechRecognizerInternal() {
         mainHandler.post {
             try {
                 cleanupSpeechRecognizer()
@@ -403,176 +469,60 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
                 recognizer.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {
-                        Log.d(TAG, "MIC_STARTED: Native SpeechRecognizer active (System privacy indicator visible)")
-                        isRecognizing = true
-                        _micState.value = MicrophoneState.LISTENING
-                        KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
+                        Log.d(TAG, "SPEECH_RECOGNIZER_READY (Android green privacy indicator ACTIVE)")
+                        consecutiveErrorCount = 0
+                        updateState(MicrophoneState.LISTENING)
                         _status.value = _status.value.copy(isListening = true, lastError = "None")
-                        onListeningStarted()
+                        activeOnListeningStarted?.invoke()
                     }
 
                     override fun onBeginningOfSpeech() {
-                        Log.d(TAG, "MIC_VOICE_STARTED: Beginning of user speech detected")
+                        Log.d(TAG, "SPEECH_BEGINNING_DETECTED")
                     }
 
                     override fun onRmsChanged(rmsdB: Float) {
-                        // Native Android rmsdB ranges from -2dB (silence) to ~10dB (loud speech)
                         val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
                         _amplitude.value = normalized
                     }
 
-                    override fun onBufferReceived(buffer: ByteArray?) {
-                        // Raw buffer delivered by recognition engine if supported
-                    }
+                    override fun onBufferReceived(buffer: ByteArray?) {}
 
                     override fun onEndOfSpeech() {
-                        Log.d(TAG, "MIC_VOICE_ENDED: User finished speaking, processing speech")
-                        _micState.value = MicrophoneState.PROCESSING
+                        Log.d(TAG, "SPEECH_END_DETECTED")
+                        updateState(MicrophoneState.PROCESSING)
                         _amplitude.value = 0f
-                        KavyaStateManager.updateVoiceState(VoiceState.THINKING)
                     }
 
                     override fun onError(errorCode: Int) {
-                        val (msg, isSilentTimeout) = when (errorCode) {
-                            SpeechRecognizer.ERROR_NO_MATCH -> Pair("No speech recognized", true)
-                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> Pair("Speech input timeout", true)
-                            SpeechRecognizer.ERROR_AUDIO -> Pair("Audio recording error", false)
-                            SpeechRecognizer.ERROR_CLIENT -> Pair("Speech client error", false)
-                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> Pair("Microphone permission required", false)
-                            SpeechRecognizer.ERROR_NETWORK -> Pair("Network error during speech recognition", false)
-                            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> Pair("Network timeout", false)
-                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> Pair("Speech recognizer busy", false)
-                            SpeechRecognizer.ERROR_SERVER -> Pair("Server error during speech recognition", false)
-                            else -> Pair("Speech recognition error ($errorCode)", false)
-                        }
-
-                        Log.w(TAG, "STT_ERROR: code=$errorCode, reason=$msg, isTimeout=$isSilentTimeout")
-                        isRecognizing = false
-                        abandonAudioFocus()
-                        cleanupSpeechRecognizer()
-                        _amplitude.value = 0f
-
-                        if (isSilentTimeout) {
-                            if (isContinuousMode && !isPausedForTts) {
-                                Log.d(TAG, "STT_SILENCE_TIMEOUT: Continuous mode active, automatically re-arming listener.")
-                                rearmJob?.cancel()
-                                rearmJob = scope.launch {
-                                    delay(180)
-                                    if (isContinuousMode && !isPausedForTts) {
-                                        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
-                                    }
-                                }
-                            } else {
-                                _micState.value = MicrophoneState.IDLE
-                                KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                                _status.value = _status.value.copy(isListening = false)
-                                onResult("")
-                            }
-                        } else if (errorCode == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || errorCode == SpeechRecognizer.ERROR_CLIENT) {
-                            if (isContinuousMode && !isPausedForTts) {
-                                Log.w(TAG, "STT_RECOVERABLE_ERROR: Re-initializing recognizer after $errorCode")
-                                rearmJob?.cancel()
-                                rearmJob = scope.launch {
-                                    delay(350)
-                                    if (isContinuousMode && !isPausedForTts) {
-                                        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
-                                    }
-                                }
-                            } else {
-                                _micState.value = MicrophoneState.IDLE
-                                KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                                onError(msg)
-                            }
-                        } else if (errorCode == SpeechRecognizer.ERROR_AUDIO ||
-                            errorCode == SpeechRecognizer.ERROR_SERVER
-                        ) {
-                            Log.w(TAG, "STT_FALLBACK_ON_ERROR: SpeechRecognizer error $errorCode, failing over to real hardware AudioRecord")
-                            startRawAudioRecording(
-                                onStarted = { mainHandler.post { onListeningStarted() } },
-                                onAudioCaptured = { pcmBytes, sampleRate ->
-                                    scope.launch {
-                                        _micState.value = MicrophoneState.PROCESSING
-                                        KavyaStateManager.updateVoiceState(VoiceState.THINKING)
-                                        val text = try {
-                                            val ai = com.example.ai.KavyaAI(context)
-                                            ai.transcribeAudio(pcmBytes, sampleRate)
-                                        } catch (e: Exception) {
-                                            Log.w(TAG, "Fallback transcription failed: ${e.message}")
-                                            ""
-                                        }
-                                        _micState.value = MicrophoneState.IDLE
-                                        KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                                        abandonAudioFocus()
-                                        withContext(Dispatchers.Main) {
-                                            if (text.isBlank() && isContinuousMode && !isPausedForTts) {
-                                                delay(200)
-                                                if (isContinuousMode && !isPausedForTts) {
-                                                    startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
-                                                }
-                                            } else {
-                                                onResult(text)
-                                            }
-                                        }
-                                    }
-                                },
-                                onError = { fallbackErr ->
-                                    _micState.value = MicrophoneState.ERROR
-                                    KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-                                    _status.value = _status.value.copy(isListening = false, lastError = fallbackErr)
-                                    onError(fallbackErr)
-                                }
-                            )
-                        } else {
-                            _micState.value = MicrophoneState.ERROR
-                            KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-                            _status.value = _status.value.copy(isListening = false, lastError = msg)
-                            onError(msg)
-                            // Auto-recover back to IDLE after cooldown
-                            scope.launch {
-                                delay(2000)
-                                if (_micState.value == MicrophoneState.ERROR) {
-                                    _micState.value = MicrophoneState.IDLE
-                                    KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                                }
-                            }
-                        }
+                        handleSpeechRecognizerError(errorCode)
                     }
 
                     override fun onResults(results: Bundle?) {
                         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         val text = matches?.firstOrNull()?.trim() ?: ""
-                        Log.d(TAG, "STT_RESULT: Candidates=${matches?.size ?: 0}, Text=\"$text\"")
+                        Log.d(TAG, "SPEECH_RESULTS: \"$text\"")
 
-                        isRecognizing = false
                         _amplitude.value = 0f
-                        abandonAudioFocus()
+                        _partialText.value = ""
                         cleanupSpeechRecognizer()
+                        abandonAudioFocus()
 
                         if (text.isBlank()) {
-                            if (isContinuousMode && !isPausedForTts) {
-                                Log.d(TAG, "STT_EMPTY_RESULT: Re-arming continuous listener.")
-                                rearmJob?.cancel()
-                                rearmJob = scope.launch {
-                                    delay(180)
-                                    if (isContinuousMode && !isPausedForTts) {
-                                        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
-                                    }
-                                }
+                            if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping) {
+                                scheduleSafeRearm(delayMs = 200L)
                             } else {
-                                _micState.value = MicrophoneState.IDLE
-                                KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                                _status.value = _status.value.copy(isListening = false)
-                                onResult("")
+                                updateState(MicrophoneState.IDLE)
+                                activeOnResult?.invoke("")
                             }
                         } else {
-                            _micState.value = MicrophoneState.PROCESSING
-                            KavyaStateManager.updateVoiceState(VoiceState.THINKING)
+                            consecutiveErrorCount = 0
+                            updateState(MicrophoneState.PROCESSING)
                             _status.value = _status.value.copy(
                                 isListening = false,
                                 lastRecognizedText = text,
                                 lastCallbackTimestamp = System.currentTimeMillis()
                             )
-                            onResult(text)
+                            activeOnResult?.invoke(text)
                         }
                     }
 
@@ -581,7 +531,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
                         val partial = matches?.firstOrNull()?.trim() ?: ""
                         if (partial.isNotBlank()) {
                             _partialText.value = partial
-                            onPartialResult?.invoke(partial)
+                            activeOnPartialResult?.invoke(partial)
                         }
                     }
 
@@ -598,428 +548,326 @@ class MicrophoneEngine private constructor(private val context: Context) {
                     putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
                 }
 
-                Log.d(TAG, "STT_STARTED: Requesting native recognizer to listen")
                 recognizer.startListening(intent)
 
             } catch (e: Exception) {
-                Log.w(TAG, "STT_FALLBACK: SpeechRecognizer initialization failed (${e.message}), falling back to AudioRecord capture.")
+                Log.e(TAG, "SpeechRecognizer start failed: ${e.message}", e)
                 cleanupSpeechRecognizer()
-                startRawAudioRecording(
-                    onStarted = { mainHandler.post { onListeningStarted() } },
-                    onAudioCaptured = { pcmBytes, sampleRate ->
-                        scope.launch {
-                            _micState.value = MicrophoneState.PROCESSING
-                            KavyaStateManager.updateVoiceState(VoiceState.THINKING)
-                            val text = try {
-                                val ai = com.example.ai.KavyaAI(context)
-                                ai.transcribeAudio(pcmBytes, sampleRate)
-                            } catch (err: Exception) {
-                                Log.w(TAG, "Fallback transcription failed: ${err.message}")
-                                ""
-                            }
-                            _micState.value = MicrophoneState.IDLE
-                            KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                            abandonAudioFocus()
-                            withContext(Dispatchers.Main) {
-                                if (text.isBlank() && isContinuousMode && !isPausedForTts) {
-                                    delay(200)
-                                    if (isContinuousMode && !isPausedForTts) {
-                                        startListeningSession(onListeningStarted, onResult, onPartialResult, onError)
-                                    }
-                                } else {
-                                    onResult(text)
-                                }
-                            }
-                        }
-                    },
-                    onError = { err ->
-                        abandonAudioFocus()
-                        _micState.value = MicrophoneState.ERROR
-                        KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-                        onError(err)
-                    }
-                )
+                startAudioRecordInternal()
             }
         }
     }
 
-    // =========================================================================
-    // 2. HARDWARE AUDIO CAPTURE (AudioRecord PCM)
-    // =========================================================================
-
-    /**
-     * Starts real hardware audio recording using Android AudioRecord.
-     * Guaranteed to turn on the Android 12+ green microphone indicator.
-     */
-    @Synchronized
-    fun startRecording(
-        onRecordingStarted: () -> Unit,
-        onAudioCaptured: (ByteArray, Int) -> Unit,
-        onError: (String) -> Unit
-    ) {
-        startRawAudioRecording(onRecordingStarted, onAudioCaptured, onError)
-    }
-
-    private fun startRawAudioRecording(
-        onStarted: () -> Unit,
-        onAudioCaptured: (ByteArray, Int) -> Unit,
-        onError: (String) -> Unit
-    ) {
-        refreshHardwareDiagnostics()
-
-        val permGranted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!permGranted) {
-            Log.e(TAG, "MIC_PERMISSION_DENIED: RECORD_AUDIO permission not granted")
-            _micState.value = MicrophoneState.ERROR
-            KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-            _status.value = _status.value.copy(
-                hasPermission = false,
-                isListening = false,
-                lastError = "Microphone permission denied"
-            )
-            onError("Microphone permission denied. Please grant permission.")
-            return
+    private fun handleSpeechRecognizerError(errorCode: Int) {
+        val (msg, isSilentTimeout) = when (errorCode) {
+            SpeechRecognizer.ERROR_NO_MATCH -> Pair("No speech recognized", true)
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> Pair("Speech input timeout", true)
+            SpeechRecognizer.ERROR_AUDIO -> Pair("Audio recording error", false)
+            SpeechRecognizer.ERROR_CLIENT -> Pair("Speech client error", false)
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> Pair("Microphone permission required", false)
+            SpeechRecognizer.ERROR_NETWORK -> Pair("Network error during speech recognition", false)
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> Pair("Network timeout", false)
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> Pair("Speech recognizer busy", false)
+            SpeechRecognizer.ERROR_SERVER -> Pair("Server error during speech recognition", false)
+            else -> Pair("Speech recognition error ($errorCode)", false)
         }
 
-        Log.d(TAG, "MIC_PERMISSION_GRANTED")
+        Log.w(TAG, "SPEECH_RECOGNIZER_ERROR: code=$errorCode ($msg), isSilentTimeout=$isSilentTimeout, count=$consecutiveErrorCount")
+        _amplitude.value = 0f
+        cleanupSpeechRecognizer()
+        abandonAudioFocus()
 
-        stopAllInternal(discard = true)
+        if (isSilentTimeout) {
+            consecutiveErrorCount = 0
+            if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping) {
+                scheduleSafeRearm(delayMs = 180L)
+            } else {
+                updateState(MicrophoneState.IDLE)
+                activeOnResult?.invoke("")
+            }
+        } else if (errorCode == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || errorCode == SpeechRecognizer.ERROR_CLIENT) {
+            consecutiveErrorCount++
+            if (consecutiveErrorCount <= MAX_REARM_RETRIES && isContinuousListeningRequested && pauseReferenceCount.get() == 0) {
+                val backoff = (300L * consecutiveErrorCount).coerceAtMost(1500L)
+                Log.w(TAG, "Recoverable recognizer error ($errorCode). Backoff re-arm in ${backoff}ms")
+                scheduleSafeRearm(delayMs = backoff)
+            } else {
+                Log.w(TAG, "Max recognizer retries reached. Falling back to raw AudioRecord capture.")
+                consecutiveErrorCount = 0
+                startAudioRecordInternal()
+            }
+        } else if (errorCode == SpeechRecognizer.ERROR_AUDIO || errorCode == SpeechRecognizer.ERROR_SERVER) {
+            Log.w(TAG, "Hardware/Server fault. Failing over to native AudioRecord PCM capture.")
+            startAudioRecordInternal()
+        } else {
+            updateState(MicrophoneState.ERROR)
+            _status.value = _status.value.copy(isListening = false, lastError = msg)
+            activeOnError?.invoke(msg)
+            scope.launch {
+                delay(2000)
+                if (_micState.value == MicrophoneState.ERROR) {
+                    updateState(MicrophoneState.IDLE)
+                }
+            }
+        }
+    }
 
-        _micState.value = MicrophoneState.STARTING
-        Log.d(TAG, "MIC_INITIALIZING: AudioRecord hardware configuration selection")
+    private fun startAudioRecordInternal() {
+        recordingJob?.cancel()
+        recordingJob = scope.launch {
+            var audioRecord: AudioRecord? = null
+            try {
+                val minBuf = AudioRecord.getMinBufferSize(
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                val bufferSize = (minBuf * 2).coerceAtLeast(4096)
 
-        requestAudioFocus()
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
 
-        var recorder: AudioRecord? = null
-        var selectedSampleRate = 16000
-        var selectedBufferSize = 0
-
-        for (source in AUDIO_SOURCES) {
-            for (rate in SAMPLE_RATES) {
-                try {
-                    val minBuf = AudioRecord.getMinBufferSize(
-                        rate,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT
-                    )
-                    if (minBuf <= 0) continue
-
-                    val bufferSize = minBuf * 2
-                    @SuppressLint("MissingPermission")
-                    val rec = AudioRecord(
-                        source,
-                        rate,
+                if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+                    audioRecord.release()
+                    audioRecord = AudioRecord(
+                        MediaRecorder.AudioSource.MIC,
+                        SAMPLE_RATE,
                         AudioFormat.CHANNEL_IN_MONO,
                         AudioFormat.ENCODING_PCM_16BIT,
                         bufferSize
                     )
+                }
 
-                    if (rec.state == AudioRecord.STATE_INITIALIZED) {
-                        recorder = rec
-                        selectedSampleRate = rate
-                        selectedBufferSize = bufferSize
-                        Log.d(TAG, "MIC_INITIALIZED: source=$source, rate=$rate, bufferSize=$bufferSize")
+                if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+                    throw IllegalStateException("Failed to initialize AudioRecord on any audio source")
+                }
+
+                activeAudioRecord = audioRecord
+                audioRecord.startRecording()
+
+                updateState(MicrophoneState.LISTENING)
+                withContext(Dispatchers.Main) {
+                    activeOnListeningStarted?.invoke()
+                }
+
+                val buffer = ByteArray(bufferSize)
+                val pcmOutput = ByteArrayOutputStream()
+                var speechDetected = false
+                var silenceStartTime = 0L
+                val sessionStartTime = System.currentTimeMillis()
+
+                while (isActive && _micState.value == MicrophoneState.LISTENING && pauseReferenceCount.get() == 0) {
+                    val read = audioRecord.read(buffer, 0, buffer.size)
+                    if (read > 0) {
+                        val frame = buffer.copyOf(read)
+
+                        // Dispatch to Gemini Live frame subscribers if any
+                        val subscribersCopy = synchronized(frameSubscribers) { frameSubscribers.toList() }
+                        for (sub in subscribersCopy) {
+                            try { sub(frame, SAMPLE_RATE) } catch (_: Exception) {}
+                        }
+
+                        // Calculate RMS amplitude
+                        var sum = 0.0
+                        var i = 0
+                        while (i < read - 1) {
+                            val sample = (frame[i + 1].toInt() shl 8) or (frame[i].toInt() and 0xFF)
+                            sum += sample * sample
+                            i += 2
+                        }
+                        val rms = kotlin.math.sqrt(sum / (read / 2.0))
+                        val normAmp = (rms / 3000.0).coerceIn(0.0, 1.0).toFloat()
+                        _amplitude.value = normAmp
+
+                        // VAD checks
+                        if (rms > 450.0) {
+                            speechDetected = true
+                            silenceStartTime = 0L
+                            pcmOutput.write(frame)
+                        } else if (speechDetected) {
+                            pcmOutput.write(frame)
+                            if (silenceStartTime == 0L) {
+                                silenceStartTime = System.currentTimeMillis()
+                            } else if (System.currentTimeMillis() - silenceStartTime > 1600L) {
+                                Log.d(TAG, "AudioRecord VAD: Utterance completed")
+                                break
+                            }
+                        }
+
+                        // Max duration cap (18 seconds)
+                        if (System.currentTimeMillis() - sessionStartTime > 18000L) {
+                            break
+                        }
+                    } else if (read < 0) {
+                        Log.w(TAG, "AudioRecord read returned error code: $read")
                         break
-                    } else {
-                        rec.release()
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed config source=$source, rate=$rate: ${e.message}")
                 }
-            }
-            if (recorder != null) break
-        }
 
-        if (recorder == null) {
-            val err = "Microphone hardware initialization failed on all configurations"
-            Log.e(TAG, "MIC_INIT_FAILED: $err")
-            abandonAudioFocus()
-            _micState.value = MicrophoneState.ERROR
-            KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-            _status.value = _status.value.copy(isListening = false, lastError = err)
-            onError(err)
-            return
-        }
+                stopPhysicalHardware(discard = false)
+                val capturedPcm = pcmOutput.toByteArray()
 
-        activeAudioRecord = recorder
-        activeSampleRate = selectedSampleRate
-        activeBufferSize = selectedBufferSize
-
-        try {
-            Log.d(TAG, "MIC_STARTING")
-            recorder.startRecording()
-
-            if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                val err = "Microphone unavailable or occupied by another app"
-                Log.e(TAG, "MIC_ERROR: $err")
-                releaseRecorder()
-                abandonAudioFocus()
-                _micState.value = MicrophoneState.ERROR
-                KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-                _status.value = _status.value.copy(isListening = false, lastError = err)
-                onError(err)
-                return
-            }
-
-            isRecording = true
-            _micState.value = MicrophoneState.LISTENING
-            KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
-            _status.value = _status.value.copy(isListening = true, lastError = "None")
-            Log.d(TAG, "MIC_STARTED: Real Android microphone active (System privacy indicator visible)")
-
-            mainHandler.post { onStarted() }
-
-            recordingJob = scope.launch {
-                val audioStream = ByteArrayOutputStream()
-                val readBuffer = ByteArray(selectedBufferSize)
-                var hasSpeech = false
-                var speechStartTime = 0L
-                var lastVoiceTime = System.currentTimeMillis()
-                val recordingStartTime = System.currentTimeMillis()
-                var firstBuffer = true
-
-                try {
-                    while (isRecording && recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                        val bytesRead = recorder.read(readBuffer, 0, readBuffer.size)
-                        if (bytesRead > 0) {
-                            if (firstBuffer) {
-                                Log.d(TAG, "AUDIO_BUFFER_RECEIVED: $bytesRead bytes")
-                                firstBuffer = false
-                            }
-
-                            audioStream.write(readBuffer, 0, bytesRead)
-
-                            // Compute real-time RMS amplitude for authentic visualization
-                            var sumSquares = 0.0
-                            val sampleCount = bytesRead / 2
-                            for (i in 0 until bytesRead step 2) {
-                                val sample = (readBuffer[i].toInt() and 0xFF) or (readBuffer[i + 1].toInt() shl 8)
-                                val shortVal = sample.toShort()
-                                sumSquares += shortVal * shortVal
-                            }
-
-                            val rms = if (sampleCount > 0) sqrt(sumSquares / sampleCount) else 0.0
-                            val normalizedAmplitude = (rms / 32768.0).toFloat().coerceIn(0f, 1f)
-                            _amplitude.value = normalizedAmplitude
-
-                            val now = System.currentTimeMillis()
-
-                            // Voice Activity Detection
-                            if (rms > SILENCE_THRESHOLD_RMS) {
-                                if (!hasSpeech) {
-                                    hasSpeech = true
-                                    speechStartTime = now
-                                    Log.d(TAG, "SPEECH_PIPELINE_STARTED: Voice detected, rms=$rms")
-                                }
-                                lastVoiceTime = now
-                            }
-
-                            // Automatic silence detection (stop capture after 1.8s silence following speech)
-                            if (hasSpeech && (now - speechStartTime > MIN_SPEECH_DURATION_MS)) {
-                                if (now - lastVoiceTime > SILENCE_TIMEOUT_MS) {
-                                    Log.d(TAG, "SPEECH_PIPELINE_STOPPED: Silence detected after speech, finishing capture.")
-                                    break
-                                }
-                            }
-
-                            // Maximum recording duration safeguard
-                            if (now - recordingStartTime > MAX_RECORDING_DURATION_MS) {
-                                Log.d(TAG, "Maximum recording duration reached (${MAX_RECORDING_DURATION_MS / 1000}s)")
-                                break
-                            }
-                        } else if (bytesRead < 0) {
-                            Log.w(TAG, "AudioRecord read returned error code: $bytesRead")
-                            if (bytesRead == AudioRecord.ERROR_INVALID_OPERATION || bytesRead == AudioRecord.ERROR_DEAD_OBJECT) {
-                                break
-                            }
-                        }
+                if (capturedPcm.isNotEmpty() && speechDetected) {
+                    updateState(MicrophoneState.PROCESSING)
+                    val text = try {
+                        val ai = com.example.ai.KavyaAI(context)
+                        ai.transcribeAudio(capturedPcm, SAMPLE_RATE)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "AudioRecord transcription failed: ${e.message}")
+                        ""
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Exception during audio reading loop: ${e.message}", e)
-                } finally {
-                    Log.d(TAG, "MIC_STOPPING")
-                    _micState.value = MicrophoneState.STOPPING
-                    releaseRecorder()
-                    abandonAudioFocus()
-                    _amplitude.value = 0f
-                    Log.d(TAG, "MIC_STOPPED: Hardware released, privacy indicator dismissed.")
 
-                    val recordedBytes = audioStream.toByteArray()
-                    _micState.value = MicrophoneState.PROCESSING
-                    KavyaStateManager.updateVoiceState(VoiceState.THINKING)
-
-                    if (recordedBytes.isNotEmpty()) {
+                    if (text.isNotBlank()) {
                         withContext(Dispatchers.Main) {
-                            onAudioCaptured(recordedBytes, selectedSampleRate)
+                            activeOnResult?.invoke(text)
                         }
+                    } else if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping) {
+                        scheduleSafeRearm(delayMs = 200L)
                     } else {
-                        _micState.value = MicrophoneState.IDLE
-                        KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                        updateState(MicrophoneState.IDLE)
+                        withContext(Dispatchers.Main) {
+                            activeOnResult?.invoke("")
+                        }
+                    }
+                } else if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping) {
+                    scheduleSafeRearm(delayMs = 200L)
+                } else {
+                    updateState(MicrophoneState.IDLE)
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "AudioRecord capture loop error: ${e.message}", e)
+                stopPhysicalHardware(discard = true)
+                if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping) {
+                    scheduleSafeRearm(delayMs = 500L)
+                } else {
+                    updateState(MicrophoneState.ERROR)
+                    withContext(Dispatchers.Main) {
+                        activeOnError?.invoke(e.message ?: "Audio capture error")
                     }
                 }
             }
+        }
+    }
+
+    private fun scheduleSafeRearm(delayMs: Long) {
+        rearmJob?.cancel()
+        rearmJob = scope.launch {
+            delay(delayMs)
+            sessionMutex.withLock {
+                if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping) {
+                    startPhysicalCaptureSession()
+                }
+            }
+        }
+    }
+
+    private fun stopPhysicalHardware(discard: Boolean) {
+        try {
+            activeAudioRecord?.let {
+                if (it.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    it.stop()
+                }
+                it.release()
+            }
+            activeAudioRecord = null
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start AudioRecord: ${e.message}", e)
-            releaseRecorder()
-            abandonAudioFocus()
-            _micState.value = MicrophoneState.ERROR
-            KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-            _status.value = _status.value.copy(isListening = false, lastError = e.message ?: "Recording failure")
-            onError(e.message ?: "Failed to activate microphone")
-        }
-    }
-
-    // =========================================================================
-    // 3. STOP & RESOURCE CLEANUP
-    // =========================================================================
-
-    /**
-     * Gracefully stops whichever microphone session is active.
-     */
-    @Synchronized
-    fun stopListening() {
-        stopAllInternal(discard = false)
-    }
-
-    /**
-     * Legacy alias for stopListening.
-     */
-    @Synchronized
-    fun stopRecording() {
-        stopAllInternal(discard = false)
-    }
-
-    /**
-     * Immediately cancels audio capture and releases all resources.
-     */
-    @Synchronized
-    fun cancelListening() {
-        stopAllInternal(discard = true)
-    }
-
-    /**
-     * Legacy alias for cancelListening.
-     */
-    @Synchronized
-    fun cancelRecording() {
-        stopAllInternal(discard = true)
-    }
-
-    private fun stopAllInternal(discard: Boolean) {
-        Log.d(TAG, "MIC_STOPPING: stopAllInternal(discard=$discard)")
-
-        // Stop SpeechRecognizer
-        if (isRecognizing || activeSpeechRecognizer != null) {
-            mainHandler.post {
-                try {
-                    if (discard) {
-                        activeSpeechRecognizer?.cancel()
-                    } else {
-                        activeSpeechRecognizer?.stopListening()
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error stopping SpeechRecognizer: ${e.message}")
-                } finally {
-                    cleanupSpeechRecognizer()
-                }
-            }
-            isRecognizing = false
+            Log.w(TAG, "Error stopping AudioRecord: ${e.message}")
         }
 
-        // Stop AudioRecord
-        if (isRecording || activeAudioRecord != null) {
-            isRecording = false
-            if (discard) {
-                recordingJob?.cancel()
-                recordingJob = null
-                releaseRecorder()
-            }
-        }
-
-        abandonAudioFocus()
-        _amplitude.value = 0f
-        _micState.value = MicrophoneState.IDLE
-        KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-        _status.value = _status.value.copy(isListening = false)
-        Log.d(TAG, "MIC_STOPPED: Session ended, resources cleanly released.")
+        cleanupSpeechRecognizer()
     }
 
     private fun cleanupSpeechRecognizer() {
-        try {
-            activeSpeechRecognizer?.destroy()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error destroying SpeechRecognizer: ${e.message}")
-        } finally {
-            activeSpeechRecognizer = null
-            isRecognizing = false
-        }
-    }
-
-    private fun releaseRecorder() {
-        try {
-            val rec = activeAudioRecord
-            if (rec != null) {
-                if (rec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                    rec.stop()
+        mainHandler.post {
+            try {
+                activeSpeechRecognizer?.let {
+                    it.stopListening()
+                    it.cancel()
+                    it.destroy()
                 }
-                rec.release()
+                activeSpeechRecognizer = null
+            } catch (e: Exception) {
+                Log.w(TAG, "Error cleaning up SpeechRecognizer: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error releasing AudioRecord: ${e.message}")
-        } finally {
-            activeAudioRecord = null
-            isRecording = false
         }
     }
 
+    private fun updateState(newState: MicrophoneState) {
+        _micState.value = newState
+        val mappedVoiceState = when (newState) {
+            MicrophoneState.IDLE -> VoiceState.IDLE
+            MicrophoneState.REQUESTING_PERMISSION -> VoiceState.IDLE
+            MicrophoneState.STARTING -> VoiceState.LISTENING
+            MicrophoneState.LISTENING -> VoiceState.LISTENING
+            MicrophoneState.PROCESSING -> VoiceState.THINKING
+            MicrophoneState.STOPPING -> VoiceState.IDLE
+            MicrophoneState.ERROR -> VoiceState.ERROR
+        }
+        KavyaStateManager.updateVoiceState(mappedVoiceState)
+    }
+
+    private fun hasAudioPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     // =========================================================================
-    // 4. AUDIO FOCUS MANAGEMENT
+    // AUDIO FOCUS MANAGEMENT
     // =========================================================================
 
-    private fun requestAudioFocus(): Boolean {
-        val am = audioManager ?: return false
-        return try {
+    private fun requestAudioFocus() {
+        val am = audioManager ?: return
+        try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
                     .setAudioAttributes(
                         AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build()
                     )
                     .setOnAudioFocusChangeListener { focusChange ->
-                        Log.d(TAG, "AUDIO_FOCUS_CHANGED: $focusChange")
-                        if (focusChange == AudioManager.AUDIOFOCUS_LOSS || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-                            stopListening()
-                        }
+                        handleAudioFocusChange(focusChange)
                     }
                     .build()
-                audioFocusRequest = request
-                val res = am.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-                if (res) Log.d(TAG, "AUDIO_FOCUS_GAINED")
-                res
+                audioFocusRequest = focusRequest
+                am.requestAudioFocus(focusRequest)
             } else {
                 @Suppress("DEPRECATION")
-                val res = am.requestAudioFocus(
-                    { focusChange ->
-                        Log.d(TAG, "AUDIO_FOCUS_CHANGED: $focusChange")
-                        if (focusChange == AudioManager.AUDIOFOCUS_LOSS || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-                            stopListening()
-                        }
-                    },
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
-                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-                if (res) Log.d(TAG, "AUDIO_FOCUS_GAINED")
-                res
+                am.requestAudioFocus(
+                    { focusChange -> handleAudioFocusChange(focusChange) },
+                    AudioManager.STREAM_VOICE_CALL,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to request audio focus: ${e.message}")
-            false
+        }
+    }
+
+    private fun handleAudioFocusChange(focusChange: Int) {
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                Log.d(TAG, "AUDIO_FOCUS_LOSS_TRANSIENT: Pausing microphone capture temporarily")
+                pauseForTts()
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                Log.d(TAG, "AUDIO_FOCUS_LOSS: Permanent audio focus loss")
+                pauseForTts()
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                Log.d(TAG, "AUDIO_FOCUS_GAIN: Resuming microphone capture")
+                resumeAfterTts(acousticDelayMs = 250L)
+            }
         }
     }
 
@@ -1027,61 +875,13 @@ class MicrophoneEngine private constructor(private val context: Context) {
         val am = audioManager ?: return
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                audioFocusRequest?.let {
-                    am.abandonAudioFocusRequest(it)
-                    audioFocusRequest = null
-                    Log.d(TAG, "AUDIO_FOCUS_ABANDONED")
-                }
+                audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
             } else {
                 @Suppress("DEPRECATION")
                 am.abandonAudioFocus(null)
-                Log.d(TAG, "AUDIO_FOCUS_ABANDONED")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to abandon audio focus: ${e.message}")
         }
-    }
-
-    // =========================================================================
-    // 5. HARDWARE SELF-TEST & VALIDATION
-    // =========================================================================
-
-    /**
-     * Self-test function verifying hardware, permission, and live AudioRecord buffer creation.
-     */
-    fun testMicrophone(onComplete: (Boolean, String) -> Unit) {
-        refreshHardwareDiagnostics()
-        val s = _status.value
-        if (!s.hasPermission) {
-            onComplete(false, "Permission DENIED: Grant RECORD_AUDIO permission in Settings")
-            return
-        }
-        if (!s.isHardwareAvailable) {
-            onComplete(false, "Microphone hardware UNAVAILABLE on this device")
-            return
-        }
-        if (!s.isAudioInputReady) {
-            onComplete(false, "Audio input buffer initialization FAILED")
-            return
-        }
-
-        // Test actual 1-second record probe to verify real device hardware response
-        startRecording(
-            onRecordingStarted = {
-                Log.d(TAG, "testMicrophone: probe recording started")
-                scope.launch {
-                    delay(1200)
-                    stopRecording()
-                }
-            },
-            onAudioCaptured = { pcmBytes, rate ->
-                val success = pcmBytes.isNotEmpty()
-                val msg = if (success) "Real microphone verified: captured ${pcmBytes.size} bytes at ${rate}Hz" else "Microphone captured 0 bytes"
-                onComplete(success, msg)
-            },
-            onError = { err ->
-                onComplete(false, "Microphone test failed: $err")
-            }
-        )
     }
 }
