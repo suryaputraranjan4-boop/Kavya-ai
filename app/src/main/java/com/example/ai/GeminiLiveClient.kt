@@ -357,6 +357,23 @@ class GeminiLiveClient(
         onStateChange("LISTENING")
     }
     
+    private val frameSubscriber: (ByteArray, Int) -> Unit = { frame, _ ->
+        if (isRecording && isConnected) {
+            val base64Audio = Base64.encodeToString(frame, 0, frame.size, Base64.NO_WRAP)
+            val realtimeMsg = JSONObject().apply {
+                put("realtimeInput", JSONObject().apply {
+                    put("mediaChunks", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("mimeType", "audio/pcm;rate=16000")
+                            put("data", base64Audio)
+                        })
+                    })
+                })
+            }
+            webSocket?.send(realtimeMsg.toString())
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun startRecording() {
         if (isRecording) return
@@ -371,37 +388,27 @@ class GeminiLiveClient(
             return
         }
 
-        val minSize = AudioRecord.getMinBufferSize(SAMPLE_RATE_IN, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         try {
-            com.example.agent.MicrophoneEngine.getInstance(context).stopListening()
-            audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE_IN, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minSize * 2)
-            audioRecord?.startRecording()
+            val coordinator = com.example.agent.VoiceCaptureCoordinator.getInstance(context)
+            coordinator.subscribeAudioFrames(frameSubscriber)
+            coordinator.startListening(
+                mode = com.example.agent.CaptureMode.GEMINI_LIVE_STREAM,
+                onStarted = { isRecording = true },
+                onResult = {},
+                onError = { onStateChange("ERROR") }
+            )
             isRecording = true
-            
-            scope.launch {
-                val buffer = ByteArray(minSize)
-                while (isRecording && isConnected) {
-                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (read > 0) {
-                        val base64Audio = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP)
-                        val realtimeMsg = JSONObject().apply {
-                            put("realtimeInput", JSONObject().apply {
-                                put("mediaChunks", JSONArray().apply {
-                                    put(JSONObject().apply {
-                                        put("mimeType", "audio/pcm;rate=16000")
-                                        put("data", base64Audio)
-                                    })
-                                })
-                            })
-                        }
-                        webSocket?.send(realtimeMsg.toString())
-                    }
-                }
-            }
         } catch (e: Exception) {
             Log.e(TAG, "Audio recording failed", e)
             onStateChange("ERROR")
         }
+    }
+
+    private fun stopRecording() {
+        if (!isRecording) return
+        isRecording = false
+        val coordinator = com.example.agent.VoiceCaptureCoordinator.getInstance(context)
+        coordinator.unsubscribeAudioFrames(frameSubscriber)
     }
     
     private fun startPlaybackSystem() {

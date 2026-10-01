@@ -97,38 +97,33 @@ class EvolutionEngine(private val context: Context) {
             }
 
             val isSafe = repo.requiredPermissions.isEmpty() && repo.dependencies.size <= 3 && repo.license in listOf("MIT", "Apache-2.0")
-            val upgradeLevel = if (isSafe) {
-                applied++
-                "SAFE"
-            } else {
-                pending++
-                "REVIEW"
-            }
+            val upgradeLevel = "ANALYSIS_ONLY"
+            pending++
 
-            val status = if (upgradeLevel == "SAFE") "Integrated" else "Pending"
-            val action = if (upgradeLevel == "SAFE") "Applied Safe Upgrade" else "Pending Approval"
+            val status = "Analysis Complete (Pending Approval)"
+            val action = "Candidate Cataloged"
 
             upgradesToInsert.add(
                 EvolutionUpgradeEntity(
                     id = UUID.randomUUID().toString(),
                     projectName = repo.name,
                     projectUrl = repo.url,
-                    commitSha = "real_gh_sha",
+                    commitSha = "ANALYSIS_SNAPSHOT_${repo.name.lowercase(java.util.Locale.ROOT).replace("[^a-z0-9]".toRegex(), "_")}",
                     license = repo.license,
                     licenseCompatible = repo.license in listOf("MIT", "Apache-2.0"),
                     capabilityImproved = repo.framework,
                     reason = repo.potentialUsefulness,
                     securityResult = "PASSED",
-                    riskLevel = if (upgradeLevel == "SAFE") "LOW" else "MEDIUM",
+                    riskLevel = if (isSafe) "LOW" else "MEDIUM",
                     upgradeLevel = upgradeLevel,
                     status = status,
-                    beforeSnippet = "// Current implementation\nclass StandardEngine : Engine",
-                    afterSnippet = "// Integrated from ${repo.url}\nclass OptimizedEngine : AdvancedEngine",
-                    filesAffected = repo.dependencies.joinToString(", "),
-                    testResultsSummary = "All sandbox regression and security checks passed successfully.",
-                    performanceBenchmark = "Response latency improved by 15.2%",
+                    beforeSnippet = "// Current baseline architecture\n// Subsystem: ${repo.framework}",
+                    afterSnippet = "// Candidate pattern from ${repo.url}\n// Subject to developer review before compilation",
+                    filesAffected = repo.dependencies.joinToString(", ").ifBlank { "None" },
+                    testResultsSummary = "Static architecture & dependency safety gate passed.",
+                    performanceBenchmark = "Benchmark Status: ANALYSIS_ONLY (Live compilation and benchmarking require approval)",
                     date = dateStr,
-                    version = "v1.5",
+                    version = "Analysis Only",
                     timestamp = currentTime
                 )
             )
@@ -142,7 +137,7 @@ class EvolutionEngine(private val context: Context) {
                     securityResult = "PASSED",
                     action = action,
                     status = status,
-                    version = "v1.5",
+                    version = "Analysis Only",
                     timestamp = currentTime
                 )
             )
