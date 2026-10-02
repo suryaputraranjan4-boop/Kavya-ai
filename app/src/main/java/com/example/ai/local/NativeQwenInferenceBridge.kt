@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Locale
 
 fun interface NativeTokenCallback {
     fun onToken(tokenText: String)
@@ -19,8 +18,9 @@ fun interface NativeTokenCallback {
 /**
  * Native JNI Inference Bridge for Qwen3-4B GGUF models on Android.
  *
- * Handles native library loading (`libkavya_qwen.so` / `libllama.so`), native model context lifecycle,
- * ChatML prompt construction, persistent memory context injection, and native token streaming callbacks.
+ * Connects Kotlin directly to native `libkavya_qwen.so` C++ JNI bridge and `llama.cpp` runtime.
+ * Performs zero Kotlin string generation, zero fake fallback answers, and delegates 100%
+ * of token generation to native `llama_tokenize` and `llama_token_to_piece`.
  */
 class NativeQwenInferenceBridge private constructor(private val context: Context) {
 
@@ -52,7 +52,7 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
             System.loadLibrary("kavya_qwen")
             Log.i(TAG, "Native library libkavya_qwen.so loaded successfully.")
         } catch (e: UnsatisfiedLinkError) {
-            Log.i(TAG, "Native library libkavya_qwen.so not present; utilizing native runtime loader: ${e.message}")
+            Log.e(TAG, "Native library libkavya_qwen.so not available: ${e.message}")
         }
     }
 
@@ -64,7 +64,7 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
     private external fun nativeUnloadModel(handle: Long)
 
     /**
-     * Checks device memory before loading the 4B model to prevent OOM.
+     * Checks device physical memory before loading the 4B model to prevent OOM.
      */
     fun checkAvailableMemory(): Pair<Boolean, String> {
         return try {
@@ -111,7 +111,6 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
                 unloadModel()
             }
 
-            // Determine optimal CPU thread count
             val availableCpus = Runtime.getRuntime().availableProcessors()
             val threadCount = (availableCpus - 1).coerceIn(2, 8)
 
@@ -171,7 +170,7 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
     }
 
     /**
-     * Non-streaming chat generation.
+     * Non-streaming chat generation via native JNI bridge.
      */
     suspend fun chat(
         prompt: String,
@@ -188,13 +187,24 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
         }
 
         val chatPrompt = buildChatMlPrompt(prompt, history, screenContext, memoryContext)
-        Log.i(TAG, "PROMPT_TOKEN_COUNT: Encoded prompt size ~${chatPrompt.length / 4} tokens")
+        val sb = StringBuilder()
 
-        return@withContext executeNativeInference(prompt, chatPrompt)
+        if (nativeHandle != 0L) {
+            try {
+                nativeGenerateStream(nativeHandle, chatPrompt, 512) { chunk ->
+                    sb.append(chunk)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Native generation error: ${e.message}", e)
+            }
+        }
+
+        val result = sb.toString().trim()
+        return@withContext if (result.isNotBlank()) result else "Qwen3-4B native engine returned an empty response."
     }
 
     /**
-     * Real token streaming flow.
+     * Real native token streaming flow via JNI callbacks.
      */
     suspend fun streamChat(
         prompt: String,
@@ -212,8 +222,8 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
         }
 
         val chatPrompt = buildChatMlPrompt(prompt, history, screenContext, memoryContext)
-        
         val accumulatedChunks = mutableListOf<String>()
+
         if (nativeHandle != 0L) {
             try {
                 nativeGenerateStream(nativeHandle, chatPrompt, 512) { chunk ->
@@ -222,7 +232,7 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Native streaming fallback: ${e.message}")
+                Log.e(TAG, "Native streaming error: ${e.message}", e)
             }
         }
 
@@ -233,8 +243,7 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
                 emit(sb.toString())
             }
         } else {
-            val fullText = executeNativeInference(prompt, chatPrompt)
-            emit(fullText)
+            emit("Qwen3-4B native engine stream empty.")
         }
     }.flowOn(Dispatchers.IO)
 
@@ -280,38 +289,5 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
         sb.append("<|im_start|>assistant\n")
 
         return sb.toString()
-    }
-
-    private suspend fun executeNativeInference(userPrompt: String, fullChatPrompt: String): String {
-        val lowerPrompt = userPrompt.lowercase(Locale.ROOT)
-
-        // Handle explicit memory save commands ("remember this", "save this", "aage se yaad rakho")
-        if (lowerPrompt.contains("remember") || lowerPrompt.contains("yaad rakhna") || lowerPrompt.contains("save this") || lowerPrompt.contains("yaad rakho")) {
-            val factToSave = userPrompt.substringAfter("remember", "").substringAfter("yaad", "").trim(' ', ':', ',', '.')
-            if (factToSave.isNotBlank()) {
-                memoryProvider.saveUserMemoryExplicit("User Fact", factToSave)
-            }
-        }
-
-        // Handle offline intent resolution
-        if (lowerPrompt.contains("open ") || lowerPrompt.contains("open karo") || lowerPrompt.contains("kholo")) {
-            val app = when {
-                lowerPrompt.contains("whatsapp") || lowerPrompt.contains("व्हाट्सएप") -> "WhatsApp"
-                lowerPrompt.contains("youtube") || lowerPrompt.contains("यूट्यूब") -> "YouTube"
-                lowerPrompt.contains("spotify") -> "Spotify"
-                lowerPrompt.contains("chrome") -> "Chrome"
-                lowerPrompt.contains("settings") -> "Settings"
-                else -> ""
-            }
-            if (app.isNotBlank()) {
-                return "Aapke kehne par $app open kar rahi hoon. <ACTION:OPEN_APP:$app>"
-            }
-        }
-
-        if (lowerPrompt.contains("who are you") || lowerPrompt.contains("tum kaun ho")) {
-            return "Main Kavya AI hoon! Main aapki personal AI assistant hoon, aur abhi main aapke phone par Qwen3-4B local model ke saath completely offline kaam kar rahi hoon."
-        }
-
-        return "Main aapka kehna samajh gayi. \"$userPrompt\" par kaam kar rahi hoon. Kavya Qwen3-4B local engine active hai."
     }
 }

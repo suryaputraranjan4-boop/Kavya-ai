@@ -68,6 +68,14 @@ int32_t llama_token_to_piece(
     bool special
 );
 
+llama_token llama_sampler_sample(
+    struct llama_context * ctx,
+    const float * logits,
+    int32_t n_vocab,
+    float temp,
+    float top_p
+);
+
 llama_token llama_vocab_bos(const struct llama_vocab * vocab);
 llama_token llama_vocab_eos(const struct llama_vocab * vocab);
 
