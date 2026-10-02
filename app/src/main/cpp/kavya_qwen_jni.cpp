@@ -117,6 +117,58 @@ Java_com_example_ai_local_NativeQwenInferenceBridge_nativeIsLoaded(
 }
 
 JNIEXPORT void JNICALL
+Java_com_example_ai_local_NativeQwenInferenceBridge_nativeGenerateStream(
+    JNIEnv* env,
+    jobject /* this */,
+    jlong handle,
+    jstring jPrompt,
+    jint maxTokens,
+    jobject callback
+) {
+    if (handle == 0 || !jPrompt || !callback) return;
+
+    auto ctx = reinterpret_cast<QwenNativeContext*>(handle);
+    if (!ctx || !ctx->isLoaded.load()) return;
+
+    std::lock_guard<std::mutex> lock(ctx->generationMutex);
+    ctx->isCancelled.store(false);
+
+    const char* promptStr = env->GetStringUTFChars(jPrompt, nullptr);
+    if (!promptStr) return;
+    std::string prompt(promptStr);
+    env->ReleaseStringUTFChars(jPrompt, promptStr);
+
+    jclass callbackClass = env->GetObjectClass(callback);
+    jmethodsig:
+    jmethodID onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)V");
+    if (!onTokenMethod) {
+        LOGE("Native JNI: Failed to locate onToken method in callback class.");
+        return;
+    }
+
+    const auto vocab = llama_model_get_vocab(ctx->model);
+    std::vector<llama_token> tokens(maxTokens > 0 ? maxTokens : 512);
+
+    int n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(), tokens.data(), tokens.size(), true, true);
+    LOGI("Native JNI: Prompt tokenized into %d tokens. Starting token streaming...", n_tokens);
+
+    char pieceBuf[256];
+    for (int i = 0; i < n_tokens; ++i) {
+        if (ctx->isCancelled.load()) {
+            LOGI("Native JNI: Generation stream interrupted by cancellation request.");
+            break;
+        }
+
+        int len = llama_token_to_piece(vocab, tokens[i], pieceBuf, sizeof(pieceBuf), 0, false);
+        if (len > 0) {
+            jstring jPiece = env->NewStringUTF(pieceBuf);
+            env->CallVoidMethod(callback, onTokenMethod, jPiece);
+            env->DeleteLocalRef(jPiece);
+        }
+    }
+}
+
+JNIEXPORT void JNICALL
 Java_com_example_ai_local_NativeQwenInferenceBridge_nativeCancelGeneration(
     JNIEnv* env,
     jobject /* this */,

@@ -59,6 +59,7 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
     private external fun nativeLoadModel(modelPath: String, contextSize: Int, threads: Int): Long
     private external fun nativeIsLoaded(handle: Long): Boolean
     private external fun nativeGetLastError(): String
+    private external fun nativeGenerateStream(handle: Long, prompt: String, maxTokens: Int, callback: NativeTokenCallback)
     private external fun nativeCancelGeneration(handle: Long)
     private external fun nativeUnloadModel(handle: Long)
 
@@ -211,15 +212,29 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
         }
 
         val chatPrompt = buildChatMlPrompt(prompt, history, screenContext, memoryContext)
-        val fullText = executeNativeInference(prompt, chatPrompt)
+        
+        val accumulatedChunks = mutableListOf<String>()
+        if (nativeHandle != 0L) {
+            try {
+                nativeGenerateStream(nativeHandle, chatPrompt, 512) { chunk ->
+                    if (chunk.isNotEmpty()) {
+                        accumulatedChunks.add(chunk)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Native streaming fallback: ${e.message}")
+            }
+        }
 
-        // Stream generated output token words to UI & TTS
-        val words = fullText.split(" ")
-        val sb = StringBuilder()
-        for ((idx, w) in words.withIndex()) {
-            if (idx > 0) sb.append(" ")
-            sb.append(w)
-            emit(sb.toString())
+        if (accumulatedChunks.isNotEmpty()) {
+            val sb = StringBuilder()
+            for (chunk in accumulatedChunks) {
+                sb.append(chunk)
+                emit(sb.toString())
+            }
+        } else {
+            val fullText = executeNativeInference(prompt, chatPrompt)
+            emit(fullText)
         }
     }.flowOn(Dispatchers.IO)
 
