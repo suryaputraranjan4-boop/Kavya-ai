@@ -79,7 +79,7 @@ class HuggingFaceProvider : AIProvider {
         private const val HUB_API_BASE = "https://huggingface.co/api"
 
         // Default specialized verified models per task
-        const val MODEL_TEXT_GEN = "meta-llama/Llama-3.2-1B-Instruct"
+        const val MODEL_TEXT_GEN = "Qwen/Qwen2.5-7B-Instruct"
         const val MODEL_OCR = "microsoft/trocr-base-printed"
         const val MODEL_IMAGE_ANALYSIS = "Salesforce/blip-image-captioning-large"
         const val MODEL_IMAGE_CLASSIFICATION = "google/vit-base-patch16-224"
@@ -91,7 +91,7 @@ class HuggingFaceProvider : AIProvider {
         const val MODEL_SENTIMENT = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 
         val DEFAULT_VERIFIED_MODELS = listOf(
-            ProviderModelInfo(MODEL_TEXT_GEN, "Llama 3.2 1B Instruct", ProviderType.HUGGINGFACE, listOf("text-generation", "reasoning"), 32768, "High performance instruction model", true),
+            ProviderModelInfo(MODEL_TEXT_GEN, "Qwen 2.5 7B Instruct", ProviderType.HUGGINGFACE, listOf("text-generation", "reasoning"), 32768, "High performance instruction model", true),
             ProviderModelInfo(MODEL_IMAGE_ANALYSIS, "Salesforce BLIP Captioning", ProviderType.HUGGINGFACE, listOf("image-to-text", "vision"), 2048, "Visual question answering and image captioning", true),
             ProviderModelInfo(MODEL_OCR, "Microsoft TrOCR Printed", ProviderType.HUGGINGFACE, listOf("image-to-text", "ocr"), 1024, "Transformer-based text recognition from images", true),
             ProviderModelInfo(MODEL_OBJECT_DETECTION, "Facebook DETR ResNet-50", ProviderType.HUGGINGFACE, listOf("object-detection", "vision"), 1024, "End-to-end object detector with bounding boxes", true),

@@ -44,22 +44,6 @@ fun DebugDashboardScreen() {
         Text("Internal Debug Dashboard", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         
         val globalState by com.example.state.KavyaStateManager.state.collectAsState()
-        val context = androidx.compose.ui.platform.LocalContext.current
-        val localModelInfo by com.example.ai.local.LocalModelManager.getInstance(context).modelInfo.collectAsState()
-        val isOfflineMode = com.example.utils.AppPreferences.isOfflineModeEnabled(context)
-
-        DashboardCard("Local AI Model Status (Qwen3-4B-Q4_K_M.gguf)") {
-            StatRow("Offline Mode", if (isOfflineMode) "ENABLED (Qwen3-4B Active)" else "DISABLED (Gemini Active)")
-            StatRow("Model Status", localModelInfo.statusState.name)
-            StatRow("Model File", localModelInfo.fileName)
-            StatRow("Quantization", localModelInfo.quantization)
-            StatRow("File Size", localModelInfo.fileSizeFormatted)
-            StatRow("GGUF Signature Valid", if (localModelInfo.isGgufHeaderValid) "YES (0x46554747)" else "NO / NOT FOUND")
-            StatRow("Storage Location", localModelInfo.filePath.ifBlank { "Not Found (/sdcard/Download/)" })
-            if (localModelInfo.errorMessage.isNotBlank()) {
-                StatRow("Status Message", localModelInfo.errorMessage)
-            }
-        }
         
         DashboardCard("Global State Manager (KAVYA_STATE_MANAGER)") {
             StatRow("Conversation", globalState.conversationState)

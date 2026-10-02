@@ -312,7 +312,7 @@ fun SettingsScreen(navController: NavController) {
                         navController.navigate("memory")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
-                    SettingRow("Advanced", "System configuration & tweaks", Icons.Default.SettingsApplications, TextSecondary) {
+                    SettingRow("Advanced", "Offline fallback & system tweaks", Icons.Default.SettingsApplications, TextSecondary) {
                         navController.navigate("advanced")
                     }
                 }
@@ -1753,13 +1753,29 @@ fun PrivacyScreen(navController: NavController, viewModel: KavyaViewModel) {
 
 @Composable
 fun AdvancedScreen(navController: NavController) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var offlineMode by remember { mutableStateOf(com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)) }
+
     SimpleScreen("Advanced", navController) {
         Column(modifier = Modifier.padding(20.dp)) {
             GlassCard(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("System Status", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Kavya Assistant is configured for multi-provider online execution with Gemini and OpenRouter.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Offline Fallback Mode", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
+                        Text("Prefer deterministic local execution when offline", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = TextSecondary)
+                    }
+                    Switch(
+                        checked = offlineMode,
+                        onCheckedChange = {
+                            offlineMode = it
+                            com.example.utils.AppPreferences.setOfflineFallbackEnabled(context, it)
+                        },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Primary, checkedTrackColor = PrimaryContainer)
+                    )
                 }
             }
         }
