@@ -188,10 +188,10 @@ class LocalModelManager private constructor(private val context: Context) {
                 if (initialized) {
                     _modelInfo.value = discovery.copy(
                         statusState = LocalModelStatusState.READY,
-                        memoryUsageMb = 2350, // Approx ~2.35GB RAM allocation for Q4_K_M
+                        memoryUsageMb = 0, // Dynamic memory managed by native runtime
                         errorMessage = ""
                     )
-                    Log.i(TAG, "Local Qwen3-4B model loaded successfully and READY for inference.")
+                    Log.i(TAG, "Local Qwen3-4B model loaded successfully through native backend and READY for inference.")
                     return@withContext true
                 } else {
                     _modelInfo.value = discovery.copy(

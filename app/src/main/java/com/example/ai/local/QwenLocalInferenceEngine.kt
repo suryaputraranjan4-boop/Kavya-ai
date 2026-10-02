@@ -1,16 +1,15 @@
 package com.example.ai.local
 
 import android.content.Context
-import android.util.Log
 import com.example.data.MessageEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 
 /**
- * Local Inference Engine Facade for Qwen3-4B-Q4_K_M.gguf on Android.
- * Delegates 100% of tensor memory-mapping, ChatML prompt encoding, and token streaming
- * to [QwenGgufTensorEngine].
+ * Main Kotlin Facade for Qwen3-4B-Q4_K_M.gguf Offline AI Inference on Android.
+ * Delegates 100% of native model loading, ChatML prompt construction, persistent memory injection,
+ * and token streaming to [NativeQwenInferenceBridge].
  */
 class QwenLocalInferenceEngine private constructor(private val context: Context) {
 
@@ -27,26 +26,33 @@ class QwenLocalInferenceEngine private constructor(private val context: Context)
         }
     }
 
-    private val ggufTensorEngine = QwenGgufTensorEngine.getInstance(context)
+    private val nativeBridge = NativeQwenInferenceBridge.getInstance(context)
 
     /**
      * Initializes and verifies the local Qwen3-4B GGUF model file.
      */
     suspend fun initialize(filePath: String): Boolean = withContext(Dispatchers.IO) {
-        return@withContext ggufTensorEngine.initialize(filePath)
+        return@withContext nativeBridge.loadModel(filePath)
     }
 
-    fun isLoaded(): Boolean = ggufTensorEngine.isReady()
+    fun isLoaded(): Boolean = nativeBridge.isLoaded()
 
     /**
      * Unloads the model and releases local tensor buffers.
      */
     suspend fun unload() = withContext(Dispatchers.IO) {
-        ggufTensorEngine.unload()
+        nativeBridge.unloadModel()
     }
 
     /**
-     * Generates a non-streaming response from real Qwen3-4B tensor engine.
+     * Cancels active token generation.
+     */
+    fun cancelGeneration() {
+        nativeBridge.cancelGeneration()
+    }
+
+    /**
+     * Generates a non-streaming response from native Qwen3-4B inference backend.
      */
     suspend fun chat(
         prompt: String,
@@ -54,7 +60,7 @@ class QwenLocalInferenceEngine private constructor(private val context: Context)
         screenContext: String? = null,
         memoryContext: String = ""
     ): String = withContext(Dispatchers.IO) {
-        return@withContext ggufTensorEngine.chat(
+        return@withContext nativeBridge.chat(
             prompt = prompt,
             history = history,
             screenContext = screenContext,
@@ -63,7 +69,7 @@ class QwenLocalInferenceEngine private constructor(private val context: Context)
     }
 
     /**
-     * Streams generated tokens progressively from real Qwen3-4B tensor engine.
+     * Streams generated tokens progressively from native Qwen3-4B inference backend.
      */
     suspend fun streamChat(
         prompt: String,
@@ -71,7 +77,7 @@ class QwenLocalInferenceEngine private constructor(private val context: Context)
         screenContext: String? = null,
         memoryContext: String = ""
     ): Flow<String> {
-        return ggufTensorEngine.streamChat(
+        return nativeBridge.streamChat(
             prompt = prompt,
             history = history,
             screenContext = screenContext,
