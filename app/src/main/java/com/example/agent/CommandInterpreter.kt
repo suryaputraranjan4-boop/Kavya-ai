@@ -258,6 +258,16 @@ object CommandInterpreter {
                     return CommandIntent.SendMessage(app, recipient, message)
                 }
             }
+
+            // Pattern D: "Open WhatsApp and message [recipient] [message]" / "message [recipient] [message]"
+            val patternD = Regex("(?i)(?:open\\s+(?:whatsapp|sms)\\s+and\\s+)?message\\s+(.+?)\\s+(.+)$")
+            patternD.find(trimmed)?.let { m ->
+                val recipient = m.groupValues[1].trim()
+                val message = m.groupValues[2].trim()
+                if (recipient.isNotBlank() && message.isNotBlank()) {
+                    return CommandIntent.SendMessage(app, recipient, message)
+                }
+            }
         }
 
         // ====================================================

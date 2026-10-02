@@ -8,6 +8,7 @@ enum class ProviderType {
     GEMINI,
     OPENROUTER,
     HUGGINGFACE,
+    GEMMA_OFFLINE,
     CUSTOM
 }
 
@@ -49,6 +50,7 @@ interface AIProvider {
             "gemini" -> ProviderType.GEMINI
             "openrouter" -> ProviderType.OPENROUTER
             "huggingface" -> ProviderType.HUGGINGFACE
+            "gemma_offline" -> ProviderType.GEMMA_OFFLINE
             else -> ProviderType.CUSTOM
         }
     val isPrimaryOrchestrator: Boolean

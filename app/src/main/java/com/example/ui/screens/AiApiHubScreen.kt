@@ -100,6 +100,26 @@ fun AiApiHubScreen(navController: NavController) {
         }
     }
 
+    // Gemma 4 E4B State
+    val gemmaStatus by com.example.ai.offline.GemmaModelManager.status.collectAsState()
+    var gemmaFile by remember { mutableStateOf(com.example.ai.offline.GemmaModelManager.getModelFile(context)) }
+    var isGemmaImporting by remember { mutableStateOf(false) }
+    var selectedAiProvider by remember { mutableStateOf(AppPreferences.getAiProvider(context)) }
+
+    val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                isGemmaImporting = true
+                val success = com.example.ai.offline.GemmaModelManager.importModelFromUri(context, uri)
+                if (success) {
+                    gemmaFile = com.example.ai.offline.GemmaModelManager.getModelFile(context)
+                }
+                isGemmaImporting = false
+            }
+        }
+    }
     // Gemini State
     var geminiKeyInput by remember { mutableStateOf(AppPreferences.getCustomApiKey(context)) }
     var geminiModel by remember { mutableStateOf(AppPreferences.getGeminiModel(context)) }
@@ -229,7 +249,134 @@ fun AiApiHubScreen(navController: NavController) {
                 }
             }
 
-            // Voice & Background Service Controls Card
+            // Offline Gemma 4 E4B Section
+            item {
+                Text(
+                    text = "Offline Gemma 4 E4B AI Engine",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = TextPrimary,
+                    modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+                )
+            }
+
+            item {
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
+                    borderColor = SuccessGreenGlow.copy(alpha = 0.4f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Memory,
+                                    contentDescription = null,
+                                    tint = SuccessGreenGlow,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        "Gemma 4 E4B (Offline)",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = TextPrimary
+                                    )
+                                    Text(
+                                        "On-Device LiteRT-LM Engine (Samsung Galaxy A16 5G Optimized)",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                        color = TextSecondary
+                                    )
+                                }
+                            }
+
+                            RoleBadge(
+                                label = if (selectedAiProvider == "GEMMA_OFFLINE") "ACTIVE ENGINE" else "OFFLINE READY",
+                                color = if (selectedAiProvider == "GEMMA_OFFLINE") SuccessGreenGlow else AccentCyan
+                            )
+                        }
+
+                        HorizontalDivider(color = OutlineVariant.copy(alpha = 0.5f))
+
+                        // Model Status & File details
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Status: ${if (gemmaFile != null) "READY" else gemmaStatus.name}",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                    color = if (gemmaFile != null) SuccessGreenGlow else Error
+                                )
+                                if (gemmaFile != null) {
+                                    Text(
+                                        text = "File: ${gemmaFile?.name} (${(gemmaFile?.length() ?: 0) / (1024 * 1024)} MB)",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                        color = TextSecondary
+                                    )
+                                } else {
+                                    Text(
+                                        text = "No local model found. Import gemma-4-e4b.bin or .task model file.",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                        color = TextTertiary
+                                    )
+                                }
+                            }
+                        }
+
+                        // Buttons for importing model and toggling active engine
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { filePickerLauncher.launch("*/*") },
+                                enabled = !isGemmaImporting,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                if (isGemmaImporting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                } else {
+                                    Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                Text("Import Model", fontSize = 12.sp, color = AccentCyan)
+                            }
+
+                            Button(
+                                onClick = {
+                                    val newProvider = if (selectedAiProvider == "GEMMA_OFFLINE") "GEMINI" else "GEMMA_OFFLINE"
+                                    selectedAiProvider = newProvider
+                                    AppPreferences.setAiProvider(context, newProvider)
+                                    AppPreferences.setOfflineFallbackEnabled(context, newProvider == "GEMMA_OFFLINE")
+                                },
+                                enabled = gemmaFile != null,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (selectedAiProvider == "GEMMA_OFFLINE") SuccessGreen else Primary
+                                )
+                            ) {
+                                Text(
+                                    if (selectedAiProvider == "GEMMA_OFFLINE") "Active (Offline)" else "Use Offline Gemma",
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             item {
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),

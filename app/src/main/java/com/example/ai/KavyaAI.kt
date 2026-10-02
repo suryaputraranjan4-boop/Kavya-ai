@@ -500,6 +500,22 @@ class KavyaAI(private val context: android.content.Context? = null) {
         
         var lastError: Exception? = null
         try {
+            if (context != null) {
+                val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
+                val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
+                val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
+
+                if ((isExplicitOffline || !isApiKeyConfigured()) && gemmaProvider.isConfigured(context)) {
+                    val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+                    val gemmaResult = gemmaProvider.generate(prompt, sysPrompt, context)
+                    if (gemmaResult.success && gemmaResult.text.isNotBlank()) {
+                        return@withContext gemmaResult.text
+                    } else if (isExplicitOffline) {
+                        return@withContext gemmaResult.error ?: "Offline Gemma 4 E4B model failed to generate response."
+                    }
+                }
+            }
+
             val apiKey = if (context != null) {
                 com.example.utils.AppPreferences.getEffectiveApiKey(context)
             } else {
@@ -981,6 +997,20 @@ class KavyaAI(private val context: android.content.Context? = null) {
             return@flow
         }
         
+        if (context != null) {
+            val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
+            val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
+            val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
+
+            if ((isExplicitOffline || !isApiKeyConfigured()) && gemmaProvider.isConfigured(context)) {
+                val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+                gemmaProvider.streamGenerate(prompt, sysPrompt, context).collect { chunk ->
+                    emit(chunk)
+                }
+                return@flow
+            }
+        }
+
         val isUsingOpenRouter = context != null && com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER"
         if (isUsingOpenRouter) {
             val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode)

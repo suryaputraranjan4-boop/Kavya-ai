@@ -87,7 +87,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         private const val TAG = "KavyaViewModel"
     }
 
-    private val aiClient = KavyaAI(application)
+    private val aiClient = com.example.ai.AIModelRouter(application)
     private val _voiceState = MutableStateFlow(VoiceState.IDLE)
     val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
 
@@ -132,7 +132,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     )
 
-    val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, aiClient)
+    val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, KavyaAI(application))
     val microphoneEngine = com.example.agent.MicrophoneEngine.getInstance(application)
     val micAmplitude: StateFlow<Float> = microphoneEngine.amplitude
     val micEngineState: StateFlow<com.example.agent.MicrophoneState> = microphoneEngine.micState
@@ -257,6 +257,20 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     val isScreenSharing: StateFlow<Boolean> = _isScreenSharing.asStateFlow()
 
     val isMicMuted: StateFlow<Boolean> = microphoneEngine.isMuted
+
+    private val _isOfflineMode = MutableStateFlow(
+        com.example.utils.AppPreferences.isOfflineModeEnabled(application)
+    )
+    val isOfflineMode: StateFlow<Boolean> = _isOfflineMode.asStateFlow()
+
+    val localModelInfo = com.example.ai.local.LocalModelManager.getInstance(application).modelInfo
+
+    fun toggleOfflineMode() {
+        val app = getApplication<Application>()
+        val newMode = !_isOfflineMode.value
+        aiClient.setOfflineMode(newMode)
+        _isOfflineMode.value = newMode
+    }
 
     private val _screenContextText = MutableStateFlow<String?>(null)
     val screenContextText: StateFlow<String?> = _screenContextText.asStateFlow()

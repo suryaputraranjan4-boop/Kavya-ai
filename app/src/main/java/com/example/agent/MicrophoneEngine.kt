@@ -438,6 +438,10 @@ class MicrophoneEngine private constructor(private val context: Context) {
         }
     }
 
+    fun cancelListening() {
+        stopListening()
+    }
+
     fun stopRecording() {
         stopListening()
     }

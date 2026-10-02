@@ -66,6 +66,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val latestCaption by viewModel.latestKavyaCaption.collectAsState()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
     val agentActionStatus by viewModel.agentActionStatus.collectAsState()
+    val isOfflineMode by viewModel.isOfflineMode.collectAsState()
     
     val drawerState = LocalDrawerState.current
     val scope = rememberCoroutineScope()
@@ -167,17 +168,17 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                             modifier = Modifier
                                 .size(5.dp)
                                 .clip(CircleShape)
-                                .background(if (canStart) Color(0xFF10B981) else Color(0xFFFFB020))
+                                .background(if (isOfflineMode) Color(0xFF00E5FF) else if (canStart) Color(0xFF10B981) else Color(0xFFFFB020))
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (canStart) "SYSTEM READY" else "SETUP REQUIRED",
+                            text = if (isOfflineMode) "OFFLINE • QWEN3-4B" else if (canStart) "SYSTEM READY" else "SETUP REQUIRED",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 9.sp,
                                 letterSpacing = 1.5.sp,
                                 fontWeight = FontWeight.SemiBold
                             ),
-                            color = Color.White.copy(alpha = 0.45f)
+                            color = if (isOfflineMode) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.45f)
                         )
                     }
                 }

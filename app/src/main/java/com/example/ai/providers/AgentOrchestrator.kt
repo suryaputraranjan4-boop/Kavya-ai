@@ -19,6 +19,7 @@ class AgentOrchestrator(
     val geminiProvider: GeminiProvider = GeminiProvider(),
     val openRouterProvider: OpenRouterProvider = OpenRouterProvider(),
     val huggingFaceProvider: HuggingFaceProvider = HuggingFaceProvider(),
+    val gemmaOfflineProvider: GemmaOfflineProvider = GemmaOfflineProvider(),
     val publicApiProvider: PublicApiToolProvider = PublicApiToolProvider(),
     var accessibilityProvider: AndroidAccessibilityToolProvider? = null
 ) {
@@ -31,7 +32,7 @@ class AgentOrchestrator(
      * Returns list of all known AI providers.
      */
     fun getAllProviders(): List<AIProvider> {
-        return listOf(geminiProvider, openRouterProvider, huggingFaceProvider)
+        return listOf(geminiProvider, openRouterProvider, huggingFaceProvider, gemmaOfflineProvider)
     }
 
     /**
@@ -47,28 +48,38 @@ class AgentOrchestrator(
         val decision = TaskRouter.routeTask(prompt, hasImage, context)
         onEventLog?.invoke("ROUTER: Decision=${decision.taskType}, Provider=${decision.provider}, Model=${decision.selectedModel}")
 
+        val preferredProvider = AppPreferences.getAiProvider(context)
+        val isExplicitOffline = preferredProvider == "GEMMA_OFFLINE" || AppPreferences.isOfflineFallbackEnabled(context)
+
         // 1. Determine primary provider based on routing decision
         val primaryProvider: AIProvider? = when (decision.provider) {
+            "GEMMA_OFFLINE" -> gemmaOfflineProvider
             "GEMINI" -> geminiProvider
             "OPENROUTER" -> openRouterProvider
             "HUGGINGFACE" -> huggingFaceProvider
             else -> {
-                // Check if any provider is configured
-                if (geminiProvider.isConfigured(context)) geminiProvider
+                if (isExplicitOffline && gemmaOfflineProvider.isConfigured(context)) gemmaOfflineProvider
+                else if (geminiProvider.isConfigured(context)) geminiProvider
                 else if (openRouterProvider.isConfigured(context)) openRouterProvider
                 else if (huggingFaceProvider.isConfigured(context)) huggingFaceProvider
+                else if (gemmaOfflineProvider.isConfigured(context)) gemmaOfflineProvider
                 else null
             }
         }
 
         if (primaryProvider == null || !primaryProvider.isConfigured(context)) {
-            onEventLog?.invoke("ERROR: No compatible AI provider is currently configured.")
+            val missingMsg = if (isExplicitOffline || decision.provider == "GEMMA_OFFLINE") {
+                "Local Gemma 4 E4B model is not installed or ready. Please import model in Settings."
+            } else {
+                "No compatible AI provider is currently configured. Please configure an API key or import Gemma model in Settings."
+            }
+            onEventLog?.invoke("ERROR: $missingMsg")
             return AIProviderResult(
                 success = false,
-                text = "No compatible AI provider is currently configured. Please configure an API key in Settings.",
-                providerId = "none",
-                model = "none",
-                error = "No compatible AI provider is currently configured."
+                text = missingMsg,
+                providerId = if (isExplicitOffline) "gemma_offline" else "none",
+                model = if (isExplicitOffline) "Gemma 4 E4B" else "none",
+                error = missingMsg
             )
         }
 
@@ -94,7 +105,19 @@ class AgentOrchestrator(
 
         onEventLog?.invoke("WARNING: Primary provider ${primaryProvider.displayName} failed: ${primaryResult.error}")
 
-        // 2. Identify candidate fallback providers
+        // In explicit offline mode, do NOT attempt network fallbacks
+        if (isExplicitOffline || primaryProvider == gemmaOfflineProvider) {
+            val offlineError = primaryResult.error ?: "Gemma 4 E4B local model failed to generate response."
+            return AIProviderResult(
+                success = false,
+                text = offlineError,
+                providerId = gemmaOfflineProvider.providerId,
+                model = "Gemma 4 E4B",
+                error = offlineError
+            )
+        }
+
+        // 2. Identify candidate fallback providers (online mode)
         val fallbackProviders = mutableListOf<AIProvider>()
         if (primaryProvider != geminiProvider && geminiProvider.isConfigured(context)) {
             fallbackProviders.add(geminiProvider)
@@ -104,6 +127,9 @@ class AgentOrchestrator(
         }
         if (primaryProvider != huggingFaceProvider && huggingFaceProvider.isConfigured(context)) {
             fallbackProviders.add(huggingFaceProvider)
+        }
+        if (primaryProvider != gemmaOfflineProvider && gemmaOfflineProvider.isConfigured(context)) {
+            fallbackProviders.add(gemmaOfflineProvider)
         }
 
         for (fallback in fallbackProviders) {

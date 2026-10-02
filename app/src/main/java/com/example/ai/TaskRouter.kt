@@ -61,6 +61,23 @@ object TaskRouter {
         val isGeminiConfigured = AppPreferences.getEffectiveApiKey(context).isNotBlank()
         val isOpenRouterConfigured = AppPreferences.getOpenRouterApiKey(context).isNotBlank()
         val isHfConfigured = AppPreferences.getHuggingFaceApiKey(context).isNotBlank()
+        val isGemmaConfigured = com.example.ai.offline.GemmaModelManager.getModelFile(context) != null
+        val preferredProvider = AppPreferences.getAiProvider(context)
+        val isExplicitOffline = preferredProvider == "GEMMA_OFFLINE" || AppPreferences.isOfflineFallbackEnabled(context)
+
+        // Offline mode route check: if offline mode is explicitly enabled or Gemma is selected provider
+        if ((isExplicitOffline || (!isGeminiConfigured && !isOpenRouterConfigured && !isHfConfigured)) && isGemmaConfigured) {
+            if (classification.category != ClassifiedTaskCategory.PHONE_CONTROL &&
+                classification.category != ClassifiedTaskCategory.PHONE_AUTOMATION
+            ) {
+                return TaskRoutingDecision(
+                    taskType = TaskType.GENERAL_REASONING,
+                    provider = "GEMMA_OFFLINE",
+                    selectedModel = "Gemma 4 E4B",
+                    explanation = "Routing task to local on-device Gemma 4 E4B AI engine (Offline)."
+                )
+            }
+        }
 
         // 1. Phone Control & Automation -> Real Android Accessibility Engine
         if (classification.category == ClassifiedTaskCategory.PHONE_CONTROL ||
@@ -197,6 +214,13 @@ object TaskRouter {
                 provider = "HUGGINGFACE",
                 selectedModel = HuggingFaceProvider.MODEL_TEXT_GEN,
                 explanation = "Routing prompt to Hugging Face text generation."
+            )
+        } else if (isGemmaConfigured) {
+            return TaskRoutingDecision(
+                taskType = TaskType.GENERAL_REASONING,
+                provider = "GEMMA_OFFLINE",
+                selectedModel = "Gemma 4 E4B",
+                explanation = "Routing task to on-device Gemma 4 E4B model."
             )
         }
 
