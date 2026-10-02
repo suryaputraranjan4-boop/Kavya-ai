@@ -58,6 +58,7 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
 
     private external fun nativeLoadModel(modelPath: String, contextSize: Int, threads: Int): Long
     private external fun nativeIsLoaded(handle: Long): Boolean
+    private external fun nativeGetLastError(): String
     private external fun nativeCancelGeneration(handle: Long)
     private external fun nativeUnloadModel(handle: Long)
 
@@ -109,22 +110,33 @@ class NativeQwenInferenceBridge private constructor(private val context: Context
                 unloadModel()
             }
 
-            // Call native JNI loader if native library is bound
+            // Determine optimal CPU thread count
+            val availableCpus = Runtime.getRuntime().availableProcessors()
+            val threadCount = (availableCpus - 1).coerceIn(2, 8)
+
             try {
-                nativeHandle = nativeLoadModel(filePath, 4096, 4)
+                nativeHandle = nativeLoadModel(filePath, 4096, threadCount)
                 isNativeLoaded = (nativeHandle != 0L) && nativeIsLoaded(nativeHandle)
-            } catch (_: UnsatisfiedLinkError) {
-                isNativeLoaded = true
+                if (!isNativeLoaded) {
+                    val lastErr = try { nativeGetLastError() } catch (_: Exception) { "Native load failed" }
+                    Log.e(TAG, "MODEL_LOAD_ERROR: Native model initialization failed: $lastErr")
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                Log.e(TAG, "MODEL_LOAD_ERROR: Native library libkavya_qwen.so missing or incompatible: ${e.message}")
+                isNativeLoaded = false
+                nativeHandle = 0L
             }
 
             loadedFilePath = filePath
             val duration = System.currentTimeMillis() - startTime
-            Log.i(TAG, "MODEL_LOAD_SUCCESS: Loaded in ${duration}ms. Path=$filePath")
-            true
+            if (isNativeLoaded) {
+                Log.i(TAG, "MODEL_LOAD_SUCCESS: Loaded in ${duration}ms. Path=$filePath (Threads=$threadCount)")
+            }
+            return@withContext isNativeLoaded
         } catch (e: Exception) {
             Log.e(TAG, "MODEL_LOAD_ERROR: Failed to load Qwen3-4B model: ${e.message}", e)
             isNativeLoaded = false
-            false
+            return@withContext false
         }
     }
 
