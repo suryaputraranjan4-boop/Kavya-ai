@@ -120,6 +120,9 @@ class MicrophoneEngine private constructor(private val context: Context) {
     private val _status = MutableStateFlow(MicrophoneDiagnosticState())
     val status: StateFlow<MicrophoneDiagnosticState> = _status.asStateFlow()
 
+    private val _isMuted = MutableStateFlow(false)
+    val isMuted: StateFlow<Boolean> = _isMuted.asStateFlow()
+
     @Volatile
     private var activeCaptureMode = MicrophoneCaptureMode.SPEECH_RECOGNIZER
 
@@ -256,6 +259,11 @@ class MicrophoneEngine private constructor(private val context: Context) {
                     return@withLock
                 }
 
+                if (_isMuted.value) {
+                    Log.d(TAG, "START_CAPTURE suppressed: microphone is MUTED")
+                    return@withLock
+                }
+
                 activeCaptureMode = mode
                 isContinuousListeningRequested = continuous
                 isSleeping = false
@@ -345,6 +353,69 @@ class MicrophoneEngine private constructor(private val context: Context) {
         }
     }
 
+    fun setMuted(muted: Boolean) {
+        if (_isMuted.value == muted) return
+        _isMuted.value = muted
+        com.example.utils.AppPreferences.setMicListeningEnabled(context, !muted)
+        if (muted) {
+            Log.i(TAG, "MIC_MUTED: Halting physical microphone capture")
+            rearmJob?.cancel()
+            rearmJob = null
+            scope.launch {
+                sessionMutex.withLock {
+                    stopPhysicalHardware(discard = true)
+                    abandonAudioFocus()
+                    updateState(MicrophoneState.IDLE)
+                    _amplitude.value = 0f
+                }
+            }
+        } else {
+            Log.i(TAG, "MIC_UNMUTED: Resuming physical microphone capture")
+            if (isContinuousListeningRequested && !isSleeping) {
+                scope.launch {
+                    sessionMutex.withLock {
+                        if (!_isMuted.value && pauseReferenceCount.get() == 0) {
+                            startPhysicalCaptureSession()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun toggleMute() {
+        setMuted(!_isMuted.value)
+    }
+
+    fun setSleeping(sleeping: Boolean) {
+        isSleeping = sleeping
+        if (sleeping) {
+            Log.i(TAG, "MIC_SLEEP: Halting active command processing")
+            rearmJob?.cancel()
+            rearmJob = null
+            scope.launch {
+                sessionMutex.withLock {
+                    stopPhysicalHardware(discard = true)
+                    abandonAudioFocus()
+                    updateState(MicrophoneState.IDLE)
+                }
+            }
+        } else {
+            Log.i(TAG, "MIC_WAKE: Resuming active listening")
+            if (isContinuousListeningRequested && !_isMuted.value) {
+                scope.launch {
+                    sessionMutex.withLock {
+                        if (pauseReferenceCount.get() == 0) {
+                            startPhysicalCaptureSession()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun isSleeping(): Boolean = isSleeping
+
     /**
      * Completely stops active capture and disables automatic re-arming.
      */
@@ -432,8 +503,8 @@ class MicrophoneEngine private constructor(private val context: Context) {
     // =========================================================================
 
     private suspend fun startPhysicalCaptureSession() {
-        if (pauseReferenceCount.get() > 0) {
-            Log.d(TAG, "Capture session suppressed: pause lock active (${pauseReferenceCount.get()})")
+        if (_isMuted.value || pauseReferenceCount.get() > 0 || isSleeping) {
+            Log.d(TAG, "Capture session suppressed: muted=${_isMuted.value}, pauseCount=${pauseReferenceCount.get()}, sleeping=$isSleeping")
             return
         }
 

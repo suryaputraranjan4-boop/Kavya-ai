@@ -256,8 +256,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     private val _isScreenSharing = MutableStateFlow(false)
     val isScreenSharing: StateFlow<Boolean> = _isScreenSharing.asStateFlow()
 
-    private val _isMicMuted = MutableStateFlow(false)
-    val isMicMuted: StateFlow<Boolean> = _isMicMuted.asStateFlow()
+    val isMicMuted: StateFlow<Boolean> = microphoneEngine.isMuted
 
     private val _screenContextText = MutableStateFlow<String?>(null)
     val screenContextText: StateFlow<String?> = _screenContextText.asStateFlow()
@@ -361,11 +360,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleMicMute() {
-        _isMicMuted.value = !_isMicMuted.value
+        microphoneEngine.toggleMute()
     }
 
     fun setMicMuted(muted: Boolean) {
-        _isMicMuted.value = muted
+        microphoneEngine.setMuted(muted)
     }
 
     fun startVoiceInput() {
@@ -559,7 +558,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             // Request system consent through UI launcher
             _isScreenSharing.value = true
-            _isMicMuted.value = false
+            microphoneEngine.setMuted(false)
             refreshScreenContext()
         }
     }
@@ -597,7 +596,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 when (state) {
                     is com.example.services.ScreenShareManager.ScreenShareState.Active -> {
                         _isScreenSharing.value = true
-                        _isMicMuted.value = false
+                        microphoneEngine.setMuted(false)
                         refreshScreenContext()
                     }
                     is com.example.services.ScreenShareManager.ScreenShareState.Stopped -> {

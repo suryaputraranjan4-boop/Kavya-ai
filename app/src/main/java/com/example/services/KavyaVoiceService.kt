@@ -179,15 +179,14 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
                 }
             }
             ACTION_TOGGLE_MIC -> {
-                val currentMic = AppPreferences.isMicListeningEnabled(this)
-                val newMic = !currentMic
-                AppPreferences.setMicListeningEnabled(this, newMic)
-                Log.i(TAG, "Received ACTION_TOGGLE_MIC -> $newMic")
-                if (newMic) {
+                micEngine.toggleMute()
+                val isMuted = micEngine.isMuted.value
+                Log.i(TAG, "Received ACTION_TOGGLE_MIC -> isMuted=$isMuted")
+                if (!isMuted) {
                     updateNotification(getNotificationTitle(), "Microphone active. Listening...")
                     startListening()
                 } else {
-                    updateNotification(getNotificationTitle(), "Microphone paused.")
+                    updateNotification(getNotificationTitle(), "Microphone muted.")
                     stopListening()
                 }
             }
