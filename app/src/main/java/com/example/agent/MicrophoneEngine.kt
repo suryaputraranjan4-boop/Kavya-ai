@@ -137,6 +137,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
     private var activeOnPartialResult: ((String) -> Unit)? = null
     private var activeOnListeningStarted: (() -> Unit)? = null
     private var activeOnError: ((String) -> Unit)? = null
+    private var activeOnAudioCaptured: ((ByteArray, Int) -> Unit)? = null
 
     // Gemini Live Frame Subscribers
     private val frameSubscribers = mutableListOf<(ByteArray, Int) -> Unit>()
@@ -353,6 +354,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
         rearmJob?.cancel()
         rearmJob = null
         pauseReferenceCount.set(0)
+        activeOnAudioCaptured = null
 
         scope.launch {
             sessionMutex.withLock {
@@ -378,6 +380,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
         onAudioCaptured: (ByteArray, Int) -> Unit,
         onError: (String) -> Unit
     ) {
+        activeOnAudioCaptured = onAudioCaptured
         startCaptureInternal(
             continuous = false,
             mode = MicrophoneCaptureMode.RAW_AUDIO_RECORD,
@@ -665,6 +668,11 @@ class MicrophoneEngine private constructor(private val context: Context) {
                     val read = audioRecord.read(buffer, 0, buffer.size)
                     if (read > 0) {
                         val frame = buffer.copyOf(read)
+                        try {
+                            activeOnAudioCaptured?.invoke(frame, read)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "activeOnAudioCaptured callback error: ${e.message}")
+                        }
 
                         // Dispatch to Gemini Live frame subscribers if any
                         val subscribersCopy = synchronized(frameSubscribers) { frameSubscribers.toList() }
