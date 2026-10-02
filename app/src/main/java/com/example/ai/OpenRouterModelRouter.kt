@@ -45,7 +45,7 @@ object OpenRouterModelRouter {
                     ?: "openrouter/free"
             }
             ClassifiedTaskCategory.CODING -> {
-                availableModels.firstOrNull { it.id.contains("coder") || it.id.contains("qwen") }?.id
+                availableModels.firstOrNull { it.id.contains("coder") }?.id
                     ?: availableModels.firstOrNull { it.id == "meta-llama/llama-3.3-70b-instruct:free" }?.id
                     ?: "meta-llama/llama-3.3-70b-instruct:free"
             }
