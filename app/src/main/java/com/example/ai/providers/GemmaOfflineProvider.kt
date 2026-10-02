@@ -20,16 +20,32 @@ class GemmaOfflineProvider : AIProvider {
 
     override fun isConfigured(context: Context): Boolean {
         val modelFile = GemmaModelManager.getModelFile(context)
-        return modelFile != null && modelFile.exists() && modelFile.length() > 0
+        if (modelFile == null || !modelFile.exists()) return false
+        val info = GemmaModelManager.inspectModel(modelFile)
+        return info.isSupported && Gemma4E4BEngine.getInstance().isReady()
     }
 
     override suspend fun validateCredentials(context: Context): Pair<Boolean, String> {
         val modelFile = GemmaModelManager.getModelFile(context)
-        return if (modelFile != null && modelFile.exists()) {
-            Pair(true, "Gemma 4 E4B model is installed and ready locally (${modelFile.name}).")
-        } else {
-            Pair(false, "Local Gemma 4 E4B model file not found. Please import model file in Settings.")
+        if (modelFile == null || !modelFile.exists()) {
+            return Pair(false, "Local Gemma 4 E4B model file not found. Please import a compatible model in Settings.")
         }
+
+        val info = GemmaModelManager.inspectModel(modelFile)
+        if (!info.isSupported) {
+            return Pair(false, "Model file found but unsupported: ${info.validationMessage}")
+        }
+
+        val engine = Gemma4E4BEngine.getInstance()
+        if (!engine.isReady()) {
+            val initRes = engine.initialize(context)
+            if (initRes.isFailure) {
+                val err = initRes.exceptionOrNull()?.localizedMessage ?: "Runtime initialization failed."
+                return Pair(false, "Gemma model is installed but runtime initialization failed: $err")
+            }
+        }
+
+        return Pair(true, "Gemma 4 E4B is loaded and responding offline.")
     }
 
     override suspend fun getModels(context: Context): List<ProviderModelInfo> {
@@ -51,24 +67,46 @@ class GemmaOfflineProvider : AIProvider {
         systemInstruction: String?,
         context: Context
     ): AIProviderResult {
-        val fullPrompt = if (!systemInstruction.isNullOrBlank()) {
-            "SYSTEM: $systemInstruction\n\nUSER: $prompt\n\nASSISTANT:"
-        } else {
-            prompt
+        val engine = Gemma4E4BEngine.getInstance()
+        if (!engine.isReady()) {
+            val initRes = engine.initialize(context)
+            if (initRes.isFailure) {
+                val err = initRes.exceptionOrNull()?.localizedMessage ?: "Gemma 4 E4B engine is not ready."
+                return AIProviderResult(
+                    success = false,
+                    text = "Gemma 4 E4B is not ready: $err",
+                    providerId = providerId,
+                    model = "Gemma 4 E4B",
+                    error = err
+                )
+            }
         }
 
-        val engine = Gemma4E4BEngine.getInstance()
-        val result = engine.generate(fullPrompt, context)
+        val startTime = System.currentTimeMillis()
+        val result = engine.generate(prompt, systemInstruction)
+        val latency = System.currentTimeMillis() - startTime
 
-        return AIProviderResult(
-            success = result.success,
-            text = result.text,
-            rawJson = null,
-            providerId = providerId,
-            model = "Gemma 4 E4B",
-            error = result.error,
-            latencyMs = result.latencyMs
-        )
+        return if (result.isSuccess) {
+            AIProviderResult(
+                success = true,
+                text = result.getOrDefault(""),
+                rawJson = null,
+                providerId = providerId,
+                model = "Gemma 4 E4B",
+                latencyMs = latency
+            )
+        } else {
+            val err = result.exceptionOrNull()?.localizedMessage ?: "Generation failed."
+            AIProviderResult(
+                success = false,
+                text = "Gemma Offline Generation Error: $err",
+                rawJson = null,
+                providerId = providerId,
+                model = "Gemma 4 E4B",
+                error = err,
+                latencyMs = latency
+            )
+        }
     }
 
     override fun streamGenerate(
@@ -77,13 +115,7 @@ class GemmaOfflineProvider : AIProvider {
         context: Context,
         modelOverride: String?
     ): Flow<String> {
-        val fullPrompt = if (!systemInstruction.isNullOrBlank()) {
-            "SYSTEM: $systemInstruction\n\nUSER: $prompt\n\nASSISTANT:"
-        } else {
-            prompt
-        }
-
         val engine = Gemma4E4BEngine.getInstance()
-        return engine.streamGenerate(fullPrompt, context)
+        return engine.streamGenerate(prompt, systemInstruction, context)
     }
 }

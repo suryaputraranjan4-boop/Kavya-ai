@@ -97,7 +97,7 @@ class MemoryContextProvider private constructor(private val context: Context) {
                 key = key,
                 content = content,
                 importance = 4,
-                provenance = com.example.memory.okf.OkfProvenance(source = "OFFLINE_QWEN", author = "User")
+                provenance = com.example.memory.okf.OkfProvenance(source = "OFFLINE_GEMMA", author = "User")
             )
             Log.i(TAG, "Explicit memory saved locally: $key = $content")
             true

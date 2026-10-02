@@ -45,19 +45,18 @@ fun DebugDashboardScreen() {
         
         val globalState by com.example.state.KavyaStateManager.state.collectAsState()
         val context = androidx.compose.ui.platform.LocalContext.current
-        val localModelInfo by com.example.ai.local.LocalModelManager.getInstance(context).modelInfo.collectAsState()
-        val isOfflineMode = com.example.utils.AppPreferences.isOfflineModeEnabled(context)
+        val gemmaStatus by com.example.ai.offline.GemmaModelManager.status.collectAsState()
+        val gemmaFile = com.example.ai.offline.GemmaModelManager.getModelFile(context)
+        val isOfflineMode = com.example.utils.AppPreferences.isOfflineFallbackEnabled(context) || com.example.utils.AppPreferences.getAiProvider(context) == "GEMMA_OFFLINE"
 
-        DashboardCard("Local AI Model Status (Qwen3-4B-Q4_K_M.gguf)") {
-            StatRow("Offline Mode", if (isOfflineMode) "ENABLED (Qwen3-4B Active)" else "DISABLED (Gemini Active)")
-            StatRow("Model Status", localModelInfo.statusState.name)
-            StatRow("Model File", localModelInfo.fileName)
-            StatRow("Quantization", localModelInfo.quantization)
-            StatRow("File Size", localModelInfo.fileSizeFormatted)
-            StatRow("GGUF Signature Valid", if (localModelInfo.isGgufHeaderValid) "YES (0x46554747)" else "NO / NOT FOUND")
-            StatRow("Storage Location", localModelInfo.filePath.ifBlank { "Not Found (/sdcard/Download/)" })
-            if (localModelInfo.errorMessage.isNotBlank()) {
-                StatRow("Status Message", localModelInfo.errorMessage)
+        DashboardCard("Local AI Model Status (Gemma 4 E4B)") {
+            StatRow("Offline Mode", if (isOfflineMode) "ENABLED (Gemma 4 E4B Active)" else "DISABLED (Gemini Active)")
+            StatRow("Model Status", gemmaStatus.name)
+            StatRow("Model File", gemmaFile?.name ?: "Not installed")
+            StatRow("File Size", if (gemmaFile != null) "${gemmaFile.length() / (1024 * 1024)} MB" else "N/A")
+            StatRow("Storage Location", gemmaFile?.absolutePath ?: "Not Found")
+            if (com.example.ai.offline.GemmaModelManager.lastError != null) {
+                StatRow("Status Message", com.example.ai.offline.GemmaModelManager.lastError ?: "")
             }
         }
         

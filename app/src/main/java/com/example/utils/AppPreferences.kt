@@ -32,6 +32,7 @@ object AppPreferences {
     private const val KEY_VOICE_PERSONA = "key_voice_persona"
     private const val KEY_THEME = "key_app_theme"
     private const val KEY_LANGUAGE = "key_app_language"
+    private const val KEY_OFFLINE_FALLBACK = "key_offline_fallback"
     private const val KEY_GEMINI_VOICE = "key_gemini_voice"
     private const val KEY_PROACTIVE_MODE = "key_proactive_mode"
     private const val KEY_SCREEN_AWARENESS = "key_screen_awareness"
@@ -143,6 +144,17 @@ object AppPreferences {
     fun setLanguage(context: Context, languageCode: String) {
         getPrefs(context).edit().putString(KEY_LANGUAGE, languageCode).apply()
     }
+
+    fun isOfflineFallbackEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_OFFLINE_FALLBACK, false) || getAiProvider(context) == "GEMMA_OFFLINE"
+    }
+
+    fun setOfflineFallbackEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_OFFLINE_FALLBACK, enabled).apply()
+    }
+
+    fun isOfflineModeEnabled(context: Context): Boolean = isOfflineFallbackEnabled(context)
+    fun setOfflineModeEnabled(context: Context, enabled: Boolean) = setOfflineFallbackEnabled(context, enabled)
 
     fun clearAllLearnedPreferences(context: Context) {
         val aliasPrefs = context.getSharedPreferences("kavya_app_aliases", Context.MODE_PRIVATE)

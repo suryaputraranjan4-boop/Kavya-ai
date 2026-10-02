@@ -305,73 +305,181 @@ fun AiApiHubScreen(navController: NavController) {
 
                         HorizontalDivider(color = OutlineVariant.copy(alpha = 0.5f))
 
-                        // Model Status & File details
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
+                        // Model Status & Detailed Diagnostics
+                        val diagnostics = com.example.ai.offline.Gemma4E4BEngine.getInstance().diagnostics
+                        val info = com.example.ai.offline.GemmaModelManager.cachedInfo
+
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Status:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                 Text(
-                                    text = "Status: ${if (gemmaFile != null) "READY" else gemmaStatus.name}",
+                                    text = gemmaStatus.name,
                                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                                    color = if (gemmaFile != null) SuccessGreenGlow else Error
+                                    color = when (gemmaStatus) {
+                                        com.example.ai.offline.GemmaModelStatus.READY -> SuccessGreenGlow
+                                        com.example.ai.offline.GemmaModelStatus.ERROR -> Error
+                                        com.example.ai.offline.GemmaModelStatus.HEALTH_CHECK,
+                                        com.example.ai.offline.GemmaModelStatus.LOADING -> AccentYellow
+                                        else -> TextSecondary
+                                    }
                                 )
-                                if (gemmaFile != null) {
-                                    Text(
-                                        text = "File: ${gemmaFile?.name} (${(gemmaFile?.length() ?: 0) / (1024 * 1024)} MB)",
-                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                        color = TextSecondary
-                                    )
-                                } else {
-                                    Text(
-                                        text = "No local model found. Import gemma-4-e4b.bin or .task model file.",
-                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                        color = TextTertiary
-                                    )
-                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Model File:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(
+                                    text = gemmaFile?.name ?: "None",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = TextPrimary
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Size:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(
+                                    text = if (gemmaFile != null) "${gemmaFile?.length()?.let { it / (1024 * 1024) } ?: 0} MB" else "N/A",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Detected Format:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(
+                                    text = info?.format?.name ?: diagnostics.detectedFormat.name,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = if (info?.isSupported == true) AccentCyan else Error
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Runtime Selected:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(
+                                    text = diagnostics.runtimeSelected,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                    color = TextSecondary
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Offline Mode:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text("YES (100% On-Device)", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = SuccessGreenGlow)
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Health Check:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                Text(
+                                    text = diagnostics.healthCheckState,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                    color = if (diagnostics.healthCheckState == "PASS") SuccessGreenGlow else Error
+                                )
+                            }
+
+                            if (!diagnostics.lastError.isNullOrBlank() || com.example.ai.offline.GemmaModelManager.lastError != null) {
+                                Text(
+                                    text = "Error: ${diagnostics.lastError ?: com.example.ai.offline.GemmaModelManager.lastError}",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                    color = Error
+                                )
                             }
                         }
 
-                        // Buttons for importing model and toggling active engine
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { filePickerLauncher.launch("*/*") },
-                                enabled = !isGemmaImporting,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp)
+                        // Buttons for importing model, verifying, loading, and unloading
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                if (isGemmaImporting) {
-                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                } else {
-                                    Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                OutlinedButton(
+                                    onClick = { filePickerLauncher.launch("*/*") },
+                                    enabled = !isGemmaImporting,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    if (isGemmaImporting) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Import Model", fontSize = 11.sp, color = AccentCyan)
                                 }
-                                Text("Import Model", fontSize = 12.sp, color = AccentCyan)
+
+                                OutlinedButton(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            com.example.ai.offline.GemmaModelManager.checkModelStatus(context)
+                                        }
+                                    },
+                                    enabled = gemmaFile != null,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Verify Model", fontSize = 11.sp, color = AccentCyan)
+                                }
                             }
 
-                            Button(
-                                onClick = {
-                                    val newProvider = if (selectedAiProvider == "GEMMA_OFFLINE") "GEMINI" else "GEMMA_OFFLINE"
-                                    selectedAiProvider = newProvider
-                                    AppPreferences.setAiProvider(context, newProvider)
-                                    AppPreferences.setOfflineFallbackEnabled(context, newProvider == "GEMMA_OFFLINE")
-                                },
-                                enabled = gemmaFile != null,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (selectedAiProvider == "GEMMA_OFFLINE") SuccessGreen else Primary
-                                )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text(
-                                    if (selectedAiProvider == "GEMMA_OFFLINE") "Active (Offline)" else "Use Offline Gemma",
-                                    fontSize = 12.sp
-                                )
+                                Button(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            val engine = com.example.ai.offline.Gemma4E4BEngine.getInstance()
+                                            engine.initialize(context)
+                                        }
+                                    },
+                                    enabled = gemmaFile != null && !com.example.ai.offline.Gemma4E4BEngine.getInstance().isReady(),
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                                ) {
+                                    Text("Load Model", fontSize = 11.sp)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            com.example.ai.offline.Gemma4E4BEngine.getInstance().release()
+                                        }
+                                    },
+                                    enabled = com.example.ai.offline.Gemma4E4BEngine.getInstance().isReady(),
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Unload Model", fontSize = 11.sp, color = Error)
+                                }
                             }
                         }
                     }

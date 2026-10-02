@@ -33,6 +33,16 @@ object ModelRegistry {
             isFree = true
         ),
 
+        // Gemma 4 E4B (Offline Model)
+        RegisteredModel(
+            providerId = "gemma_offline",
+            modelId = "gemma-4-e4b",
+            displayName = "Gemma 4 E4B (Offline)",
+            task = "On-Device Offline Reasoning & Task Planning",
+            capabilities = listOf("Offline", "LiteRT-LM", "On-Device", "Privacy"),
+            isFree = true
+        ),
+
         // OpenRouter Models (Secondary AI Partner)
         RegisteredModel(
             providerId = "openrouter",

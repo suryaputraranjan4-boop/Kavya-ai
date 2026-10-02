@@ -260,6 +260,15 @@ object CommandInterpreter {
             }
 
             // Pattern D: "Open WhatsApp and message [recipient] [message]" / "message [recipient] [message]"
+            val patternD1 = Regex("(?i)(?:open\\s+(?:whatsapp|sms)\\s+and\\s+)?message\\s+(.+?)\\s+(hello|hi|hey|how\\s+are\\s+you|good\\s+morning|good\\s+night)$")
+            patternD1.find(trimmed)?.let { m ->
+                val recipient = m.groupValues[1].trim()
+                val message = m.groupValues[2].trim()
+                if (recipient.isNotBlank() && message.isNotBlank()) {
+                    return CommandIntent.SendMessage(app, recipient, message)
+                }
+            }
+
             val patternD = Regex("(?i)(?:open\\s+(?:whatsapp|sms)\\s+and\\s+)?message\\s+(.+?)\\s+(.+)$")
             patternD.find(trimmed)?.let { m ->
                 val recipient = m.groupValues[1].trim()
@@ -289,10 +298,10 @@ object CommandInterpreter {
             var query = trimmed
                 // Remove app mentions
                 .replace("(?i)^(?:kavya\\s+)?(?:please\\s+)?".toRegex(), "")
-                .replace("(?i)(?:spotify|youtube|yt|स्पॉटिफ़ाई|यूट्यूब)\\s+(?:par|pe|me|mein|on|in)?\\s*".toRegex(), "")
+                .replace("(?i)(?:open\\s+)?(?:spotify|youtube|yt|स्पॉटिफ़ाई|यूट्यूब)\\s+(?:par|pe|me|mein|on|in|and)?\\s*".toRegex(), "")
                 .replace("(?i)\\s+(?:spotify|youtube|yt|स्पॉटिफ़ाई|यूट्यूब)\\s*(?:par|pe|me|mein|on|in)?$".toRegex(), "")
                 // Remove action verbs
-                .replace("(?i)^(?:play|chalao|bajao|sunao|open)\\s+".toRegex(), "")
+                .replace("(?i)^(?:play|chalao|bajao|sunao|open|and|and\\s+play)\\s+".toRegex(), "")
                 .replace("(?i)\\s+(?:chalao|chala do|play karo|play kar|play|bajao|baja do|sunao|open karke do|karke do|karo|do|लगाओ|चलाओ|बजाओ)$".toRegex(), "")
                 // Remove wrappers like "ka song", "ka video", "ka gana"
                 .replace("(?i)\\s+(?:ka|ki|ke)?\\s*(?:song|gana|gaana|music|video|track)$".toRegex(), "")
@@ -371,9 +380,9 @@ object CommandInterpreter {
 
             var query = trimmed
                 .replace("(?i)^(?:kavya\\s+)?(?:please\\s+)?".toRegex(), "")
-                .replace("(?i)(?:google|chrome|browser|youtube|yt|play\\s*store|spotify|instagram|गूगल|यूट्यूब|क्रोम)\\s+(?:pe|par|me|mein|on|in)?\\s*".toRegex(), "")
+                .replace("(?i)(?:open\\s+)?(?:google|chrome|browser|youtube|yt|play\\s*store|spotify|instagram|गूगल|यूट्यूब|क्रोम)\\s+(?:pe|par|me|mein|on|in|and)?\\s*".toRegex(), "")
                 .replace("(?i)\\s+(?:google|chrome|browser|youtube|yt|play\\s*store|spotify|instagram|गूगल|यूट्यूब|क्रोम)\\s*(?:pe|par|me|mein|on|in)?$".toRegex(), "")
-                .replace("(?i)^(?:search(?:\\s+for)?|find|look\\s+for|सर्च\\s*करो|ढूंढो|खोजो)\\s+".toRegex(), "")
+                .replace("(?i)^(?:search(?:\\s+for)?|find|look\\s+for|and\\s+search(?:\\s+for)?|and\\s+search|सर्च\\s*करो|ढूंढो|खोजो)\\s+".toRegex(), "")
                 .replace("(?i)\\s+(?:search\\s+karo|search\\s+kar|search|dhoondo|khojo|सर्च\\s*करो|ढूंढो|खोजो)$".toRegex(), "")
                 .trim()
 

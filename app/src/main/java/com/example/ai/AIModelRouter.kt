@@ -2,13 +2,12 @@ package com.example.ai
 
 import android.content.Context
 import android.util.Log
-import com.example.ai.local.LocalModelManager
-import com.example.ai.local.QwenLocalInferenceEngine
+import com.example.ai.offline.Gemma4E4BEngine
+import com.example.ai.offline.GemmaModelManager
 import com.example.data.MessageEntity
 import com.example.utils.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 
@@ -17,7 +16,7 @@ import kotlinx.coroutines.withContext
  *
  * Routes inference requests seamlessly between:
  * • ONLINE MODE → Gemini 2.5 Flash / Pro (Main Brain)
- * • OFFLINE MODE → Local Qwen3-4B-Q4_K_M.gguf (Local Tensor Engine)
+ * • OFFLINE MODE → Local Gemma 4 E4B Engine (LiteRT-LM On-Device)
  *
  * Guarantees zero cloud leakage when Offline Mode is enabled.
  * Preserves normalized conversation context, persistent memories, and assistant actions across modes.
@@ -29,19 +28,20 @@ class AIModelRouter(private val context: Context) {
     }
 
     private val onlineEngine = KavyaAI(context)
-    private val localQwenEngine = QwenLocalInferenceEngine.getInstance(context)
-    private val modelManager = LocalModelManager.getInstance(context)
+    private val gemmaEngine = Gemma4E4BEngine.getInstance()
 
     fun isOfflineMode(): Boolean {
-        return AppPreferences.isOfflineModeEnabled(context)
+        return AppPreferences.isOfflineFallbackEnabled(context) || AppPreferences.getAiProvider(context) == "GEMMA_OFFLINE"
     }
 
     fun setOfflineMode(enabled: Boolean) {
-        AppPreferences.setOfflineModeEnabled(context, enabled)
+        AppPreferences.setOfflineFallbackEnabled(context, enabled)
         if (enabled) {
-            Log.i(TAG, "AI Model Router switched to OFFLINE MODE (Qwen3-4B)")
-            modelManager.discoverModelFile()
+            AppPreferences.setAiProvider(context, "GEMMA_OFFLINE")
+            Log.i(TAG, "AI Model Router switched to OFFLINE MODE (Gemma 4 E4B)")
+            GemmaModelManager.checkModelStatus(context)
         } else {
+            AppPreferences.setAiProvider(context, "GEMINI")
             Log.i(TAG, "AI Model Router switched to ONLINE MODE (Gemini)")
         }
     }
@@ -57,13 +57,19 @@ class AIModelRouter(private val context: Context) {
         isProactiveMode: Boolean = false
     ): String = withContext(Dispatchers.IO) {
         if (isOfflineMode()) {
-            Log.d(TAG, "Routing chat request to LOCAL Qwen3-4B model")
-            return@withContext localQwenEngine.chat(
-                prompt = prompt,
-                history = history,
-                screenContext = screenContext,
-                memoryContext = memoryContext
-            )
+            Log.d(TAG, "Routing chat request to LOCAL Gemma 4 E4B engine")
+            if (!gemmaEngine.isReady()) {
+                val initResult = gemmaEngine.initialize(context)
+                if (initResult.isFailure) {
+                    val err = initResult.exceptionOrNull()?.message ?: "Gemma 4 E4B model is not initialized or ready."
+                    return@withContext "GEMMA OFFLINE ERROR: $err"
+                }
+            }
+            val sysInstruction = SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+            val genResult = gemmaEngine.generate(prompt, sysInstruction)
+            return@withContext genResult.getOrElse {
+                "GEMMA OFFLINE ERROR: ${it.localizedMessage ?: "Generation failed."}"
+            }
         } else {
             Log.d(TAG, "Routing chat request to ONLINE Gemini model")
             return@withContext onlineEngine.chat(
@@ -87,13 +93,9 @@ class AIModelRouter(private val context: Context) {
         isProactiveMode: Boolean = false
     ): Flow<String> {
         return if (isOfflineMode()) {
-            Log.d(TAG, "Routing streamChat request to LOCAL Qwen3-4B model")
-            localQwenEngine.streamChat(
-                prompt = prompt,
-                history = history,
-                screenContext = screenContext,
-                memoryContext = memoryContext
-            )
+            Log.d(TAG, "Routing streamChat request to LOCAL Gemma 4 E4B engine")
+            val sysInstruction = SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+            gemmaEngine.streamGenerate(prompt, sysInstruction, context)
         } else {
             Log.d(TAG, "Routing streamChat request to ONLINE Gemini model")
             onlineEngine.streamChat(
@@ -116,7 +118,6 @@ class AIModelRouter(private val context: Context) {
         pitchMultiplier: Float = 1.0f,
         speedMultiplier: Float = 1.0f
     ): ByteArray? {
-        // Voice generation delegates through Kavya's active voice pipeline
         return onlineEngine.generateSpeechAudio(text, voiceName, emotionLabel, pitchMultiplier, speedMultiplier)
     }
 }

@@ -259,14 +259,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     val isMicMuted: StateFlow<Boolean> = microphoneEngine.isMuted
 
     private val _isOfflineMode = MutableStateFlow(
-        com.example.utils.AppPreferences.isOfflineModeEnabled(application)
+        com.example.utils.AppPreferences.isOfflineFallbackEnabled(application) || com.example.utils.AppPreferences.getAiProvider(application) == "GEMMA_OFFLINE"
     )
     val isOfflineMode: StateFlow<Boolean> = _isOfflineMode.asStateFlow()
 
-    val localModelInfo = com.example.ai.local.LocalModelManager.getInstance(application).modelInfo
+    val gemmaModelStatus = com.example.ai.offline.GemmaModelManager.status
 
     fun toggleOfflineMode() {
-        val app = getApplication<Application>()
         val newMode = !_isOfflineMode.value
         aiClient.setOfflineMode(newMode)
         _isOfflineMode.value = newMode
