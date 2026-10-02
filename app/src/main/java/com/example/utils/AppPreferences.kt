@@ -32,7 +32,6 @@ object AppPreferences {
     private const val KEY_VOICE_PERSONA = "key_voice_persona"
     private const val KEY_THEME = "key_app_theme"
     private const val KEY_LANGUAGE = "key_app_language"
-    private const val KEY_OFFLINE_FALLBACK = "key_offline_fallback"
     private const val KEY_GEMINI_VOICE = "key_gemini_voice"
     private const val KEY_PROACTIVE_MODE = "key_proactive_mode"
     private const val KEY_SCREEN_AWARENESS = "key_screen_awareness"
@@ -47,9 +46,6 @@ object AppPreferences {
     private const val KEY_MAPS_SCRAPER_ENABLED = "key_maps_scraper_enabled"
     private const val KEY_MAPS_SCRAPER_PROXY_HOST = "key_maps_scraper_proxy_host"
     private const val KEY_MAPS_SCRAPER_PROXY_PORT = "key_maps_scraper_proxy_port"
-    private const val KEY_OFFLINE_MODE_ENABLED = "key_offline_mode_enabled"
-    private const val KEY_LOCAL_MODEL_PATH = "key_local_model_path"
-    private const val KEY_LOCAL_MODEL_NAME = "key_local_model_name"
     private const val KEY_OKF_MEMORY_ENABLED = "key_okf_memory_enabled"
     private const val PREFIX_PROVIDER_STATUS = "provider_status_"
     private const val PREFIX_PROVIDER_COUNT = "provider_count_"
@@ -146,14 +142,6 @@ object AppPreferences {
 
     fun setLanguage(context: Context, languageCode: String) {
         getPrefs(context).edit().putString(KEY_LANGUAGE, languageCode).apply()
-    }
-
-    fun isOfflineFallbackEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_OFFLINE_FALLBACK, false)
-    }
-
-    fun setOfflineFallbackEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_OFFLINE_FALLBACK, enabled).apply()
     }
 
     fun clearAllLearnedPreferences(context: Context) {
@@ -300,30 +288,6 @@ object AppPreferences {
 
     fun setMapsScraperProxyPort(context: Context, port: Int) {
         getPrefs(context).edit().putInt(KEY_MAPS_SCRAPER_PROXY_PORT, port).apply()
-    }
-
-    fun isOfflineModeEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_OFFLINE_MODE_ENABLED, false)
-    }
-
-    fun setOfflineModeEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_OFFLINE_MODE_ENABLED, enabled).apply()
-    }
-
-    fun getLocalModelPath(context: Context): String {
-        return getPrefs(context).getString(KEY_LOCAL_MODEL_PATH, "") ?: ""
-    }
-
-    fun setLocalModelPath(context: Context, path: String) {
-        getPrefs(context).edit().putString(KEY_LOCAL_MODEL_PATH, path.trim()).apply()
-    }
-
-    fun getLocalModelName(context: Context): String {
-        return getPrefs(context).getString(KEY_LOCAL_MODEL_NAME, "Qwen3-4B-Q4_K_M.gguf") ?: "Qwen3-4B-Q4_K_M.gguf"
-    }
-
-    fun setLocalModelName(context: Context, name: String) {
-        getPrefs(context).edit().putString(KEY_LOCAL_MODEL_NAME, name.trim()).apply()
     }
 
     fun isOkfMemoryEnabled(context: Context): Boolean {
