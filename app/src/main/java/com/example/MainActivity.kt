@@ -1,7 +1,6 @@
 package com.example
 
 import android.Manifest
-import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -16,13 +15,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.rememberNavController
-import com.example.services.KavyaVoiceService
 import com.example.ui.components.KavyaSideMenu
 import com.example.ui.navigation.AppNavGraph
 import com.example.ui.navigation.LocalDrawerState
 import com.example.ui.theme.*
-import com.example.utils.AppPreferences
-import com.example.utils.PermissionsManager
 import com.example.viewmodel.KavyaViewModel
 
 class MainActivity : ComponentActivity() {
@@ -35,18 +31,14 @@ class MainActivity : ComponentActivity() {
   private val permissionLauncher = registerForActivityResult(
     ActivityResultContracts.RequestMultiplePermissions()
   ) { permissions ->
-    val recordGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
-    Log.d(TAG, "Permissions result: record_audio=$recordGranted")
-    if (recordGranted) {
-      startVoiceServiceIfPermitted()
-    }
+    Log.d(TAG, "Permissions result: $permissions")
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
 
-    requestVoicePermissions()
+    requestAppPermissions()
 
     setContent {
       MyApplicationTheme {
@@ -87,8 +79,8 @@ class MainActivity : ComponentActivity() {
     }
   }
 
-  private fun requestVoicePermissions() {
-    val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+  private fun requestAppPermissions() {
+    val permissions = mutableListOf<String>()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
       permissions.add(Manifest.permission.POST_NOTIFICATIONS)
     }
@@ -99,46 +91,17 @@ class MainActivity : ComponentActivity() {
 
     if (missing.isNotEmpty()) {
       permissionLauncher.launch(missing.toTypedArray())
-    } else {
-      startVoiceServiceIfPermitted()
-    }
-  }
-
-  private fun startVoiceServiceIfPermitted() {
-    if (PermissionsManager.hasRecordAudioPermission(this) && AppPreferences.isBackgroundVoiceEnabled(this)) {
-      try {
-        val serviceIntent = Intent(this, KavyaVoiceService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-          androidx.core.content.ContextCompat.startForegroundService(this, serviceIntent)
-        } else {
-          startService(serviceIntent)
-        }
-        Log.i(TAG, "KavyaVoiceService started successfully from MainActivity.")
-      } catch (e: Exception) {
-        Log.e(TAG, "Error starting KavyaVoiceService: ${e.message}")
-      }
     }
   }
 
   override fun onResume() {
     super.onResume()
     com.example.state.KavyaStateManager.isActivityVisible = true
-    viewModel.microphoneEngine.refreshHardwareDiagnostics()
-    startVoiceServiceIfPermitted()
   }
 
   override fun onPause() {
     super.onPause()
     com.example.state.KavyaStateManager.isActivityVisible = false
-  }
-
-  override fun onDestroy() {
-    super.onDestroy()
-    // Do NOT stop KavyaVoiceService if background voice is enabled.
-    // Kavya is designed to remain listening across other apps until explicit "Sleep Kavya" or mic turned off.
-    if (!AppPreferences.isBackgroundVoiceEnabled(this) && isFinishing) {
-      stopService(Intent(this, KavyaVoiceService::class.java))
-    }
   }
 }
 

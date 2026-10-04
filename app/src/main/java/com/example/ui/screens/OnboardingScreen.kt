@@ -67,12 +67,10 @@ fun OnboardingScreen(
     var currentStep by remember { mutableIntStateOf(1) } // 1: Welcome, 2: API Key, 3: Permissions, 4: Dashboard, 5: Finish
 
     // Permission tracking states
-    var micGranted by remember { mutableStateOf(AppPreferences.hasMicrophonePermission(context)) }
     var notifGranted by remember { mutableStateOf(AppPreferences.hasNotificationPermission(context)) }
     var accessGranted by remember { mutableStateOf(AppPreferences.hasAccessibilityPermission(context)) }
 
     fun refreshPermissions() {
-        micGranted = AppPreferences.hasMicrophonePermission(context)
         notifGranted = AppPreferences.hasNotificationPermission(context)
         accessGranted = AppPreferences.hasAccessibilityPermission(context)
     }
@@ -83,7 +81,7 @@ fun OnboardingScreen(
     }
 
     val runtimePermissions = remember {
-        val list = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        val list = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             list.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -190,7 +188,6 @@ fun OnboardingScreen(
                         }
                     )
                     3 -> Step3Permissions(
-                        micGranted = micGranted,
                         notifGranted = notifGranted,
                         accessGranted = accessGranted,
                         onRequestRuntimePermissions = {
@@ -204,7 +201,6 @@ fun OnboardingScreen(
                     )
                     4 -> Step4Dashboard(
                         hasApiKey = AppPreferences.hasAnyApiKey(context) || apiKeyInput.isNotBlank(),
-                        micGranted = micGranted,
                         notifGranted = notifGranted,
                         accessGranted = accessGranted,
                         onContinue = { currentStep = 5 }
@@ -370,10 +366,10 @@ private fun Step1Welcome(
                 desc = "Natural, expressive alto voice with emotional intelligence and deep warmth."
             )
             FeatureHighlightRow(
-                icon = Icons.Default.Mic,
+                icon = Icons.Default.TouchApp,
                 iconTint = AccentCyan,
-                title = "Hands-Free Device Control",
-                desc = "Open apps, search media, and control settings directly via voice."
+                title = "Smart Device Control",
+                desc = "Open apps, search media, and control settings directly with Kavya."
             )
             FeatureHighlightRow(
                 icon = Icons.Default.ScreenShare,
@@ -704,7 +700,6 @@ private fun Step2ApiKeySetup(
 // -------------------------------------------------------------
 @Composable
 private fun Step3Permissions(
-    micGranted: Boolean,
     notifGranted: Boolean,
     accessGranted: Boolean,
     onRequestRuntimePermissions: () -> Unit,
@@ -726,30 +721,17 @@ private fun Step3Permissions(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Kavya requires device permissions to hear voice commands and perceive screen UI.",
+                text = "Kavya requires device permissions to provide background alerts and perceive screen UI.",
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
                 color = TextSecondary
             )
         }
 
-        // 1. Microphone Permission
-        item {
-            PermissionSetupCard(
-                icon = Icons.Default.Mic,
-                title = "1. Microphone & Voice Recognition",
-                description = "Required so Kavya can hear your speech and process conversational commands hands-free.",
-                isGranted = micGranted,
-                isRequired = true,
-                actionLabel = "Grant Microphone",
-                onAction = onRequestRuntimePermissions
-            )
-        }
-
-        // 2. Notification Permission
+        // 1. Notification Permission
         item {
             PermissionSetupCard(
                 icon = Icons.Default.Notifications,
-                title = "2. Background Alerts & Notifications",
+                title = "1. Background Alerts & Notifications",
                 description = "Shows live assistant status, background automation updates, and companion feedback.",
                 isGranted = notifGranted,
                 isRequired = false,
@@ -758,11 +740,11 @@ private fun Step3Permissions(
             )
         }
 
-        // 3. Accessibility Service
+        // 2. Accessibility Service
         item {
             PermissionSetupCard(
                 icon = Icons.Default.Accessibility,
-                title = "3. Accessibility & Vision Service",
+                title = "2. Accessibility & Vision Service",
                 description = "Allows Kavya to inspect on-screen UI nodes, read visible text, and assist navigation for you.",
                 isGranted = accessGranted,
                 isRequired = false,
@@ -875,12 +857,11 @@ private fun PermissionSetupCard(
 @Composable
 private fun Step4Dashboard(
     hasApiKey: Boolean,
-    micGranted: Boolean,
     notifGranted: Boolean,
     accessGranted: Boolean,
     onContinue: () -> Unit
 ) {
-    val totalReady = listOf(hasApiKey, micGranted, notifGranted, accessGranted).count { it }
+    val totalReady = listOf(hasApiKey, notifGranted, accessGranted).count { it }
 
     LazyColumn(
         modifier = Modifier
@@ -931,7 +912,7 @@ private fun Step4Dashboard(
                             color = TextPrimary
                         )
                         Text(
-                            "$totalReady of 4 capabilities configured",
+                            "$totalReady of 3 capabilities configured",
                             style = MaterialTheme.typography.bodySmall,
                             color = if (totalReady >= 2) SuccessGreenGlow else TextSecondary
                         )
@@ -953,8 +934,6 @@ private fun Step4Dashboard(
                 shape = RoundedCornerShape(18.dp)
             ) {
                 SummaryItemRow("Gemini AI Core", "Intelligence & language model", hasApiKey, Icons.Default.VpnKey)
-                HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 6.dp))
-                SummaryItemRow("Microphone Audio", "Voice recognition & conversational input", micGranted, Icons.Default.Mic)
                 HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 6.dp))
                 SummaryItemRow("Notification Alerts", "Background companion feedback", notifGranted, Icons.Default.Notifications)
                 HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 6.dp))

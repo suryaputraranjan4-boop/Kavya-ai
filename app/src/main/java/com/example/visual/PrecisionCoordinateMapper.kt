@@ -41,22 +41,22 @@ class PrecisionCoordinateMapper(private val context: Context) {
         val rotation: Int
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val currentMetrics = windowManager?.currentWindowMetrics
+            val currentMetrics = try { windowManager?.currentWindowMetrics } catch (e: Exception) { null }
             val bounds = currentMetrics?.bounds
             width = bounds?.width()?.coerceAtLeast(720) ?: 1080
             height = bounds?.height()?.coerceAtLeast(1280) ?: 2400
-            val display = context.display
-            rotation = display?.rotation ?: Surface.ROTATION_0
-            display?.getRealMetrics(metrics)
+            val display = try { context.display } catch (e: Exception) { null }
+            rotation = try { display?.rotation ?: Surface.ROTATION_0 } catch (e: Exception) { Surface.ROTATION_0 }
+            try { display?.getRealMetrics(metrics) } catch (e: Exception) { /* ignore */ }
         } else {
             @Suppress("DEPRECATION")
-            val defaultDisplay = windowManager?.defaultDisplay
+            val defaultDisplay = try { windowManager?.defaultDisplay } catch (e: Exception) { null }
             @Suppress("DEPRECATION")
-            defaultDisplay?.getRealMetrics(metrics)
+            try { defaultDisplay?.getRealMetrics(metrics) } catch (e: Exception) { /* ignore */ }
             width = metrics.widthPixels.coerceAtLeast(720)
             height = metrics.heightPixels.coerceAtLeast(1280)
             @Suppress("DEPRECATION")
-            rotation = defaultDisplay?.rotation ?: Surface.ROTATION_0
+            rotation = try { defaultDisplay?.rotation ?: Surface.ROTATION_0 } catch (e: Exception) { Surface.ROTATION_0 }
         }
 
         val dpi = if (metrics.densityDpi > 0) metrics.densityDpi else DisplayMetrics.DENSITY_DEVICE_STABLE

@@ -11,7 +11,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
@@ -299,7 +299,7 @@ fun KavyaVoiceOrb(
                     )
             )
 
-            // Center Content: Microphone / Audio Waves / Animated Bars
+            // Center Content: Audio Waves / Animated Visualizers
             when (state) {
                 VoiceState.LISTENING -> {
                     // Modern audio wave bars
@@ -375,7 +375,7 @@ fun KavyaVoiceOrb(
                     )
                 }
                 else -> {
-                    // IDLE: Clean, minimalist modern microphone icon
+                    // IDLE: Clean, minimalist modern AI core icon
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
@@ -384,8 +384,8 @@ fun KavyaVoiceOrb(
                             .background(Color.White.copy(alpha = 0.06f))
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Mic,
-                            contentDescription = "Tap to talk to Kavya",
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = "Kavya AI Core",
                             tint = TextPrimary,
                             modifier = Modifier.size(28.dp)
                         )

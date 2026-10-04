@@ -41,12 +41,10 @@ import com.google.accompanist.permissions.rememberMultiplePermissionsState
 @Composable
 fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    var micGranted by remember { mutableStateOf(AppPreferences.hasMicrophonePermission(context)) }
     var notifGranted by remember { mutableStateOf(AppPreferences.hasNotificationPermission(context)) }
     var accessibilityGranted by remember { mutableStateOf(PermissionsManager.isAccessibilityServiceEnabled(context, KavyaAccessibilityService::class.java)) }
 
     fun refreshAll() {
-        micGranted = AppPreferences.hasMicrophonePermission(context)
         notifGranted = AppPreferences.hasNotificationPermission(context)
         accessibilityGranted = PermissionsManager.isAccessibilityServiceEnabled(context, KavyaAccessibilityService::class.java)
     }
@@ -56,7 +54,7 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
     }
 
     val permissionsToRequest = remember {
-        val list = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        val list = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             list.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -76,21 +74,11 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
         ) {
             item {
                 Text(
-                    text = "System Access for Voice & Screen Perception",
+                    text = "System Access for Screen Perception & Notifications",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-            }
-
-            item {
-                PermissionGlassCard(
-                    icon = Icons.Default.Mic,
-                    title = "Microphone & Voice Input",
-                    description = "Required to hear voice commands and converse hands-free.",
-                    isGranted = micGranted,
-                    onClick = { permissionState.launchMultiplePermissionRequest() }
-                )
             }
 
             item {

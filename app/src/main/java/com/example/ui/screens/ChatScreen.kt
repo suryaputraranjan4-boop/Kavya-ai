@@ -45,8 +45,6 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
     val currentChatId by viewModel.currentChatId.collectAsState()
     val isScreenSharing by viewModel.isScreenSharing.collectAsState()
     val voiceState by viewModel.voiceState.collectAsState()
-    val micEngineState by viewModel.micEngineState.collectAsState()
-    val isMicActive by viewModel.isMicActive.collectAsState()
 
     var showHistory by remember { mutableStateOf(false) }
     var showScreenShareSheet by remember { mutableStateOf(false) }
@@ -135,9 +133,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         bottomBar = {
             ChatBar(
                 onSend = { viewModel.sendMessage(it) },
-                onMicClick = { viewModel.toggleVoiceInput() },
                 onPlusClick = { showScreenShareSheet = true },
-                isListening = (isMicActive || voiceState == VoiceState.LISTENING || micEngineState in listOf(com.example.agent.MicrophoneState.STARTING, com.example.agent.MicrophoneState.LISTENING, com.example.agent.MicrophoneState.PROCESSING, com.example.agent.MicrophoneState.REARMING)),
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 10.dp)
                     .navigationBarsPadding()

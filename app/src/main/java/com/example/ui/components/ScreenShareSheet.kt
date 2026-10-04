@@ -41,11 +41,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.*
 import com.example.viewmodel.KavyaViewModel
-import com.google.accompanist.permissions.ExperimentalPermissionsApi
-import com.google.accompanist.permissions.isGranted
-import com.google.accompanist.permissions.rememberPermissionState
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScreenShareSheet(
     viewModel: KavyaViewModel,
@@ -54,13 +51,9 @@ fun ScreenShareSheet(
 ) {
     val context = LocalContext.current
     val isSharing by viewModel.isScreenSharing.collectAsState()
-    val isMicMuted by viewModel.isMicMuted.collectAsState()
     val screenContext by viewModel.screenContextText.collectAsState()
     val voiceState by viewModel.voiceState.collectAsState()
     val scrollState = rememberScrollState()
-
-    // Microphone permission state
-    val micPermissionState = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
 
     // Android Official Screen Capture Consent Launcher (MediaProjection)
     val mediaProjectionManager = remember {
@@ -74,12 +67,6 @@ fun ScreenShareSheet(
     }
 
     fun startScreenShareWithConsent() {
-        if (!micPermissionState.status.isGranted) {
-            // Request microphone permission first
-            micPermissionState.launchPermissionRequest()
-            return
-        }
-
         val captureIntent = viewModel.startScreenShareConsent(context)
         if (captureIntent != null) {
             screenCaptureConsentLauncher.launch(captureIntent)
@@ -185,103 +172,12 @@ fun ScreenShareSheet(
                     )
                     Text(
                         text = if (isSharing)
-                            "\"I can see your screen now and the mic is active! Just tell me what you'd like me to check or walk you through ✨\""
+                            "\"I can see your screen now! I will observe and guide you in real time ✨\""
                         else
-                            "\"Share your screen so I can follow along and guide you in real time. The microphone stays active for seamless conversation ✨\"",
+                            "\"Share your screen so I can follow along and guide you in real time ✨\"",
                         style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 19.sp),
                         color = PrimaryLight
                     )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // LIVE MICROPHONE STATUS & MUTE/UNMUTE CONTROLS
-            GlassCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                backgroundColor = if (!isMicMuted && isSharing)
-                    SuccessGreen.copy(alpha = 0.10f)
-                else
-                    SurfaceGlass.copy(alpha = 0.65f),
-                borderColor = if (!isMicMuted && isSharing)
-                    SuccessGreen.copy(alpha = 0.35f)
-                else
-                    GlassBorder
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (!isMicMuted)
-                                        SuccessGreen.copy(alpha = 0.20f)
-                                    else
-                                        Error.copy(alpha = 0.15f)
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = if (!isMicMuted) Icons.Default.Mic else Icons.Default.MicOff,
-                                contentDescription = if (!isMicMuted) "Mic On" else "Mic Muted",
-                                tint = if (!isMicMuted) SuccessGreen else Error,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = if (!isMicMuted) "Microphone: Active (Mic On) 🎙️" else "Microphone: Muted 🔇",
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                    color = if (!isMicMuted) SuccessGreenGlow else Error
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = if (!isMicMuted)
-                                    "Kavya can hear your voice continuously"
-                                else
-                                    "Microphone is muted. Tap Unmute to speak",
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
-                                color = TextSecondary
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Manual Mute / Unmute Button
-                    OutlinedButton(
-                        onClick = { viewModel.toggleMicMute() },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = if (isMicMuted) SuccessGreen.copy(alpha = 0.15f) else Error.copy(alpha = 0.15f),
-                            contentColor = if (isMicMuted) SuccessGreen else Error
-                        ),
-                        border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
-                            brush = Brush.linearGradient(
-                                if (isMicMuted) listOf(SuccessGreen, AccentCyan) else listOf(Error, ErrorContainer)
-                            )
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = if (isMicMuted) "Unmute" else "Mute",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
                 }
             }
 

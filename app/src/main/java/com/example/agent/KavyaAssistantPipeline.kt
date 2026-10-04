@@ -24,19 +24,17 @@ import java.util.UUID
 /**
  * Production-grade Master Assistant Pipeline for Kavya AI.
  *
- * Implements Sanna / Hark / Nova voice-first unified pipeline:
- * 1. Single authoritative orchestrator used by both [KavyaVoiceService] and [KavyaViewModel].
- * 2. Every user utterance is persisted into Room database as genuine text.
- * 3. Two-state Sleep / Wake engine (ACTIVE vs SLEEP) with automatic silence rejection.
- * 4. Emergency stop and voice interrupt handling.
+ * Implements conversational AI execution pipeline:
+ * 1. Single authoritative orchestrator used by [KavyaViewModel].
+ * 2. Every user interaction is persisted into Room database as genuine text.
+ * 3. Two-state Sleep / Wake engine (ACTIVE vs SLEEP).
+ * 4. Emergency stop and conversation handling.
  * 5. IntentGate evaluation: Chat, Questions, App Launches, Skills, Media, Automation.
- * 6. Acoustic echo prevention: pauses microphone during TTS, re-arms after speech finishes.
- * 7. Real-time state updates propagated to [KavyaStateManager] and UI.
+ * 6. Real-time state updates propagated to [KavyaStateManager] and UI.
  */
 class KavyaAssistantPipeline(
     private val context: Context,
     private val voiceEngine: KavyaVoiceEngine,
-    private val microphoneEngine: MicrophoneEngine,
     private val commandRouter: CommandRouter,
     private val androidAgent: AndroidAgent,
     private val memoryEngine: MemoryEngine
@@ -50,7 +48,6 @@ class KavyaAssistantPipeline(
         fun getInstance(
             context: Context,
             voiceEngine: KavyaVoiceEngine,
-            microphoneEngine: MicrophoneEngine,
             commandRouter: CommandRouter,
             androidAgent: AndroidAgent,
             memoryEngine: MemoryEngine
@@ -59,7 +56,6 @@ class KavyaAssistantPipeline(
                 instance ?: KavyaAssistantPipeline(
                     context.applicationContext,
                     voiceEngine,
-                    microphoneEngine,
                     commandRouter,
                     androidAgent,
                     memoryEngine
@@ -119,21 +115,14 @@ class KavyaAssistantPipeline(
                     if (SleepWakeDetector.isWakeCommand(prompt)) {
                         Log.i(TAG, "WAKE_COMMAND detected while sleeping: \"$prompt\"")
                         AppPreferences.setKavyaState(app, "ACTIVE")
-                        microphoneEngine.setSleeping(false)
                         KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                        val wakeReply = "Kavya is awake and listening! How can I help you?"
+                        val wakeReply = "Kavya is awake! How can I help you?"
                         if (autoSpeak) {
-                            microphoneEngine.pauseForTts()
                             voiceEngine.speakSuspending(wakeReply)
-                            delay(350)
-                            microphoneEngine.resumeAfterTts(350L)
                         }
                         onTurnFinished?.invoke(wakeReply)
                     } else {
-                        Log.d(TAG, "SLEEP_MODE: Silently ignoring speech while sleeping: \"$prompt\"")
-                        // In sleep mode, re-arm listening for the wake word
-                        delay(200)
-                        microphoneEngine.resumeAfterTts(200L)
+                        Log.d(TAG, "SLEEP_MODE: Silently ignoring command while sleeping: \"$prompt\"")
                     }
                     return@launch
                 }
@@ -142,14 +131,10 @@ class KavyaAssistantPipeline(
                 if (SleepWakeDetector.isSleepCommand(prompt)) {
                     Log.i(TAG, "SLEEP_COMMAND detected: \"$prompt\"")
                     AppPreferences.setKavyaState(app, "SLEEP")
-                    microphoneEngine.setSleeping(true)
                     KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                     val sleepReply = "Going to sleep. Say 'Wake Kavya' whenever you need me."
                     if (autoSpeak) {
-                        microphoneEngine.pauseForTts()
                         voiceEngine.speakSuspending(sleepReply)
-                        delay(350)
-                        microphoneEngine.resumeAfterTts(350L)
                     }
                     onTurnFinished?.invoke(sleepReply)
                     return@launch
@@ -165,15 +150,12 @@ class KavyaAssistantPipeline(
                     lower.contains("chup ho jao") || lower.contains("kavya chup")
                 ) {
                     Log.i(TAG, "EMERGENCY_STOP triggered: \"$prompt\"")
-                    androidAgent.stopExecution("Voice stop command: $prompt")
+                    androidAgent.stopExecution("Stop command: $prompt")
                     KavyaStateManager.updateTaskState(TaskState.STOPPED, "Halted by user")
                     KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                     val stopReply = "Stopped, sir."
                     if (autoSpeak) {
-                        microphoneEngine.pauseForTts()
                         voiceEngine.speakSuspending(stopReply)
-                        delay(350)
-                        microphoneEngine.resumeAfterTts(350L)
                     }
                     onTurnFinished?.invoke(stopReply)
                     return@launch
@@ -297,14 +279,11 @@ class KavyaAssistantPipeline(
                 AutomationEventLogger.verify("Response: $finalResponse")
 
                 // =============================================================
-                // 6. TTS PLAYBACK & CONTINUOUS RE-ARM
+                // 6. TTS PLAYBACK
                 // =============================================================
                 if (autoSpeak && finalResponse.isNotBlank()) {
                     KavyaStateManager.updateVoiceState(VoiceState.SPEAKING)
-                    microphoneEngine.pauseForTts()
                     voiceEngine.speakSuspending(finalResponse)
-                    delay(350)
-                    microphoneEngine.resumeAfterTts(350L)
                 }
 
                 onTurnFinished?.invoke(finalResponse)
@@ -315,10 +294,7 @@ class KavyaAssistantPipeline(
                 KavyaStateManager.updateVoiceState(VoiceState.ERROR)
                 KavyaStateManager.updateTaskState(TaskState.FAILED, errMsg)
                 if (autoSpeak) {
-                    microphoneEngine.pauseForTts()
                     voiceEngine.speakSuspending("अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।")
-                    delay(350)
-                    microphoneEngine.resumeAfterTts(350L)
                 }
                 onTurnFinished?.invoke(errMsg)
             } finally {

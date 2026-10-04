@@ -602,10 +602,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
 fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val isSharing by viewModel.isScreenSharing.collectAsState()
-    val isMicMuted by viewModel.isMicMuted.collectAsState()
     val screenContext by viewModel.screenContextText.collectAsState()
-
-    val micPermissionState = com.google.accompanist.permissions.rememberPermissionState(android.Manifest.permission.RECORD_AUDIO)
 
     val mediaProjectionManager = remember {
         context.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as? android.media.projection.MediaProjectionManager
@@ -618,11 +615,6 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
     }
 
     fun startScreenShare() {
-        if (!micPermissionState.status.isGranted) {
-            micPermissionState.launchPermissionRequest()
-            return
-        }
-
         val captureIntent = viewModel.startScreenShareConsent(context)
         if (captureIntent != null) {
             screenCaptureConsentLauncher.launch(captureIntent)
@@ -663,70 +655,9 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
                             color = TextPrimary
                         )
                         Text(
-                            text = if (isSharing) "Kavya is observing your screen and listening to your voice." else "Kavya observes your screen to guide tasks hands-free.",
+                            text = if (isSharing) "Kavya is observing your screen in real time." else "Kavya observes your screen to guide tasks hands-free.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // LIVE MICROPHONE STATUS & CONTROLS
-            GlassCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                backgroundColor = if (!isMicMuted && isSharing) SuccessGreen.copy(alpha = 0.12f) else SurfaceGlass.copy(alpha = 0.6f),
-                borderColor = if (!isMicMuted && isSharing) SuccessGreen.copy(alpha = 0.35f) else GlassBorder
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(if (!isMicMuted) SuccessGreen.copy(alpha = 0.2f) else Error.copy(alpha = 0.2f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = if (!isMicMuted) Icons.Default.Mic else Icons.Default.MicOff,
-                                contentDescription = if (!isMicMuted) "Mic On" else "Mic Muted",
-                                tint = if (!isMicMuted) SuccessGreen else Error,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = if (!isMicMuted) "Mic On (Listening) 🎙️" else "Microphone Muted 🔇",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = if (!isMicMuted) SuccessGreenGlow else Error
-                            )
-                            Text(
-                                text = if (!isMicMuted) "Kavya hears your commands" else "Tap Unmute to speak",
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                color = TextSecondary
-                            )
-                        }
-                    }
-
-                    OutlinedButton(
-                        onClick = { viewModel.toggleMicMute() },
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = if (isMicMuted) SuccessGreen.copy(alpha = 0.15f) else Error.copy(alpha = 0.15f),
-                            contentColor = if (isMicMuted) SuccessGreen else Error
-                        )
-                    ) {
-                        Text(
-                            text = if (isMicMuted) "Unmute" else "Mute",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                         )
                     }
                 }

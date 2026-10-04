@@ -1,9 +1,7 @@
 package com.example.agent
 
-import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.speech.SpeechRecognizer
 import androidx.core.content.ContextCompat
 import com.example.ai.KavyaAI
 import com.example.data.AppDatabase
@@ -45,11 +43,10 @@ data class SystemSelfTestReport(
  * Performs rigorous end-to-end verification of all subsystems:
  * 1. Gemini API Connection
  * 2. Voice & Audio Player
- * 3. Microphone & Speech Recognition
- * 4. Accessibility Service Health
- * 5. Deterministic App Resolver
- * 6. UI & Screen Inspector
- * 7. Long-Term Memory (Room DB)
+ * 3. Accessibility Service Health
+ * 4. Deterministic App Resolver
+ * 5. UI & Screen Inspector
+ * 6. Long-Term Memory (Room DB)
  */
 object SelfTestEngine {
 
@@ -72,10 +69,7 @@ object SelfTestEngine {
         // 1. Accessibility Service Health
         results.add(testAccessibility(context))
 
-        // 2. Microphone & Speech Recognition
-        results.add(testMicrophoneAndSpeech(context))
-
-        // 3. Deterministic App Resolver
+        // 2. Deterministic App Resolver
         results.add(testAppResolver(appResolver))
 
         // 4. Screen Inspector & UI Perception
@@ -122,37 +116,6 @@ object SelfTestEngine {
                 name = "Accessibility Service",
                 status = HealthStatus.WARN,
                 details = "Service not bound. Enable in Android Settings -> Accessibility -> Kavya."
-            )
-        }
-    }
-
-    private fun testMicrophoneAndSpeech(context: Context): ComponentHealth {
-        val hasPermission = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-
-        val isSpeechAvailable = try {
-            SpeechRecognizer.isRecognitionAvailable(context)
-        } catch (_: Exception) {
-            false
-        }
-
-        return when {
-            !hasPermission -> ComponentHealth(
-                name = "Microphone & Speech",
-                status = HealthStatus.FAIL,
-                details = "RECORD_AUDIO permission is not granted."
-            )
-            !isSpeechAvailable -> ComponentHealth(
-                name = "Microphone & Speech",
-                status = HealthStatus.WARN,
-                details = "Microphone permission granted, but system SpeechRecognizer is unavailable."
-            )
-            else -> ComponentHealth(
-                name = "Microphone & Speech",
-                status = HealthStatus.PASS,
-                details = "Microphone permission granted & SpeechRecognizer available."
             )
         }
     }

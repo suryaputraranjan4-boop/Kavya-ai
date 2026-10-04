@@ -115,7 +115,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                 }
                 _latestKavyaCaption.value = null
-                microphoneEngine.resumeAfterTts(350L)
             }
         },
         onAudioChunkStarted = { spokenChunk ->
@@ -135,10 +134,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, KavyaAI(application))
-    val microphoneEngine = com.example.agent.MicrophoneEngine.getInstance(application)
-    val micAmplitude: StateFlow<Float> = microphoneEngine.amplitude
-    val micEngineState: StateFlow<com.example.agent.MicrophoneState> = microphoneEngine.micState
-    val isMicActive: StateFlow<Boolean> = microphoneEngine.microphoneEnabled
     private val database = AppDatabase.getDatabase(application)
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
@@ -229,49 +224,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            microphoneEngine.micEvents.collect { event ->
-                when (event) {
-                    is com.example.agent.MicEvent.ListeningStarted -> {
-                        Log.d(TAG, "MIC_STARTED: Continuous microphone active, listening for speech")
-                        _voiceState.value = VoiceState.LISTENING
-                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
-                        _latestKavyaCaption.value = "सुन रही हूँ... (Listening...)"
-                    }
-                    is com.example.agent.MicEvent.PartialResult -> {
-                        if (event.text.isNotBlank()) {
-                            bargeInController.onUserSpeechDetected()
-                            _latestKavyaCaption.value = event.text
-                        }
-                    }
-                    is com.example.agent.MicEvent.Result -> {
-                        handleMicResult(event.text)
-                    }
-                    is com.example.agent.MicEvent.Error -> {
-                        Log.w(TAG, "STT_ERROR: ${event.error}")
-                        if (microphoneEngine.isFeatureEnabled()) {
-                            _latestKavyaCaption.value = "सुन रही हूँ... (Listening...)"
-                        } else {
-                            _voiceState.value = VoiceState.ERROR
-                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-                            _latestKavyaCaption.value = "आवाज़ सुनाई नहीं दी। फिर से बोलें।"
-                            delay(2500)
-                            if (_voiceState.value == VoiceState.ERROR) {
-                                _voiceState.value = VoiceState.IDLE
-                                com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                                _latestKavyaCaption.value = null
-                            }
-                        }
-                    }
-                    is com.example.agent.MicEvent.Stopped -> {
-                        _voiceState.value = VoiceState.IDLE
-                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                        _latestKavyaCaption.value = null
-                    }
-                }
-            }
-        }
-
-        viewModelScope.launch {
             try {
                 schedulerEngine.executeDueSchedules { dueTask ->
                     sendMessage(dueTask.promptOrAction)
@@ -301,8 +253,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isScreenSharing = MutableStateFlow(false)
     val isScreenSharing: StateFlow<Boolean> = _isScreenSharing.asStateFlow()
-
-    val isMicMuted: StateFlow<Boolean> = microphoneEngine.isMuted
 
     private val _isOfflineMode = MutableStateFlow(
         com.example.utils.AppPreferences.isOfflineFallbackEnabled(application) || com.example.utils.AppPreferences.getAiProvider(application) == "GEMMA_OFFLINE"
@@ -418,179 +368,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleMicMute() {
-        microphoneEngine.toggleMute()
-    }
-
-    fun setMicMuted(muted: Boolean) {
-        microphoneEngine.setMuted(muted)
-    }
-
-    fun startVoiceInput() {
-        if (_isProcessing.value) return
-        voiceEngine.stop()
-
-        val app = getApplication<Application>()
-        val hasPerm = com.example.utils.PermissionsManager.hasRecordAudioPermission(app)
-        if (!hasPerm) {
-            Log.e(TAG, "MIC_PERMISSION_DENIED: Cannot start voice input without RECORD_AUDIO")
-            _voiceState.value = VoiceState.ERROR
-            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-            _latestKavyaCaption.value = "Microphone permission required"
-            viewModelScope.launch {
-                delay(3000)
-                if (_voiceState.value == VoiceState.ERROR) {
-                    _voiceState.value = VoiceState.IDLE
-                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                    _latestKavyaCaption.value = null
-                }
-            }
-            return
-        }
-
-        // Start Foreground Service before backgrounding to comply with Android 14 restrictions
-        if (com.example.utils.AppPreferences.isBackgroundVoiceEnabled(app)) {
-            try {
-                val serviceIntent = Intent(app, com.example.services.KavyaVoiceService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    androidx.core.content.ContextCompat.startForegroundService(app, serviceIntent)
-                } else {
-                    app.startService(serviceIntent)
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not start KavyaVoiceService: ${e.message}")
-            }
-        }
-
-        Log.d(TAG, "MIC_INITIALIZING: User initiated continuous hands-free voice input session")
-        _latestKavyaCaption.value = "Starting microphone..."
-
-        microphoneEngine.startContinuousListening()
-    }
-
-    private fun handleMicResult(recognizedText: String) {
-        viewModelScope.launch {
-            Log.d(TAG, "STT_RESULT: Candidates received, text=\"$recognizedText\"")
-            if (!com.example.state.KavyaStateManager.isActivityVisible) {
-                Log.d(TAG, "handleMicResult: Activity in background; handled by KavyaVoiceService.")
-                return@launch
-            }
-
-            if (recognizedText.isNotBlank()) {
-                _voiceState.value = VoiceState.THINKING
-                com.example.state.KavyaStateManager.updateVoiceState(VoiceState.THINKING)
-                _latestKavyaCaption.value = recognizedText
-
-                val app = getApplication<Application>()
-                val isSleep = com.example.utils.AppPreferences.getKavyaState(app) == "SLEEP"
-
-                if (isSleep) {
-                    if (com.example.agent.SleepWakeDetector.isWakeCommand(recognizedText)) {
-                        Log.d(TAG, "WAKE_COMMAND: Waking Kavya up from sleep: \"$recognizedText\"")
-                        com.example.utils.AppPreferences.setKavyaState(app, "ACTIVE")
-                        microphoneEngine.setSleeping(false)
-                        _voiceState.value = VoiceState.IDLE
-                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                        _latestKavyaCaption.value = "Kavya awake."
-                        microphoneEngine.pauseForTts()
-                        voiceEngine.processAndSpeak("Kavya is awake and listening! How can I help you?")
-                        delay(350)
-                        microphoneEngine.resumeAfterTts(350L)
-                    } else {
-                        Log.d(TAG, "SLEEP_MODE: Ignoring non-wake input while sleeping: \"$recognizedText\"")
-                        _voiceState.value = VoiceState.IDLE
-                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                        _latestKavyaCaption.value = "Kavya is sleeping (Say 'Wake Kavya')"
-                    }
-                    return@launch
-                }
-
-                // Assistant is ACTIVE: Check for Sleep command
-                if (com.example.agent.SleepWakeDetector.isSleepCommand(recognizedText)) {
-                    Log.d(TAG, "SLEEP_COMMAND: Transitioning to SLEEP state (Mic remains listening for wake phrases)")
-                    com.example.utils.AppPreferences.setKavyaState(app, "SLEEP")
-                    microphoneEngine.setSleeping(true)
-                    _voiceState.value = VoiceState.IDLE
-                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                    _latestKavyaCaption.value = "Kavya sleeping (Say 'Wake Kavya')."
-                    microphoneEngine.pauseForTts()
-                    voiceEngine.processAndSpeak("Going to sleep. Say 'Wake Kavya' whenever you need me.")
-                    delay(350)
-                    microphoneEngine.resumeAfterTts(350L)
-                    return@launch
-                }
-
-                // Assistant is ACTIVE: Check for Wake command (idempotent / confirmation)
-                if (com.example.agent.SleepWakeDetector.isWakeCommand(recognizedText)) {
-                    Log.d(TAG, "WAKE_COMMAND while already active")
-                    _latestKavyaCaption.value = "Kavya listening."
-                    microphoneEngine.pauseForTts()
-                    voiceEngine.processAndSpeak("Yes, I am listening! How can I help you?")
-                    delay(350)
-                    microphoneEngine.resumeAfterTts(350L)
-                    return@launch
-                }
-
-                val lower = recognizedText.lowercase().trim()
-                if (com.example.agent.SleepWakeDetector.isStopCommand(recognizedText) ||
-                    lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
-                    lower.contains("stop kavya") || lower.contains("kavya stop") ||
-                    lower.contains("kavya chup") || lower.contains("chup ho jao")
-                ) {
-                    Log.d(TAG, "STOP_COMMAND: User stopped Kavya listening")
-                    stopVoiceInput()
-                    _latestKavyaCaption.value = "Kavya stopped."
-                    return@launch
-                }
-
-                sendMessage(recognizedText)
-            } else {
-                Log.d(TAG, "STT_EMPTY: No speech detected in audio window")
-                if (!microphoneEngine.isFeatureEnabled()) {
-                    _voiceState.value = VoiceState.IDLE
-                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                    _latestKavyaCaption.value = null
-                }
-            }
-        }
-    }
-
-    fun stopVoiceInput() {
-        Log.d(TAG, "MIC_STOPPING: Stopping microphone capture")
-        microphoneEngine.stopListening()
-        _voiceState.value = VoiceState.IDLE
-        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-        _latestKavyaCaption.value = null
-    }
-
-    fun toggleVoiceInput() {
-        if (_voiceState.value == VoiceState.SPEAKING) {
-            voiceEngine.stop()
-            _voiceState.value = VoiceState.IDLE
-            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-            return
-        }
-
-        val app = getApplication<Application>()
-        val hasPerm = com.example.utils.PermissionsManager.hasRecordAudioPermission(app)
-        if (!hasPerm) {
-            _voiceState.value = VoiceState.ERROR
-            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-            _latestKavyaCaption.value = "Microphone permission required"
-            return
-        }
-
-        val isCurrentlyListening = microphoneEngine.isFeatureEnabled() ||
-                _voiceState.value == VoiceState.LISTENING ||
-                microphoneEngine.isListeningOrStarting()
-
-        if (isCurrentlyListening) {
-            stopVoiceInput()
-        } else {
-            startVoiceInput()
-        }
-    }
-
     fun setAutoSpeak(enabled: Boolean) {
         _autoSpeak.value = enabled
     }
@@ -623,7 +400,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             // Request system consent through UI launcher
             _isScreenSharing.value = true
-            microphoneEngine.setMuted(false)
             refreshScreenContext()
         }
     }
@@ -661,7 +437,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 when (state) {
                     is com.example.services.ScreenShareManager.ScreenShareState.Active -> {
                         _isScreenSharing.value = true
-                        microphoneEngine.setMuted(false)
                         refreshScreenContext()
                     }
                     is com.example.services.ScreenShareManager.ScreenShareState.Stopped -> {
@@ -955,13 +730,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     voiceEngine.stop()
                     val app = getApplication<Application>()
                     com.example.utils.AppPreferences.setKavyaState(app, "SLEEP")
-                    microphoneEngine.setSleeping(true)
                     cleanResponse = "Good night, sir. Going to sleep. Say 'Wake Kavya' whenever you need me."
                     if (_autoSpeak.value) {
-                        microphoneEngine.pauseForTts()
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false, onComplete = {
-                            microphoneEngine.resumeAfterTts(350L)
-                        })
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
                     }
                 } else if (gateDecision.category == com.example.agent.IntentCategory.SCHEDULE) {
@@ -1702,10 +1473,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
                     // Auto-speak the AI response if not already spoken during streaming
                     if (cleanResponse.isNotBlank() && !alreadySpoken) {
-                        microphoneEngine.pauseForTts()
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false, onComplete = {
-                            microphoneEngine.resumeAfterTts(350L)
-                        })
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
                     }
                 }

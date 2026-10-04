@@ -43,7 +43,6 @@ class GeminiLiveClient(
     
     private var audioTrack: AudioTrack? = null
     
-    private var isRecording = false
     private var isPlaying = false
     private var isConnected = false
     private var connectionJob: Job? = null
@@ -349,57 +348,8 @@ class GeminiLiveClient(
     }
 
     private fun startAudioIO() {
-        startRecording()
         startPlaybackSystem()
-        onStateChange("LISTENING")
-    }
-    
-    private val frameSubscriber: (ByteArray, Int) -> Unit = { frame, _ ->
-        if (isRecording && isConnected) {
-            val base64Audio = Base64.encodeToString(frame, 0, frame.size, Base64.NO_WRAP)
-            val realtimeMsg = JSONObject().apply {
-                put("realtimeInput", JSONObject().apply {
-                    put("mediaChunks", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("mimeType", "audio/pcm;rate=16000")
-                            put("data", base64Audio)
-                        })
-                    })
-                })
-            }
-            webSocket?.send(realtimeMsg.toString())
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun startRecording() {
-        if (isRecording) return
-        val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.RECORD_AUDIO
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-
-        if (!hasPermission) {
-            Log.e(TAG, "RECORD_AUDIO permission not granted!")
-            onStateChange("ERROR")
-            return
-        }
-
-        try {
-            val micEngine = com.example.agent.MicrophoneEngine.getInstance(context)
-            micEngine.subscribeAudioFrames(frameSubscriber)
-            isRecording = true
-        } catch (e: Exception) {
-            Log.e(TAG, "Audio frame subscription failed", e)
-            onStateChange("ERROR")
-        }
-    }
-
-    private fun stopRecording() {
-        if (!isRecording) return
-        isRecording = false
-        val micEngine = com.example.agent.MicrophoneEngine.getInstance(context)
-        micEngine.unsubscribeAudioFrames(frameSubscriber)
+        onStateChange("READY")
     }
     
     private fun startPlaybackSystem() {
@@ -442,9 +392,6 @@ class GeminiLiveClient(
     
     fun stopSession() {
         isConnected = false
-        if (isRecording) {
-            stopRecording()
-        }
         isPlaying = false
         
         audioTrack?.stop()

@@ -39,7 +39,6 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val micStatus by viewModel.microphoneEngine.status.collectAsState()
     val taskState by TaskStateMachine.state.collectAsState()
     val eventLogs by AutomationEventLogger.logs.collectAsState()
 
@@ -53,8 +52,6 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
 
     var testQuery by remember { mutableStateOf("") }
     var testResult by remember { mutableStateOf<String?>(null) }
-    var micTestRunning by remember { mutableStateOf(false) }
-    var micTestFeedback by remember { mutableStateOf<String?>(null) }
 
     val isAccessibilityConnected = KavyaAccessibilityService.instance != null
     val currentForegroundPkg = viewModel.screenInspector.getCurrentForegroundPackage()
@@ -67,146 +64,7 @@ fun AutomationDebugPanelScreen(navController: NavController, viewModel: KavyaVie
             contentPadding = PaddingValues(top = 12.dp, bottom = 60.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // 1. Dedicated Microphone Diagnostic Panel (Requirement 22)
-            item {
-                GlassCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = if (micStatus.isListening) Icons.Default.Mic else Icons.Default.MicNone,
-                                    contentDescription = null,
-                                    tint = if (micStatus.isListening) SuccessGreen else PrimaryLight,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    "Microphone Pipeline",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = TextPrimary
-                                )
-                            }
-                            StatusBadge(
-                                text = if (micStatus.isListening) "LISTENING" else "IDLE",
-                                isActive = micStatus.isListening,
-                                activeColor = SuccessGreen,
-                                inactiveColor = TextTertiary
-                            )
-                        }
-
-                        HorizontalDivider(color = OutlineVariant)
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Permission (RECORD_AUDIO):", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            StatusBadge(
-                                text = if (micStatus.hasPermission) "GRANTED" else "DENIED",
-                                isActive = micStatus.hasPermission,
-                                activeColor = SuccessGreen,
-                                inactiveColor = Error
-                            )
-                        }
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Hardware Sensor:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            StatusBadge(
-                                text = if (micStatus.isHardwareAvailable) "AVAILABLE" else "UNAVAILABLE",
-                                isActive = micStatus.isHardwareAvailable,
-                                activeColor = SuccessGreen,
-                                inactiveColor = Error
-                            )
-                        }
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Audio Input Buffer:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            StatusBadge(
-                                text = if (micStatus.isAudioInputReady) "READY" else "ERROR",
-                                isActive = micStatus.isAudioInputReady,
-                                activeColor = SuccessGreen,
-                                inactiveColor = Error
-                            )
-                        }
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Speech Recognizer:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            StatusBadge(
-                                text = if (micStatus.isRecognizerAvailable) "READY" else "ERROR",
-                                isActive = micStatus.isRecognizerAvailable,
-                                activeColor = SuccessGreen,
-                                inactiveColor = Error
-                            )
-                        }
-
-                        if (micStatus.lastRecognizedText.isNotBlank()) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Last Recognized:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                                Text(
-                                    "\"${micStatus.lastRecognizedText}\"",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                    color = AccentCyan
-                                )
-                            }
-                        }
-
-                        if (micStatus.lastCallbackTimestamp > 0) {
-                            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(micStatus.lastCallbackTimestamp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Last Callback:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                                Text(timeStr, style = MaterialTheme.typography.bodySmall, color = TextTertiary)
-                            }
-                        }
-
-                        if (micStatus.lastError != "None") {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Last Error:", style = MaterialTheme.typography.bodySmall, color = Error)
-                                Text(micStatus.lastError, style = MaterialTheme.typography.bodySmall, color = Error)
-                            }
-                        }
-
-                        // Test Microphone Button (Requirement 22)
-                        Button(
-                            onClick = {
-                                micTestRunning = true
-                                micTestFeedback = "Initializing microphone test..."
-                                viewModel.microphoneEngine.testMicrophone { success, message ->
-                                    micTestRunning = false
-                                    micTestFeedback = message
-                                }
-                            },
-                            enabled = !micTestRunning,
-                            modifier = Modifier.fillMaxWidth().height(42.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryLight)
-                        ) {
-                            if (micTestRunning) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Listening for Voice...", color = Color.White, fontSize = 13.sp)
-                            } else {
-                                Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("TEST MICROPHONE", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-
-                        if (micTestFeedback != null) {
-                            Text(
-                                micTestFeedback!!,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    color = if (micTestFeedback!!.contains("Speech recognized")) SuccessGreen else AccentPurpleLight,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.5.sp
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 2. Live Task State Machine (Requirement 33)
+            // 1. Live Task State Machine (Requirement 33)
             item {
                 GlassCard(modifier = Modifier.fillMaxWidth()) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

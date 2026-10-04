@@ -32,7 +32,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.example.services.KavyaAccessibilityService
-import com.example.services.KavyaVoiceService
 import com.example.ui.components.*
 import com.example.ui.navigation.LocalDrawerState
 import com.example.ui.theme.*
@@ -48,21 +47,17 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val context = LocalContext.current
     var accessibilityGranted by remember { mutableStateOf(PermissionsManager.isAccessibilityServiceEnabled(context, KavyaAccessibilityService::class.java)) }
     
-    val permissionsToRequest = mutableListOf(Manifest.permission.RECORD_AUDIO)
+    val permissionsToRequest = mutableListOf<String>()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
     }
     val permissionState = rememberMultiplePermissionsState(permissionsToRequest)
-    val canStart = accessibilityGranted && permissionState.allPermissionsGranted
+    val canStart = accessibilityGranted && (permissionsToRequest.isEmpty() || permissionState.allPermissionsGranted)
     
     val voiceState by viewModel.voiceState.collectAsState()
-    val micAmplitude by viewModel.micAmplitude.collectAsState()
-    val micEngineState by viewModel.micEngineState.collectAsState()
-    val isMicActive by viewModel.isMicActive.collectAsState()
     val emotionState by viewModel.emotionState.collectAsState()
     val globalState by com.example.state.KavyaStateManager.state.collectAsState()
     var showScreenShareSheet by remember { mutableStateOf(false) }
-    var showPermissionRationaleDialog by remember { mutableStateOf(false) }
     val isScreenSharing by viewModel.isScreenSharing.collectAsState()
     val latestCaption by viewModel.latestKavyaCaption.collectAsState()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
@@ -197,7 +192,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // LOWER CENTER: Microphone
+            // LOWER CENTER: Kavya AI Orb
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxWidth()
@@ -218,20 +213,10 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
                 KavyaVoiceOrb(
                     state = voiceState,
-                    amplitude = micAmplitude,
                     onClick = {
-                        val permGranted = com.example.utils.PermissionsManager.hasRecordAudioPermission(context)
-                        if (!permGranted) {
-                            if (!permissionState.shouldShowRationale && permissionState.allPermissionsGranted.not()) {
-                                permissionState.launchMultiplePermissionRequest()
-                            } else {
-                                showPermissionRationaleDialog = true
-                            }
-                        } else {
-                            viewModel.toggleVoiceInput()
-                        }
+                        // Orb tap triggers interactive assist
                     },
-                    baseSize = 72.dp // Refined size
+                    baseSize = 72.dp
                 )
                 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -249,15 +234,10 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     globalState.taskState == com.example.state.TaskState.COMPLETED -> "Task complete ho gaya."
                     globalState.taskState == com.example.state.TaskState.STOPPED -> "Action rok diya gaya hai."
                     globalState.taskState == com.example.state.TaskState.FAILED -> globalState.taskStateDetail ?: "Task pura nahi ho paya."
-                    micEngineState == com.example.agent.MicrophoneState.STARTING -> "Starting microphone..."
-                    micEngineState == com.example.agent.MicrophoneState.PROCESSING -> "समझ रही हूँ... (Processing...)"
-                    voiceState == VoiceState.LISTENING -> "सुन रही हूँ... (Listening...)"
-                    voiceState == VoiceState.UNDERSTANDING -> "Request analyze ho rahi hai..."
-                    voiceState == VoiceState.EXECUTING -> globalState.taskStateDetail
-                    com.example.utils.AppPreferences.getKavyaState(context) == "SLEEP" -> "Kavya is sleeping (Say 'Wake Kavya')"
-                    voiceState == VoiceState.ERROR -> "Microphone unavailable. Tap to retry."
-                    viewModel.microphoneEngine.isContinuousListeningEnabled() && voiceState == VoiceState.IDLE -> "Hands-Free Active • Ready for command"
-                    voiceState == VoiceState.IDLE -> "Tap orb to talk with Kavya"
+                    voiceState == VoiceState.THINKING || voiceState == VoiceState.UNDERSTANDING -> "Request analyze ho rahi hai..."
+                    voiceState == VoiceState.SPEAKING -> "Kavya bol rahi hai..."
+                    com.example.utils.AppPreferences.getKavyaState(context) == "SLEEP" -> "Kavya is in sleep mode"
+                    voiceState == VoiceState.IDLE -> "Kavya AI Ready"
                     else -> null
                 }
 
@@ -320,13 +300,9 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 onSend = {
                     viewModel.sendMessage(it)
                 },
-                onMicClick = {
-                    viewModel.toggleVoiceInput()
-                },
                 onPlusClick = {
                     showScreenShareSheet = true
                 },
-                isListening = (isMicActive || voiceState == VoiceState.LISTENING || micEngineState in listOf(com.example.agent.MicrophoneState.STARTING, com.example.agent.MicrophoneState.LISTENING, com.example.agent.MicrophoneState.PROCESSING, com.example.agent.MicrophoneState.REARMING)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)
@@ -425,43 +401,6 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             viewModel = viewModel,
             onDismiss = { showScreenShareSheet = false },
             onNavigateToChat = { navController.navigate("chat") }
-        )
-    }
-
-    if (showPermissionRationaleDialog) {
-        AlertDialog(
-            onDismissRequest = { showPermissionRationaleDialog = false },
-            title = {
-                Text(
-                    text = "माइक्रोफ़ोन अनुमति आवश्यक है",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White
-                )
-            },
-            text = {
-                Text(
-                    text = "Kavya AI को आपकी आवाज़ सुनने और कमांड लेने के लिए Android Microphone अनुमति चाहिए। कृपया App Settings में जाकर Microphone permission Allow करें।",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.85f)
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showPermissionRationaleDialog = false
-                        com.example.utils.PermissionsManager.openAppSettings(context)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text("Open Settings")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showPermissionRationaleDialog = false }) {
-                    Text("Cancel", color = Color.White.copy(alpha = 0.7f))
-                }
-            },
-            containerColor = Color(0xFF1E1E2E)
         )
     }
 }

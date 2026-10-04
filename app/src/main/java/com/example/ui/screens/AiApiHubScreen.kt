@@ -155,9 +155,7 @@ fun AiApiHubScreen(navController: NavController) {
     val okfUnits: List<OkfKnowledgeUnit> by okfRepo.unitsFlow.collectAsState(initial = emptyList())
     var okfEnabled by remember { mutableStateOf(AppPreferences.isOkfMemoryEnabled(context)) }
 
-    // Background Voice & Gesture State
-    var backgroundVoiceEnabled by remember { mutableStateOf(AppPreferences.isBackgroundVoiceEnabled(context)) }
-    var micListeningEnabled by remember { mutableStateOf(AppPreferences.isMicListeningEnabled(context)) }
+    // Gesture & System State
     var wakeGestureEnabled by remember { mutableStateOf(AppPreferences.isWakeGestureEnabled(context)) }
     var sleepGestureEnabled by remember { mutableStateOf(AppPreferences.isSleepGestureEnabled(context)) }
     var wakeSensitivity by remember { mutableStateOf(AppPreferences.getWakeSensitivity(context)) }
@@ -500,14 +498,14 @@ fun AiApiHubScreen(navController: NavController) {
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
-                                    Icons.Default.Mic,
+                                    Icons.Default.SmartToy,
                                     contentDescription = null,
-                                    tint = SuccessGreen,
+                                    tint = PrimaryLight,
                                     modifier = Modifier.size(24.dp)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Text(
-                                    "Voice & Background Service",
+                                    "Assistant State & Gestures",
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = TextPrimary
                                 )
@@ -536,7 +534,7 @@ fun AiApiHubScreen(navController: NavController) {
 
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            "Kavya runs in the background with persistent notification when you leave the app, keeping voice interaction alive.",
+                            "Configure gesture sensitivity and assistant awake/sleep responsiveness.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
@@ -544,52 +542,6 @@ fun AiApiHubScreen(navController: NavController) {
 
                         // Toggles
                         Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Background Voice Service", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-                            Switch(
-                                checked = backgroundVoiceEnabled,
-                                onCheckedChange = {
-                                    backgroundVoiceEnabled = it
-                                    AppPreferences.setBackgroundVoiceEnabled(context, it)
-                                    if (it) {
-                                        val intent = Intent(context, com.example.services.KavyaVoiceService::class.java)
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                            context.startForegroundService(intent)
-                                        } else {
-                                            context.startService(intent)
-                                        }
-                                    } else {
-                                        context.stopService(Intent(context, com.example.services.KavyaVoiceService::class.java))
-                                    }
-                                },
-                                colors = SwitchDefaults.colors(checkedThumbColor = SuccessGreen)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Microphone Listening (Mic Active)", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-                            Switch(
-                                checked = micListeningEnabled,
-                                onCheckedChange = {
-                                    micListeningEnabled = it
-                                    AppPreferences.setMicListeningEnabled(context, it)
-                                    val intent = Intent(context, com.example.services.KavyaVoiceService::class.java).apply {
-                                        action = "ACTION_TOGGLE_MIC"
-                                    }
-                                    context.startService(intent)
-                                },
-                                colors = SwitchDefaults.colors(checkedThumbColor = SuccessGreen)
-                            )
-                        }
 
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
@@ -653,8 +605,6 @@ fun AiApiHubScreen(navController: NavController) {
                                 onClick = {
                                     kavyaState = "ACTIVE"
                                     AppPreferences.setKavyaState(context, "ACTIVE")
-                                    val intent = Intent(context, com.example.services.KavyaVoiceService::class.java).apply { action = "ACTION_WAKE" }
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
                                 },
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
@@ -665,8 +615,6 @@ fun AiApiHubScreen(navController: NavController) {
                                 onClick = {
                                     kavyaState = "SLEEP"
                                     AppPreferences.setKavyaState(context, "SLEEP")
-                                    val intent = Intent(context, com.example.services.KavyaVoiceService::class.java).apply { action = "ACTION_SLEEP" }
-                                    context.startService(intent)
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {

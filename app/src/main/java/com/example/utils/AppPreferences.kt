@@ -389,13 +389,6 @@ object AppPreferences {
         return getEffectiveApiKey(context).isNotBlank() || getOpenRouterApiKey(context).isNotBlank()
     }
 
-    fun hasMicrophonePermission(context: Context): Boolean {
-        return ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
     fun hasNotificationPermission(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(
@@ -711,7 +704,6 @@ object AppPreferences {
     }
 
     private const val KEY_BACKGROUND_VOICE_ENABLED = "key_background_voice_enabled"
-    private const val KEY_MIC_LISTENING_ENABLED = "key_mic_listening_enabled"
     private const val KEY_WAKE_GESTURE_ENABLED = "key_wake_gesture_enabled"
     private const val KEY_SLEEP_GESTURE_ENABLED = "key_sleep_gesture_enabled"
     private const val KEY_WAKE_SENSITIVITY = "key_wake_sensitivity"
@@ -720,9 +712,6 @@ object AppPreferences {
 
     fun isBackgroundVoiceEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_BACKGROUND_VOICE_ENABLED, true)
     fun setBackgroundVoiceEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_BACKGROUND_VOICE_ENABLED, enabled).apply()
-
-    fun isMicListeningEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_MIC_LISTENING_ENABLED, true)
-    fun setMicListeningEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_MIC_LISTENING_ENABLED, enabled).apply()
 
     fun isWakeGestureEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_WAKE_GESTURE_ENABLED, true)
     fun setWakeGestureEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_WAKE_GESTURE_ENABLED, enabled).apply()

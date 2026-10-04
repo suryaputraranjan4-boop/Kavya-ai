@@ -32,13 +32,6 @@ object PermissionsManager {
         context.startActivity(intent)
     }
 
-    fun hasRecordAudioPermission(context: Context): Boolean {
-        return androidx.core.content.ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.RECORD_AUDIO
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-    }
-
     fun openAppSettings(context: Context) {
         try {
             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
