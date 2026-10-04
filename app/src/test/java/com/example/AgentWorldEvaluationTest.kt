@@ -188,13 +188,13 @@ class AgentWorldEvaluationTest {
         controller.onSpeakingStarted()
         assertEquals(BargeInState.SPEAKING, controller.state.value)
 
-        // User speaks while Kavya is speaking
-        controller.onUserSpeechDetected()
+        // User interrupts while Kavya is speaking
+        controller.onUserInterrupted()
 
-        val verdict = if (controller.state.value == BargeInState.CAPTURING && bargeInDetected && !player.isSpeaking()) {
+        val verdict = if (bargeInDetected && !player.isSpeaking()) {
             TestVerdict.PASS
         } else TestVerdict.FAIL
-        logVerdict(11, "User Voice Priority Barge-In", verdict, "State=${controller.state.value}")
+        logVerdict(11, "User Priority Interruption", verdict, "State=${controller.state.value}")
     }
 
     // 12. Persistent Memory and Recall

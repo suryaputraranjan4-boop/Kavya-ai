@@ -70,16 +70,10 @@ object CommandInterpreter {
         }
 
         // ====================================================
-        // 1. STOP / SLEEP / WAKE SYSTEM CONTROLS
+        // 1. STOP / SYSTEM CONTROLS
         // ====================================================
         if (STOP_WORDS.contains(lower)) {
             return CommandIntent.Stop(trimmed)
-        }
-        if (SLEEP_WORDS.contains(lower) || SleepWakeDetector.isSleepCommand(trimmed)) {
-            return CommandIntent.Sleep(trimmed)
-        }
-        if (WAKE_WORDS.contains(lower) || SleepWakeDetector.isWakeCommand(trimmed)) {
-            return CommandIntent.Wake(trimmed)
         }
 
         // ====================================================

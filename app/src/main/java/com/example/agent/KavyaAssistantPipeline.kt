@@ -105,47 +105,11 @@ class KavyaAssistantPipeline(
                 // Immediate barge-in stop of any ongoing speech
                 voiceEngine.stop()
 
-                val app = context
-                val isSleep = AppPreferences.getKavyaState(app) == "SLEEP"
-
                 // =============================================================
-                // 1. SLEEP / WAKE ENGINE CHECK
-                // =============================================================
-                if (isSleep) {
-                    if (SleepWakeDetector.isWakeCommand(prompt)) {
-                        Log.i(TAG, "WAKE_COMMAND detected while sleeping: \"$prompt\"")
-                        AppPreferences.setKavyaState(app, "ACTIVE")
-                        KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                        val wakeReply = "Kavya is awake! How can I help you?"
-                        if (autoSpeak) {
-                            voiceEngine.speakSuspending(wakeReply)
-                        }
-                        onTurnFinished?.invoke(wakeReply)
-                    } else {
-                        Log.d(TAG, "SLEEP_MODE: Silently ignoring command while sleeping: \"$prompt\"")
-                    }
-                    return@launch
-                }
-
-                // If user issues a sleep command while active:
-                if (SleepWakeDetector.isSleepCommand(prompt)) {
-                    Log.i(TAG, "SLEEP_COMMAND detected: \"$prompt\"")
-                    AppPreferences.setKavyaState(app, "SLEEP")
-                    KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                    val sleepReply = "Going to sleep. Say 'Wake Kavya' whenever you need me."
-                    if (autoSpeak) {
-                        voiceEngine.speakSuspending(sleepReply)
-                    }
-                    onTurnFinished?.invoke(sleepReply)
-                    return@launch
-                }
-
-                // =============================================================
-                // 2. EMERGENCY STOP COMMAND CHECK
+                // 1. EMERGENCY STOP COMMAND CHECK
                 // =============================================================
                 val lower = prompt.lowercase().trim()
-                if (SleepWakeDetector.isStopCommand(prompt) ||
-                    lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
+                if (lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
                     lower.contains("stop kavya") || lower.contains("kavya stop") ||
                     lower.contains("chup ho jao") || lower.contains("kavya chup")
                 ) {
@@ -162,7 +126,7 @@ class KavyaAssistantPipeline(
                 }
 
                 // =============================================================
-                // 3. PERSIST REAL USER MESSAGE TO ROOM DATABASE
+                // 2. PERSIST REAL USER MESSAGE TO ROOM DATABASE
                 // =============================================================
                 val chatId = explicitChatId ?: ensureActiveChatId()
                 val userMsgId = UUID.randomUUID().toString()

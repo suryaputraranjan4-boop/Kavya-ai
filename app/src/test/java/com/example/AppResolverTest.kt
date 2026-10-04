@@ -253,7 +253,5 @@ class AppResolverTest {
         assertTrue(com.example.agent.CommandInterpreter.interpret("Stop Kavya") is com.example.agent.CommandIntent.Stop)
         assertTrue(com.example.agent.CommandInterpreter.interpret("Stop") is com.example.agent.CommandIntent.Stop)
         assertTrue(com.example.agent.CommandInterpreter.interpret("Cancel") is com.example.agent.CommandIntent.Stop)
-        assertTrue(com.example.agent.CommandInterpreter.interpret("Sleep Kavya") is com.example.agent.CommandIntent.Sleep)
-        assertTrue(com.example.agent.CommandInterpreter.interpret("so jao") is com.example.agent.CommandIntent.Sleep)
     }
 }

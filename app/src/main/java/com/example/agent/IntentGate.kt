@@ -123,8 +123,7 @@ object IntentGate {
         }
 
         // 2. SLEEP
-        if (SLEEP_KEYWORDS.any { lower == it || lower.startsWith("$it ") || lower.endsWith(" $it") } ||
-            SleepWakeDetector.isSleepCommand(trimmed)) {
+        if (SLEEP_KEYWORDS.any { lower == it || lower.startsWith("$it ") || lower.endsWith(" $it") }) {
             return IntentGateDecision(
                 category = IntentCategory.SLEEP,
                 param = "SLEEP",
