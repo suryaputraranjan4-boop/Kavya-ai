@@ -34,7 +34,7 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 enum class VoiceState {
-    IDLE, LISTENING, UNDERSTANDING, THINKING, EXECUTING, SPEAKING, ERROR
+    IDLE, UNDERSTANDING, THINKING, EXECUTING, SPEAKING, ERROR
 }
 
 @Composable
@@ -73,27 +73,6 @@ fun KavyaVoiceOrb(
             repeatMode = RepeatMode.Reverse
         ),
         label = "IdleBreath"
-    )
-
-    // Listening Glow Pulse (responsive & rhythmic)
-    val listeningPulse by infiniteTransition.animateFloat(
-        initialValue = 1.0f,
-        targetValue = 1.18f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "ListeningPulse"
-    )
-
-    val listeningGlowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.25f,
-        targetValue = 0.65f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "ListeningGlowAlpha"
     )
 
     // Speaking Gentle Float / Wobble (Smooth, gentle floating - never shaky)
@@ -141,7 +120,6 @@ fun KavyaVoiceOrb(
     // Dynamic sizing & transforms based on VoiceState
     val baseScaleTarget = when (state) {
         VoiceState.IDLE -> 1.0f
-        VoiceState.LISTENING -> 1.08f
         VoiceState.UNDERSTANDING -> 1.02f
         VoiceState.THINKING -> 1.04f
         VoiceState.EXECUTING -> 1.06f
@@ -155,10 +133,8 @@ fun KavyaVoiceOrb(
         label = "StateScale"
     )
 
-    val ampMultiplier = if (state == VoiceState.LISTENING) 1.0f + (animatedAmplitude * 0.45f) else 1.0f
     val finalScale = when (state) {
         VoiceState.IDLE -> stateScale * idleBreath * pressScale
-        VoiceState.LISTENING -> stateScale * listeningPulse * pressScale * ampMultiplier
         VoiceState.SPEAKING -> stateScale * speakingPulse * pressScale
         VoiceState.UNDERSTANDING -> 1.02f
         VoiceState.THINKING -> stateScale * idleBreath * pressScale
@@ -171,7 +147,6 @@ fun KavyaVoiceOrb(
 
     val glowColor = when (state) {
         VoiceState.IDLE -> BrandGradientStart.copy(alpha = 0.18f)
-        VoiceState.LISTENING -> BrandGradientMid.copy(alpha = listeningGlowAlpha)
         VoiceState.UNDERSTANDING -> AccentCyan.copy(alpha = 0.35f)
         VoiceState.THINKING -> AccentCyan.copy(alpha = 0.35f)
         VoiceState.EXECUTING -> AccentCyan.copy(alpha = 0.45f)
@@ -181,7 +156,6 @@ fun KavyaVoiceOrb(
 
     val gradientColors = when (state) {
         VoiceState.IDLE -> listOf(BrandGradientStart, BrandGradientEnd)
-        VoiceState.LISTENING -> listOf(BrandGradientStart, BrandGradientMid, BrandGradientEnd)
         VoiceState.UNDERSTANDING -> listOf(AccentCyan, AccentPurple)
         VoiceState.THINKING -> listOf(AccentCyan, AccentPurple)
         VoiceState.EXECUTING -> listOf(AccentCyan, AccentPurpleLight)
@@ -218,15 +192,15 @@ fun KavyaVoiceOrb(
                 )
         )
 
-        // Waveform Rings for LISTENING and SPEAKING states
-        if (state == VoiceState.LISTENING || state == VoiceState.SPEAKING) {
+        // Waveform Rings for SPEAKING state
+        if (state == VoiceState.SPEAKING) {
             Canvas(
                 modifier = Modifier
                     .size(baseSize + 28.dp)
             ) {
                 val center = Offset(size.width / 2f, size.height / 2f)
                 val baseRadius = (size.width / 2f) - 10f
-                val waveAmplitude = if (state == VoiceState.SPEAKING) 7f else 9f
+                val waveAmplitude = 7f
 
                 val path = Path()
                 val steps = 72
@@ -244,7 +218,7 @@ fun KavyaVoiceOrb(
                     path = path,
                     brush = Brush.sweepGradient(gradientColors),
                     style = Stroke(width = 2.5f, cap = StrokeCap.Round),
-                    alpha = if (state == VoiceState.SPEAKING) 0.8f else 0.95f
+                    alpha = 0.8f
                 )
             }
         }
@@ -301,37 +275,6 @@ fun KavyaVoiceOrb(
 
             // Center Content: Audio Waves / Animated Visualizers
             when (state) {
-                VoiceState.LISTENING -> {
-                    // Modern audio wave bars
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.height(36.dp)
-                    ) {
-                        for (i in 0..4) {
-                            val barHeight by infiniteTransition.animateFloat(
-                                initialValue = 8f,
-                                targetValue = 32f,
-                                animationSpec = infiniteRepeatable(
-                                    animation = tween(380 + (i * 90), easing = FastOutSlowInEasing),
-                                    repeatMode = RepeatMode.Reverse
-                                ),
-                                label = "Bar$i"
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .width(4.dp)
-                                    .height(barHeight.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            colors = listOf(BrandGradientStart, BrandGradientEnd)
-                                        )
-                                    )
-                            )
-                        }
-                    }
-                }
                 VoiceState.SPEAKING -> {
                     // Glowing speaking wave pattern
                     Row(

@@ -37,7 +37,7 @@ fun HolographicKavya(
     // Target media resource based on voice state
     val targetRawRes = remember(voiceState) {
         when (voiceState) {
-            VoiceState.IDLE, VoiceState.LISTENING, VoiceState.ERROR -> R.raw.kavya_idle
+            VoiceState.IDLE, VoiceState.ERROR -> R.raw.kavya_idle
             VoiceState.UNDERSTANDING, VoiceState.THINKING, VoiceState.EXECUTING -> R.raw.kavya_thinking
             VoiceState.SPEAKING -> R.raw.kavya_speaking
         }
@@ -87,7 +87,6 @@ fun HolographicKavya(
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.15f,
         targetValue = when (voiceState) {
-            VoiceState.LISTENING -> 0.45f
             VoiceState.THINKING -> 0.35f
             VoiceState.SPEAKING -> 0.4f
             else -> 0.25f
@@ -95,7 +94,6 @@ fun HolographicKavya(
         animationSpec = infiniteRepeatable(
             animation = tween(
                 when (voiceState) {
-                    VoiceState.LISTENING -> 800
                     VoiceState.THINKING -> 600
                     VoiceState.SPEAKING -> 1200
                     else -> 4000
@@ -120,7 +118,6 @@ fun HolographicKavya(
                 .blur(40.dp)
                 .background(
                     color = when (voiceState) {
-                        VoiceState.LISTENING -> Color(0xFF64B5F6)
                         VoiceState.UNDERSTANDING, VoiceState.THINKING, VoiceState.EXECUTING -> Color(0xFFBA68C8)
                         VoiceState.ERROR -> Color(0xFFE57373)
                         else -> Color(0xFF81D4FA)

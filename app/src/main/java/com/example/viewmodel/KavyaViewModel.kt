@@ -127,9 +127,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     val bargeInController: com.example.ai.BargeInController = com.example.ai.BargeInController(
         audioPlayer = geminiPlayer,
         onBargeInTriggered = {
-            _latestKavyaCaption.value = "सुन रही हूँ... (Listening...)"
-            _voiceState.value = VoiceState.LISTENING
-            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
+            _latestKavyaCaption.value = ""
+            _voiceState.value = VoiceState.IDLE
+            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
         }
     )
 
@@ -303,12 +303,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     fun setVoiceState(state: VoiceState) {
         _voiceState.value = state
         com.example.state.KavyaStateManager.updateVoiceState(state)
-        proactiveController.onUserSpeechStateChanged(state == VoiceState.LISTENING)
         proactiveController.onKavyaSpeechStateChanged(state == VoiceState.SPEAKING)
     }
 
     private fun handleProactiveSpeech(text: String?, reason: String) {
-        if (_isProcessing.value || _voiceState.value == VoiceState.SPEAKING || _voiceState.value == VoiceState.LISTENING) {
+        if (_isProcessing.value || _voiceState.value == VoiceState.SPEAKING) {
             return
         }
         val chatId = _currentChatId.value ?: return

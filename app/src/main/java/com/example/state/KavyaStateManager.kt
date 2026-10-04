@@ -67,7 +67,6 @@ object KavyaStateManager {
 
     fun updateVoiceState(vs: VoiceState) {
         val mappedTaskState = when (vs) {
-            VoiceState.LISTENING -> TaskState.LISTENING
             VoiceState.THINKING -> TaskState.UNDERSTANDING
             VoiceState.SPEAKING -> if (_state.value.taskState == TaskState.EXECUTING) TaskState.EXECUTING else TaskState.COMPLETED
             VoiceState.IDLE -> if (_state.value.taskState == TaskState.COMPLETED || _state.value.taskState == TaskState.FAILED) _state.value.taskState else TaskState.IDLE

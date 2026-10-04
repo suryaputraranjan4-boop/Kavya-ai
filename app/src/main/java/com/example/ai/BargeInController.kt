@@ -7,17 +7,15 @@ import kotlinx.coroutines.flow.asStateFlow
 
 enum class BargeInState {
     IDLE,
-    LISTENING,
     THINKING,
     SPEAKING,
     BARGE_IN_DETECTED,
-    CAPTURING,
     PROCESSING
 }
 
 /**
- * Authoritative Barge-In and Voice Priority Controller (Requirements 23, 46).
- * Guarantees that user speech always has absolute priority over Kavya's audio playback.
+ * Authoritative Barge-In and Voice Priority Controller.
+ * Guarantees that user actions or triggers can halt Kavya's audio playback.
  */
 class BargeInController(
     private val audioPlayer: GeminiAudioPlayer,
@@ -45,19 +43,16 @@ class BargeInController(
     }
 
     /**
-     * Called the instant user speech presence or STT activity is detected while audio is playing.
+     * Called when assistant speech should be interrupted immediately.
      */
-    fun onUserSpeechDetected() {
+    fun onUserInterrupted() {
         val currentState = _state.value
         if (currentState == BargeInState.SPEAKING || audioPlayer.isSpeaking()) {
-            Log.w(TAG, "BARGE_IN_TRIGGERED: User spoke while assistant was speaking! Immediately cutting TTS.")
+            Log.w(TAG, "BARGE_IN_TRIGGERED: Interrupting assistant audio playback.")
             _state.value = BargeInState.BARGE_IN_DETECTED
             audioPlayer.stop()
             onBargeInTriggered?.invoke()
-            _state.value = BargeInState.CAPTURING
-            Log.d(TAG, "STATE -> CAPTURING (User has priority)")
-        } else if (currentState == BargeInState.IDLE) {
-            _state.value = BargeInState.LISTENING
+            _state.value = BargeInState.IDLE
         }
     }
 
