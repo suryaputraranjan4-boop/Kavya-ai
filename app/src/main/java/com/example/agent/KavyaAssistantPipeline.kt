@@ -308,12 +308,12 @@ class KavyaAssistantPipeline(
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error in processUtterance: ${e.message}", e)
-                val errMsg = "Kavya ko processing me error aayi: ${e.message}"
+                val errMsg = "माफ़ कीजिए, अभी process करने में समस्या आई।"
                 KavyaStateManager.updateVoiceState(VoiceState.ERROR)
                 KavyaStateManager.updateTaskState(TaskState.FAILED, errMsg)
                 if (autoSpeak) {
                     microphoneEngine.pauseForTts()
-                    voiceEngine.speakSuspending("Sorry, an error occurred.")
+                    voiceEngine.speakSuspending("अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।")
                     delay(350)
                     microphoneEngine.resumeAfterTts(350L)
                 }

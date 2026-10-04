@@ -114,6 +114,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     _voiceState.value = VoiceState.IDLE
                     com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                 }
+                _latestKavyaCaption.value = null
+                microphoneEngine.resumeAfterTts(350L)
             }
         },
         onAudioChunkStarted = { spokenChunk ->
@@ -491,8 +493,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 viewModelScope.launch(Dispatchers.Main) {
                     _voiceState.value = VoiceState.ERROR
                     com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-                    _latestKavyaCaption.value = error
-                    delay(3000)
+                    _latestKavyaCaption.value = "आवाज़ सुनाई नहीं दी। फिर से बोलें।"
+                    delay(2500)
                     if (_voiceState.value == VoiceState.ERROR) {
                         _voiceState.value = VoiceState.IDLE
                         com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
@@ -1453,9 +1455,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    // If still blank, use pleasant default response
+                    // If still blank, use pleasant natural response
                     if (fullResponse.isBlank()) {
-                        fullResponse = "AI network abhi busy hai, kripya thodi der baad punah prayas karein."
+                        fullResponse = "अभी connection में problem आ रही है। कृपया थोड़ी देर में दोबारा try करें।"
                     }
 
                     // Parse structured actions (JSON schema or action tags)
@@ -1646,9 +1648,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     // Auto-speak the AI response if not already spoken during streaming
                     if (cleanResponse.isNotBlank() && !alreadySpoken) {
                         microphoneEngine.pauseForTts()
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false, onComplete = {
+                            microphoneEngine.resumeAfterTts(350L)
+                        })
                         alreadySpoken = true
-                        microphoneEngine.resumeAfterTts(350L)
                     }
                 }
                 

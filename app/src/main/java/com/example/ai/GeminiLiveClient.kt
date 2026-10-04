@@ -2,10 +2,8 @@ package com.example.ai
 
 import android.content.Context
 import android.media.AudioFormat
-import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.AudioManager
-import android.media.MediaRecorder
 import android.annotation.SuppressLint
 import android.util.Base64
 import android.util.Log
@@ -43,7 +41,6 @@ class GeminiLiveClient(
     private var webSocket: WebSocket? = null
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     
-    private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     
     private var isRecording = false
@@ -408,7 +405,6 @@ class GeminiLiveClient(
         isRecording = false
         val micEngine = com.example.agent.MicrophoneEngine.getInstance(context)
         micEngine.unsubscribeAudioFrames(frameSubscriber)
-        micEngine.stopRecording()
     }
     
     private fun startPlaybackSystem() {
@@ -451,11 +447,10 @@ class GeminiLiveClient(
     
     fun stopSession() {
         isConnected = false
-        isRecording = false
+        if (isRecording) {
+            stopRecording()
+        }
         isPlaying = false
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
         
         audioTrack?.stop()
         audioTrack?.release()

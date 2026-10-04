@@ -17,6 +17,7 @@ data class WorkflowStep(
     val target: String = "",
     val query: String = "",
     val text: String = "",
+    val ordinalIndex: Int = 0,
     val expectedPackage: String? = null,
     val verificationCriteria: String = "",
     val maxRetries: Int = 2
@@ -89,6 +90,7 @@ class WorkflowEngine(
                     target = step.targetAppOrUrl.ifBlank { step.param },
                     text = step.param,
                     query = step.param,
+                    ordinalIndex = step.ordinalIndex,
                     expectedPackage = if (step.actionType == UniversalActionType.OPEN_APP) {
                         val resolved = com.example.utils.AppResolver(context).resolve(step.targetAppOrUrl)
                         resolved.matchedApp?.packageName
@@ -165,8 +167,8 @@ class WorkflowEngine(
             UniversalActionType.TAP -> {
                 service.clickNodeByText(step.target)
             }
-            UniversalActionType.SELECT_RESULT -> {
-                val node = service.findOrdinalContentNode(null, 0)
+            UniversalActionType.SELECT, UniversalActionType.SELECT_RESULT -> {
+                val node = service.findOrdinalContentNode(null, step.ordinalIndex)
                 if (node != null) {
                     service.clickNode(node)
                 } else {
@@ -196,9 +198,14 @@ class WorkflowEngine(
                 service.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
             }
             UniversalActionType.PLAY -> {
-                val root = service.rootInActiveWindow
-                val playBtn = if (root != null) screenInspector.findTargetNode("play", "PLAY_BUTTON") else null
-                if (playBtn != null) service.clickNode(playBtn) else service.clickNodeByText("play")
+                val node = service.findOrdinalContentNode(null, step.ordinalIndex)
+                if (node != null) {
+                    service.clickNode(node)
+                } else {
+                    val root = service.rootInActiveWindow
+                    val playBtn = if (root != null) screenInspector.findTargetNode("play", "PLAY_BUTTON") else null
+                    if (playBtn != null) service.clickNode(playBtn) else service.clickNodeByText("play")
+                }
             }
             UniversalActionType.CALL, UniversalActionType.MAKE_PHONE_CALL, UniversalActionType.MAKE_WHATSAPP_CALL -> {
                 val root = service.rootInActiveWindow

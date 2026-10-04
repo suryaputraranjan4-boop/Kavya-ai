@@ -149,7 +149,7 @@ object LocalAssistantEngine {
         return "$formattedNum1 $op $formattedNum2 = $formattedResult"
     }
 
-    fun getHighTrafficFallbackResponse(prompt: String): String {
+    fun getConnectionFallbackResponse(prompt: String): String {
         val lower = prompt.lowercase(Locale.ROOT)
         return when {
             lower.contains("youtube") || lower.contains("video") || lower.contains("play") -> {
@@ -168,11 +168,12 @@ object LocalAssistantEngine {
                 "Screenshot ले रही हूँ।\n```json\n[{\"action\":\"GLOBAL_ACTION\",\"target\":\"SCREENSHOT\"}]\n```"
             }
             else -> {
-                // If it's a general question, never spout a canned app-launch speech
-                "AI servers par abhi high traffic hai, kripya ek pal mein dobara try karein. (Network busy, retrying...)"
+                "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
             }
         }
     }
+
+    fun getHighTrafficFallbackResponse(prompt: String): String = getConnectionFallbackResponse(prompt)
 
     /**
      * Resolves user requests when API keys are optional or not configured.

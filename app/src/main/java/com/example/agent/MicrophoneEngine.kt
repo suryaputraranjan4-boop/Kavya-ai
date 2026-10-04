@@ -295,12 +295,12 @@ class MicrophoneEngine private constructor(private val context: Context) {
     }
 
     /**
-     * Temporarily pauses capture during assistant TTS speech playback.
-     * Thread-safe with atomic reference counting.
+     * Temporarily pauses capture during assistant audio speech playback.
+     * Thread-safe with atomic reference counting and bounded recovery.
      */
     fun pauseForTts() {
         val count = pauseReferenceCount.incrementAndGet()
-        Log.d(TAG, "PAUSE_FOR_TTS (RefCount=$count)")
+        Log.d(TAG, "PAUSE_FOR_AUDIO_PLAYBACK (RefCount=$count)")
 
         rearmJob?.cancel()
         rearmJob = null
@@ -310,25 +310,38 @@ class MicrophoneEngine private constructor(private val context: Context) {
     }
 
     /**
-     * Resumes capture after TTS speech playback completes and acoustic echo has dissipated.
+     * Resumes capture after audio speech playback completes and acoustic echo has dissipated.
      */
     fun resumeAfterTts(acousticDelayMs: Long = 350L) {
-        val remaining = pauseReferenceCount.decrementAndGet()
-        Log.d(TAG, "RESUME_AFTER_TTS (RemainingTokens=$remaining, Delay=${acousticDelayMs}ms)")
+        val remaining = pauseReferenceCount.decrementAndGet().coerceAtLeast(0)
+        Log.d(TAG, "RESUME_AFTER_AUDIO_PLAYBACK (RemainingTokens=$remaining, Delay=${acousticDelayMs}ms)")
 
         if (remaining > 0) {
             Log.d(TAG, "Resume deferred: $remaining active pause locks remaining.")
+            // Safety auto-recovery: if remaining lock stays stale, clear it so mic is never permanently disabled
+            scope.launch {
+                delay(6000L)
+                if (pauseReferenceCount.get() > 0) {
+                    Log.w(TAG, "Safety recovery: Clearing stale pause locks (${pauseReferenceCount.get()})")
+                    pauseReferenceCount.set(0)
+                    if (isContinuousListeningRequested && !isSleeping && !_isMuted.value) {
+                        sessionMutex.withLock {
+                            startPhysicalCaptureSession()
+                        }
+                    }
+                }
+            }
             return
         }
 
         pauseReferenceCount.set(0)
 
-        if (isContinuousListeningRequested && !isSleeping) {
+        if (isContinuousListeningRequested && !isSleeping && !_isMuted.value) {
             rearmJob?.cancel()
             rearmJob = scope.launch {
                 delay(acousticDelayMs)
                 sessionMutex.withLock {
-                    if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping) {
+                    if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !isSleeping && !_isMuted.value) {
                         startPhysicalCaptureSession()
                     }
                 }
@@ -338,8 +351,12 @@ class MicrophoneEngine private constructor(private val context: Context) {
         }
     }
 
+    fun resetPauseLock() {
+        pauseReferenceCount.set(0)
+    }
+
     /**
-     * Immediate barge-in interrupt: instantly cancels TTS pause locks and cuts to microphone.
+     * Immediate barge-in interrupt: instantly cancels pause locks and cuts to microphone.
      */
     fun forceBargeIn() {
         Log.i(TAG, "FORCE_BARGE_IN (User interrupt)")
@@ -494,6 +511,14 @@ class MicrophoneEngine private constructor(private val context: Context) {
                 frameSubscribers.add(subscriber)
             }
         }
+        if (_micState.value == MicrophoneState.LISTENING && activeCaptureMode == MicrophoneCaptureMode.SPEECH_RECOGNIZER) {
+            activeCaptureMode = MicrophoneCaptureMode.RAW_AUDIO_RECORD
+            scope.launch {
+                sessionMutex.withLock {
+                    startPhysicalCaptureSession()
+                }
+            }
+        }
     }
 
     fun unsubscribeAudioFrames(subscriber: (ByteArray, Int) -> Unit) {
@@ -516,7 +541,14 @@ class MicrophoneEngine private constructor(private val context: Context) {
         stopPhysicalHardware(discard = true)
         requestAudioFocus()
 
-        when (activeCaptureMode) {
+        val hasFrameSubscribers = synchronized(frameSubscribers) { frameSubscribers.isNotEmpty() }
+        val effectiveMode = if (hasFrameSubscribers) {
+            MicrophoneCaptureMode.RAW_AUDIO_RECORD
+        } else {
+            activeCaptureMode
+        }
+
+        when (effectiveMode) {
             MicrophoneCaptureMode.SPEECH_RECOGNIZER -> {
                 val isRecognizerAvailable = try {
                     SpeechRecognizer.isRecognitionAvailable(context)
