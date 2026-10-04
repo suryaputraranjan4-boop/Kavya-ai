@@ -106,6 +106,61 @@ class MicrophoneEngineRobolectricTest {
     }
 
     @Test
+    fun testContinuousListeningFeatureLatch() {
+        val shadowApp = Shadows.shadowOf(app)
+        shadowApp.grantPermissions(Manifest.permission.RECORD_AUDIO)
+
+        engine.startContinuousListening()
+        assertTrue("Microphone feature should be latched enabled", engine.isFeatureEnabled())
+
+        // Explicit stop disables latch
+        engine.stopListening()
+        assertFalse("Microphone feature should be disabled after explicit stop", engine.isFeatureEnabled())
+    }
+
+    @Test
+    fun testSleepVsStopBehavior() {
+        val shadowApp = Shadows.shadowOf(app)
+        shadowApp.grantPermissions(Manifest.permission.RECORD_AUDIO)
+
+        engine.startContinuousListening()
+        assertTrue(engine.isFeatureEnabled())
+
+        // Sleep mode keeps feature enabled for wake detection
+        engine.setSleeping(true)
+        assertTrue(engine.isSleeping())
+        assertTrue("Feature should remain enabled in sleep mode for wake detection", engine.isFeatureEnabled())
+
+        // Wake mode restores awake state
+        engine.setSleeping(false)
+        assertFalse(engine.isSleeping())
+        assertTrue(engine.isFeatureEnabled())
+
+        // Explicit stop disables feature
+        engine.stopListening()
+        assertFalse(engine.isFeatureEnabled())
+    }
+
+    @Test
+    fun testTtsPauseAndResume() {
+        val shadowApp = Shadows.shadowOf(app)
+        shadowApp.grantPermissions(Manifest.permission.RECORD_AUDIO)
+
+        engine.startContinuousListening()
+        assertTrue(engine.isFeatureEnabled())
+
+        // TTS pause
+        engine.pauseForTts()
+        assertTrue("Feature remains enabled during TTS pause", engine.isFeatureEnabled())
+
+        // TTS resume
+        engine.resumeAfterTts(50L)
+        assertTrue("Feature remains enabled after TTS resume", engine.isFeatureEnabled())
+
+        engine.stopListening()
+    }
+
+    @Test
     fun testCentralizedStateTransitions() {
         KavyaStateManager.updateVoiceState(VoiceState.IDLE)
         assertEquals(VoiceState.IDLE, KavyaStateManager.state.value.voiceState)

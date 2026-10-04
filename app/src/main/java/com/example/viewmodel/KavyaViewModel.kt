@@ -138,6 +138,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     val microphoneEngine = com.example.agent.MicrophoneEngine.getInstance(application)
     val micAmplitude: StateFlow<Float> = microphoneEngine.amplitude
     val micEngineState: StateFlow<com.example.agent.MicrophoneState> = microphoneEngine.micState
+    val isMicActive: StateFlow<Boolean> = microphoneEngine.microphoneEnabled
     private val database = AppDatabase.getDatabase(application)
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
@@ -247,14 +248,18 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     is com.example.agent.MicEvent.Error -> {
                         Log.w(TAG, "STT_ERROR: ${event.error}")
-                        _voiceState.value = VoiceState.ERROR
-                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
-                        _latestKavyaCaption.value = "आवाज़ सुनाई नहीं दी। फिर से बोलें।"
-                        delay(2500)
-                        if (_voiceState.value == VoiceState.ERROR) {
-                            _voiceState.value = VoiceState.IDLE
-                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                            _latestKavyaCaption.value = null
+                        if (microphoneEngine.isFeatureEnabled()) {
+                            _latestKavyaCaption.value = "सुन रही हूँ... (Listening...)"
+                        } else {
+                            _voiceState.value = VoiceState.ERROR
+                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.ERROR)
+                            _latestKavyaCaption.value = "आवाज़ सुनाई नहीं दी। फिर से बोलें।"
+                            delay(2500)
+                            if (_voiceState.value == VoiceState.ERROR) {
+                                _voiceState.value = VoiceState.IDLE
+                                com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                                _latestKavyaCaption.value = null
+                            }
                         }
                     }
                     is com.example.agent.MicEvent.Stopped -> {
@@ -541,9 +546,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 sendMessage(recognizedText)
             } else {
                 Log.d(TAG, "STT_EMPTY: No speech detected in audio window")
-                _voiceState.value = VoiceState.IDLE
-                com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                _latestKavyaCaption.value = null
+                if (!microphoneEngine.isFeatureEnabled()) {
+                    _voiceState.value = VoiceState.IDLE
+                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                    _latestKavyaCaption.value = null
+                }
             }
         }
     }
@@ -573,7 +580,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val isCurrentlyListening = _voiceState.value == VoiceState.LISTENING ||
+        val isCurrentlyListening = microphoneEngine.isFeatureEnabled() ||
+                _voiceState.value == VoiceState.LISTENING ||
                 microphoneEngine.isListeningOrStarting()
 
         if (isCurrentlyListening) {

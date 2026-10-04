@@ -44,6 +44,7 @@ enum class MicrophoneState {
     STARTING,
     LISTENING,
     PROCESSING,
+    REARMING,
     STOPPING,
     ERROR
 }
@@ -156,6 +157,10 @@ class MicrophoneEngine private constructor(private val context: Context) {
     private val _isListeningActive = MutableStateFlow(false)
     val isListeningActive: StateFlow<Boolean> = _isListeningActive.asStateFlow()
 
+    // Authoritative Feature-level latch: True from user ON until explicit user OFF
+    private val _microphoneEnabled = MutableStateFlow(false)
+    val microphoneEnabled: StateFlow<Boolean> = _microphoneEnabled.asStateFlow()
+
     // Centralized event stream
     private val _micEvents = MutableSharedFlow<MicEvent>(
         extraBufferCapacity = 64,
@@ -190,9 +195,21 @@ class MicrophoneEngine private constructor(private val context: Context) {
         refreshHardwareDiagnostics()
     }
 
+    /**
+     * Structured diagnostic logging encompassing all lifecycle state parameters.
+     */
+    fun logDiag(event: String, detail: String = "") {
+        Log.i(
+            TAG,
+            "[$event] session=$currentSessionId, enabled=${_microphoneEnabled.value}, state=${_micState.value}, mode=$activeCaptureMode, muted=${_isMuted.value}, sleeping=$isSleeping, pauseRef=${pauseReferenceCount.get()}, hwActive=${isHardwareActive()} | $detail"
+        )
+    }
+
+    fun isFeatureEnabled(): Boolean = _microphoneEnabled.value
+
     fun isListeningOrStarting(): Boolean {
         val s = _micState.value
-        return (s == MicrophoneState.LISTENING || s == MicrophoneState.STARTING) && isHardwareActive()
+        return (_microphoneEnabled.value || s == MicrophoneState.LISTENING || s == MicrophoneState.STARTING || s == MicrophoneState.REARMING || s == MicrophoneState.PROCESSING) && isHardwareActive()
     }
 
     fun isHardwareActive(): Boolean {
@@ -321,6 +338,8 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
     /**
      * Idempotently starts continuous hands-free background listening loop.
+     * Uses continuous native AudioRecord streaming to keep Android microphone hardware
+     * and green privacy indicator permanently active without interruption.
      */
     fun startContinuousListening(
         onListeningStarted: () -> Unit = {},
@@ -336,7 +355,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
         }
         startCaptureInternal(
             continuous = true,
-            mode = MicrophoneCaptureMode.SPEECH_RECOGNIZER,
+            mode = MicrophoneCaptureMode.RAW_AUDIO_RECORD,
             listener = listener
         )
     }
@@ -352,8 +371,9 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
         // Synchronous permission check to fail fast and support tests immediately
         if (!hasAudioPermission()) {
-            Log.e(TAG, "MIC_START_FAILURE: RECORD_AUDIO permission missing")
+            logDiag("MIC_ERROR", "RECORD_AUDIO permission missing")
             _isListeningActive.value = false
+            _microphoneEnabled.value = false
             updateState(MicrophoneState.ERROR)
             _status.value = _status.value.copy(
                 hasPermission = false,
@@ -366,15 +386,19 @@ class MicrophoneEngine private constructor(private val context: Context) {
         }
 
         if (_isMuted.value) {
-            Log.d(TAG, "MIC_START_REQUEST suppressed: microphone is MUTED")
+            logDiag("MIC_START_REQUEST", "Suppressed: microphone is MUTED")
             return
         }
 
         _isListeningActive.value = true
+        if (continuous) {
+            _microphoneEnabled.value = true
+            logDiag("MIC_USER_ON", "Microphone feature enabled by user (continuous mode)")
+        }
 
         scope.launch {
             sessionMutex.withLock {
-                Log.i(TAG, "MIC_START_REQUEST (continuous=$continuous, mode=$mode, state=${_micState.value}, activeMode=$activeCaptureMode)")
+                logDiag("MIC_START_REQUEST", "continuous=$continuous, mode=$mode, state=${_micState.value}, activeMode=$activeCaptureMode")
 
                 // IDEMPOTENT GUARDS:
                 // 1. If STARTING and same capture mode: ignore duplicate request if hardware is active/starting
@@ -396,7 +420,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
                 }
 
                 // 3. If active session exists but different mode requested: cleanly stop current session before switching
-                if ((_micState.value == MicrophoneState.LISTENING || _micState.value == MicrophoneState.STARTING) && activeCaptureMode != mode) {
+                if ((_micState.value == MicrophoneState.LISTENING || _micState.value == MicrophoneState.STARTING || _micState.value == MicrophoneState.REARMING) && activeCaptureMode != mode) {
                     Log.i(TAG, "START_CAPTURE: Switching mode from $activeCaptureMode to $mode. Cleanly releasing current hardware.")
                     stopPhysicalHardwareSync()
                 }
@@ -405,63 +429,61 @@ class MicrophoneEngine private constructor(private val context: Context) {
                 isContinuousListeningRequested = continuous
                 pauseReferenceCount.set(0)
                 consecutiveErrorCount = 0
-
                 rearmJob?.cancel()
                 rearmJob = null
-
                 startPhysicalCaptureSession()
             }
         }
     }
 
     fun isContinuousListeningEnabled(): Boolean {
-        return isContinuousListeningRequested
+        return isContinuousListeningRequested || _microphoneEnabled.value
     }
 
     fun setContinuousListening(enabled: Boolean) {
         isContinuousListeningRequested = enabled
+        _microphoneEnabled.value = enabled
         if (!enabled) {
             stopListening()
         }
     }
 
     /**
-     * Temporarily pauses capture during assistant audio speech playback.
-     * Thread-safe with atomic reference counting and bounded recovery.
+     * Temporarily marks TTS audio playback active to software-gate echo without killing hardware stream.
+     * Keeps the native AudioRecord hardware and green privacy dot permanently active.
      */
     fun pauseForTts() {
         val count = pauseReferenceCount.incrementAndGet()
-        Log.d(TAG, "PAUSE_FOR_AUDIO_PLAYBACK (RefCount=$count)")
-
+        logDiag("MIC_TTS_PAUSE", "RefCount=$count")
         rearmJob?.cancel()
         rearmJob = null
-
-        scope.launch {
-            sessionMutex.withLock {
-                stopPhysicalHardwareSync()
+        if (activeCaptureMode == MicrophoneCaptureMode.SPEECH_RECOGNIZER) {
+            scope.launch {
+                sessionMutex.withLock {
+                    stopPhysicalHardwareSync()
+                }
             }
         }
-        _amplitude.value = 0f
     }
 
     /**
-     * Resumes capture after audio speech playback completes and acoustic echo has dissipated.
+     * Resumes normal listening gating after audio speech playback completes.
      */
-    fun resumeAfterTts(acousticDelayMs: Long = 350L) {
+    fun resumeAfterTts(acousticDelayMs: Long = 250L) {
         val remaining = pauseReferenceCount.decrementAndGet().coerceAtLeast(0)
-        Log.d(TAG, "RESUME_AFTER_AUDIO_PLAYBACK (RemainingTokens=$remaining, Delay=${acousticDelayMs}ms)")
-
+        logDiag("MIC_TTS_RESUME", "RemainingTokens=$remaining, Delay=${acousticDelayMs}ms")
         if (remaining > 0) {
             Log.d(TAG, "Resume deferred: $remaining active pause locks remaining.")
-            // Safety auto-recovery: if remaining lock stays stale, clear it so mic is never permanently disabled
             scope.launch {
-                delay(5000L)
+                delay(4000L)
                 if (pauseReferenceCount.get() > 0) {
                     Log.w(TAG, "Safety recovery: Clearing stale pause locks (${pauseReferenceCount.get()})")
                     pauseReferenceCount.set(0)
-                    if (isContinuousListeningRequested && !_isMuted.value) {
+                    if (_microphoneEnabled.value && !_isMuted.value) {
                         sessionMutex.withLock {
-                            startPhysicalCaptureSession()
+                            if (!isHardwareActuallyActive(activeCaptureMode)) {
+                                startPhysicalCaptureSession()
+                            }
                         }
                     }
                 }
@@ -470,9 +492,16 @@ class MicrophoneEngine private constructor(private val context: Context) {
         }
 
         pauseReferenceCount.set(0)
-
-        if (isContinuousListeningRequested && !_isMuted.value) {
-            scheduleSafeRearm(delayMs = acousticDelayMs)
+        if (_microphoneEnabled.value && !_isMuted.value) {
+            if (activeCaptureMode == MicrophoneCaptureMode.SPEECH_RECOGNIZER) {
+                scheduleSafeRearm(delayMs = acousticDelayMs)
+            } else if (!isHardwareActuallyActive(activeCaptureMode)) {
+                scope.launch {
+                    sessionMutex.withLock {
+                        startPhysicalCaptureSession()
+                    }
+                }
+            }
         } else {
             updateState(MicrophoneState.IDLE)
         }
@@ -486,7 +515,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
      * Immediate barge-in interrupt: instantly cancels pause locks and cuts to microphone.
      */
     fun forceBargeIn() {
-        Log.i(TAG, "FORCE_BARGE_IN (User interrupt)")
+        logDiag("FORCE_BARGE_IN", "User interrupt")
         pauseReferenceCount.set(0)
         rearmJob?.cancel()
         rearmJob = null
@@ -502,7 +531,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
         _isMuted.value = muted
         com.example.utils.AppPreferences.setMicListeningEnabled(context, !muted)
         if (muted) {
-            Log.i(TAG, "MIC_MUTED: Halting physical microphone capture")
+            logDiag("MIC_MUTED", "Halting physical microphone capture")
             rearmJob?.cancel()
             rearmJob = null
             scope.launch {
@@ -514,8 +543,8 @@ class MicrophoneEngine private constructor(private val context: Context) {
                 }
             }
         } else {
-            Log.i(TAG, "MIC_UNMUTED: Resuming physical microphone capture")
-            if (isContinuousListeningRequested) {
+            logDiag("MIC_UNMUTED", "Resuming physical microphone capture")
+            if (_microphoneEnabled.value || isContinuousListeningRequested) {
                 scope.launch {
                     sessionMutex.withLock {
                         if (!_isMuted.value && pauseReferenceCount.get() == 0) {
@@ -533,14 +562,14 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
     fun setSleeping(sleeping: Boolean) {
         if (sleeping) {
-            Log.i(TAG, "MIC_SLEEP: Entering sleep mode (physical hardware stays active for wake detection)")
             isSleeping = true
+            logDiag("MIC_SLEEP", "Entering sleep mode (physical hardware stays active for wake detection)")
             _isListeningActive.value = false
             KavyaStateManager.updateVoiceState(VoiceState.IDLE)
         } else {
-            Log.i(TAG, "MIC_WAKE: Waking up from sleep mode (restoring continuous listening UI and processing)")
             isSleeping = false
-            if (isContinuousListeningRequested && !_isMuted.value) {
+            logDiag("MIC_WAKE", "Waking up from sleep mode (restoring continuous listening UI and processing)")
+            if ((_microphoneEnabled.value || isContinuousListeningRequested) && !_isMuted.value) {
                 _isListeningActive.value = true
                 KavyaStateManager.updateVoiceState(VoiceState.LISTENING)
                 if (!isHardwareActuallyActive(activeCaptureMode)) {
@@ -560,7 +589,9 @@ class MicrophoneEngine private constructor(private val context: Context) {
      * Completely stops active capture and disables automatic re-arming.
      */
     fun stopListening() {
-        Log.i(TAG, "MIC_STOP_REQUEST: Explicit stop requested")
+        logDiag("MIC_USER_OFF", "Explicit stop requested")
+        logDiag("MIC_EXPLICIT_STOP", "Halting continuous listening and tearing down session")
+        _microphoneEnabled.value = false
         isContinuousListeningRequested = false
         _isListeningActive.value = false
         rearmJob?.cancel()
@@ -570,12 +601,11 @@ class MicrophoneEngine private constructor(private val context: Context) {
         updateState(MicrophoneState.IDLE)
         _amplitude.value = 0f
         _partialText.value = ""
-
         scope.launch {
             sessionMutex.withLock {
                 stopPhysicalHardwareSync()
                 abandonAudioFocus()
-                Log.i(TAG, "MIC_STOP_SUCCESS: Physical capture session completely halted")
+                logDiag("MIC_STOP_COMPLETE", "Physical capture session completely halted")
                 notifyStopped()
             }
         }
@@ -746,15 +776,16 @@ class MicrophoneEngine private constructor(private val context: Context) {
             try {
                 // Guarantee old recognizer is completely destroyed before creating a new one
                 destroySpeechRecognizerDirect()
-
                 val thisSessionId = ++currentSessionId
                 val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
                 activeSpeechRecognizer = recognizer
+                logDiag("MIC_SESSION_CREATED", "SpeechRecognizer initialized (Session $thisSessionId)")
 
                 recognizer.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {
                         if (thisSessionId != currentSessionId) return
-                        Log.i(TAG, "MIC_START_SUCCESS: Android green privacy indicator ACTIVE (Session $thisSessionId)")
+                        logDiag("MIC_READY", "Session $thisSessionId ready for speech")
+                        logDiag("MIC_LISTENING", "Android green privacy indicator ACTIVE (Session $thisSessionId)")
                         consecutiveErrorCount = 0
                         _isListeningActive.value = true
                         updateState(MicrophoneState.LISTENING)
@@ -764,7 +795,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
                     override fun onBeginningOfSpeech() {
                         if (thisSessionId != currentSessionId) return
-                        Log.d(TAG, "MIC_RECOGNIZER_START: Speech beginning detected")
+                        logDiag("MIC_BEGIN_SPEECH", "Session $thisSessionId")
                     }
 
                     override fun onRmsChanged(rmsdB: Float) {
@@ -777,7 +808,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
                     override fun onEndOfSpeech() {
                         if (thisSessionId != currentSessionId) return
-                        Log.d(TAG, "MIC_RECOGNIZER_END: Speech end detected")
+                        logDiag("MIC_END_OF_SPEECH", "Session $thisSessionId")
                         updateState(MicrophoneState.PROCESSING)
                         _amplitude.value = 0f
                     }
@@ -791,8 +822,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
                         if (thisSessionId != currentSessionId) return
                         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         val text = matches?.firstOrNull()?.trim() ?: ""
-                        Log.i(TAG, "MIC_RECOGNIZER_RESULT: \"$text\"")
-
+                        logDiag("MIC_RESULT", "\"$text\"")
                         _amplitude.value = 0f
                         _partialText.value = ""
 
@@ -800,8 +830,8 @@ class MicrophoneEngine private constructor(private val context: Context) {
                         destroySpeechRecognizerDirect()
 
                         if (text.isBlank()) {
-                            if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
-                                Log.d(TAG, "MIC_RESTART: Empty speech result in continuous mode. Auto-recovering session (delay 200ms).")
+                            if (_microphoneEnabled.value && pauseReferenceCount.get() == 0 && !_isMuted.value) {
+                                logDiag("MIC_TIMEOUT", "Empty speech result in continuous mode. Auto-recovering session (delay 200ms).")
                                 scheduleSafeRearm(delayMs = 200L)
                             } else {
                                 abandonAudioFocus()
@@ -820,12 +850,12 @@ class MicrophoneEngine private constructor(private val context: Context) {
                             notifyResult(text)
 
                             // Continuous listening re-arm after valid speech result (both ACTIVE and SLEEP modes)
-                            if (isContinuousListeningRequested && !_isMuted.value) {
+                            if (_microphoneEnabled.value && !_isMuted.value) {
                                 if (isSleeping) {
-                                    Log.d(TAG, "MIC_RESTART: Re-arming wake detector in sleep mode.")
+                                    logDiag("MIC_REARM", "Re-arming wake detector in sleep mode.")
                                     scheduleSafeRearm(delayMs = 300L)
                                 } else {
-                                    Log.d(TAG, "MIC_RESTART: Scheduling re-arm window after utterance.")
+                                    logDiag("MIC_REARM", "Scheduling re-arm window after utterance.")
                                     scheduleContinuousReArmAfterUtterance(delayMs = 2500L)
                                 }
                             } else {
@@ -858,14 +888,13 @@ class MicrophoneEngine private constructor(private val context: Context) {
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
                     putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
                 }
-
                 recognizer.startListening(intent)
-
             } catch (e: Exception) {
-                Log.e(TAG, "SpeechRecognizer start failed: ${e.message}", e)
+                logDiag("MIC_ERROR", "SpeechRecognizer start failed: ${e.message}")
                 destroySpeechRecognizerDirect()
                 scope.launch {
                     sessionMutex.withLock {
+                        logDiag("MIC_FALLBACK_TO_AUDIO_RECORD", "Falling back to AudioRecord after start exception")
                         startAudioRecordInternal()
                     }
                 }
@@ -892,16 +921,17 @@ class MicrophoneEngine private constructor(private val context: Context) {
             else -> Pair("Speech recognition error ($errorCode)", false)
         }
 
-        Log.w(TAG, "MIC_RECOGNIZER_ERROR: code=$errorCode ($msg), isSilentTimeout=$isSilentTimeout, count=$consecutiveErrorCount")
+        logDiag("MIC_ERROR", "code=$errorCode ($msg), isSilentTimeout=$isSilentTimeout, count=$consecutiveErrorCount")
         _amplitude.value = 0f
         destroySpeechRecognizerDirect()
 
         // 1. FATAL: Microphone permission revoked
         if (errorCode == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
-            Log.e(TAG, "MIC_START_FAILURE: Microphone permission revoked ($msg)")
+            logDiag("MIC_ERROR", "Microphone permission revoked ($msg)")
             rearmJob?.cancel()
             rearmJob = null
             isContinuousListeningRequested = false
+            _microphoneEnabled.value = false
             _isListeningActive.value = false
             abandonAudioFocus()
             updateState(MicrophoneState.ERROR)
@@ -921,8 +951,9 @@ class MicrophoneEngine private constructor(private val context: Context) {
         // 2. NORMAL / RECOVERABLE: Silent timeout (no speech detected in recognition window)
         if (isSilentTimeout) {
             consecutiveErrorCount = 0
-            if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
-                Log.d(TAG, "MIC_RESTART: Silence timeout in continuous mode. Auto-recovering session (delay 200ms).")
+            val eventTag = if (errorCode == SpeechRecognizer.ERROR_NO_MATCH) "MIC_NO_MATCH" else "MIC_TIMEOUT"
+            if (_microphoneEnabled.value && pauseReferenceCount.get() == 0 && !_isMuted.value) {
+                logDiag(eventTag, "Silence/No-match in continuous mode. Auto-recovering session (delay 200ms).")
                 scheduleSafeRearm(delayMs = 200L)
             } else {
                 abandonAudioFocus()
@@ -940,14 +971,14 @@ class MicrophoneEngine private constructor(private val context: Context) {
                 errorCode == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ||
                 errorCode == SpeechRecognizer.ERROR_SERVER)
 
-        if (isRecoverable && isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
+        if (isRecoverable && _microphoneEnabled.value && pauseReferenceCount.get() == 0 && !_isMuted.value) {
             consecutiveErrorCount++
             if (consecutiveErrorCount <= MAX_REARM_RETRIES) {
                 val backoff = (300L * consecutiveErrorCount).coerceAtMost(1500L)
-                Log.w(TAG, "MIC_RESTART: Recoverable recognizer error ($errorCode: $msg). Auto-recovering in ${backoff}ms (attempt $consecutiveErrorCount)")
+                logDiag("MIC_REARM", "Recoverable error ($errorCode: $msg). Auto-recovering in ${backoff}ms (attempt $consecutiveErrorCount)")
                 scheduleSafeRearm(delayMs = backoff)
             } else {
-                Log.w(TAG, "MIC_RESTART: Max recognizer retries reached. Failing over to native AudioRecord PCM capture.")
+                logDiag("MIC_FALLBACK_TO_AUDIO_RECORD", "Max recognizer retries reached. Failing over to native AudioRecord PCM capture.")
                 consecutiveErrorCount = 0
                 scope.launch {
                     sessionMutex.withLock {
@@ -959,8 +990,8 @@ class MicrophoneEngine private constructor(private val context: Context) {
         }
 
         // 4. HARDWARE FAULT: Audio capture failure
-        if (errorCode == SpeechRecognizer.ERROR_AUDIO && isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
-            Log.w(TAG, "MIC_RESTART: Hardware fault ($errorCode). Failing over to native AudioRecord PCM capture.")
+        if (errorCode == SpeechRecognizer.ERROR_AUDIO && _microphoneEnabled.value && pauseReferenceCount.get() == 0 && !_isMuted.value) {
+            logDiag("MIC_FALLBACK_TO_AUDIO_RECORD", "Hardware fault ($errorCode). Failing over to native AudioRecord PCM capture.")
             scope.launch {
                 sessionMutex.withLock {
                     startAudioRecordInternal()
@@ -971,6 +1002,7 @@ class MicrophoneEngine private constructor(private val context: Context) {
 
         // 5. UNRECOVERABLE / NON-CONTINUOUS ERROR
         _isListeningActive.value = false
+        _microphoneEnabled.value = false
         updateState(MicrophoneState.ERROR)
         _status.value = _status.value.copy(isListening = false, lastError = msg)
         notifyError(msg)
@@ -1040,12 +1072,15 @@ class MicrophoneEngine private constructor(private val context: Context) {
                 }
 
                 val buffer = ByteArray(bufferSize)
-                val pcmOutput = ByteArrayOutputStream()
+                var pcmOutput = ByteArrayOutputStream()
                 var speechDetected = false
                 var silenceStartTime = 0L
-                val sessionStartTime = System.currentTimeMillis()
+                var utteranceStartTime = 0L
+                var isTranscribing = false
 
-                while (isActive && _micState.value == MicrophoneState.LISTENING && pauseReferenceCount.get() == 0) {
+                logDiag("MIC_AUDIO_RECORD_STREAM", "Continuous native AudioRecord loop running. Hardware stream is permanently open.")
+
+                while (isActive && (_microphoneEnabled.value || isContinuousListeningRequested) && !_isMuted.value) {
                     val read = audioRecord.read(buffer, 0, buffer.size)
                     if (read > 0) {
                         val frame = buffer.copyOf(read)
@@ -1073,31 +1108,68 @@ class MicrophoneEngine private constructor(private val context: Context) {
                         val normAmp = (rms / 3000.0).coerceIn(0.0, 1.0).toFloat()
                         _amplitude.value = normAmp
 
-                        // VAD check
-                        if (rms > 450.0) {
-                            speechDetected = true
+                        val now = System.currentTimeMillis()
+                        val isTtsPlaying = pauseReferenceCount.get() > 0
+                        val vadThreshold = if (isTtsPlaying) 1300.0 else 450.0
+
+                        if (rms > vadThreshold) {
+                            if (!speechDetected) {
+                                speechDetected = true
+                                utteranceStartTime = now
+                                logDiag("MIC_VOICE_ACTIVE", "Speech onset detected (rms=$rms)")
+                            }
                             silenceStartTime = 0L
                             pcmOutput.write(frame)
                         } else if (speechDetected) {
                             pcmOutput.write(frame)
                             if (silenceStartTime == 0L) {
-                                silenceStartTime = System.currentTimeMillis()
-                            } else if (System.currentTimeMillis() - silenceStartTime > 1600L) {
-                                Log.d(TAG, "AudioRecord VAD: Utterance completed")
-                                break
-                            }
-                        }
+                                silenceStartTime = now
+                            } else if (now - silenceStartTime > 1000L || now - utteranceStartTime > 16000L) {
+                                logDiag("MIC_UTTERANCE_END", "Utterance finished. Processing without interrupting hardware recording.")
+                                val capturedPcm = pcmOutput.toByteArray()
+                                pcmOutput = ByteArrayOutputStream()
+                                speechDetected = false
+                                silenceStartTime = 0L
 
-                        if (System.currentTimeMillis() - sessionStartTime > 18000L) {
-                            break
+                                if (capturedPcm.isNotEmpty() && !isTranscribing) {
+                                    scope.launch(Dispatchers.IO) {
+                                        isTranscribing = true
+                                        try {
+                                            updateState(MicrophoneState.PROCESSING)
+                                            val ai = com.example.ai.KavyaAI(context)
+                                            val text = ai.transcribeAudio(capturedPcm, SAMPLE_RATE)
+                                            if (text.isNotBlank()) {
+                                                logDiag("MIC_TRANSCRIPTION", "Recognized: \"$text\"")
+                                                withContext(Dispatchers.Main) {
+                                                    notifyResult(text)
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "AudioRecord transcription error: ${e.message}")
+                                        } finally {
+                                            isTranscribing = false
+                                            if (_microphoneEnabled.value && !isSleeping) {
+                                                updateState(MicrophoneState.LISTENING)
+                                            } else if (isSleeping) {
+                                                updateState(MicrophoneState.IDLE)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (!isContinuousListeningRequested && !_microphoneEnabled.value) {
+                                    break
+                                }
+                            }
                         }
                     } else if (read < 0) {
                         Log.w(TAG, "AudioRecord read returned error code: $read")
-                        break
+                        delay(20)
                     }
                 }
 
-                // Release AudioRecord safely
+                // Loop exited: Safely release AudioRecord
+                logDiag("MIC_HARDWARE_RELEASE", "Releasing physical AudioRecord hardware")
                 try {
                     if (audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         audioRecord.stop()
@@ -1109,43 +1181,8 @@ class MicrophoneEngine private constructor(private val context: Context) {
                     activeAudioRecord = null
                 }
 
-                val capturedPcm = pcmOutput.toByteArray()
-
-                if (capturedPcm.isNotEmpty() && speechDetected) {
-                    updateState(MicrophoneState.PROCESSING)
-                    val text = try {
-                        val ai = com.example.ai.KavyaAI(context)
-                        ai.transcribeAudio(capturedPcm, SAMPLE_RATE)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "AudioRecord transcription failed: ${e.message}")
-                        ""
-                    }
-
-                    if (text.isNotBlank()) {
-                        withContext(Dispatchers.Main) {
-                            notifyResult(text)
-                        }
-                        if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
-                            scheduleContinuousReArmAfterUtterance(delayMs = 2500L)
-                        } else {
-                            abandonAudioFocus()
-                            updateState(MicrophoneState.IDLE)
-                        }
-                    } else if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
-                        scheduleSafeRearm(delayMs = 250L)
-                    } else {
-                        abandonAudioFocus()
-                        updateState(MicrophoneState.IDLE)
-                        withContext(Dispatchers.Main) {
-                            notifyResult("")
-                        }
-                    }
-                } else if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
-                    scheduleSafeRearm(delayMs = 250L)
-                } else {
-                    abandonAudioFocus()
-                    updateState(MicrophoneState.IDLE)
-                }
+                abandonAudioFocus()
+                updateState(MicrophoneState.IDLE)
 
             } catch (e: Exception) {
                 Log.e(TAG, "AudioRecord capture loop error: ${e.message}", e)
@@ -1179,12 +1216,15 @@ class MicrophoneEngine private constructor(private val context: Context) {
     }
 
     private fun scheduleSafeRearm(delayMs: Long) {
+        logDiag("MIC_REARM", "Scheduled re-arm in ${delayMs}ms")
+        updateState(MicrophoneState.REARMING)
         rearmJob?.cancel()
         rearmJob = scope.launch {
             delay(delayMs)
             sessionMutex.withLock {
-                if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
+                if (_microphoneEnabled.value && pauseReferenceCount.get() == 0 && !_isMuted.value) {
                     if (!isHardwareActuallyActive(activeCaptureMode)) {
+                        logDiag("MIC_REARM_STARTED", "Starting physical capture session after rearm delay")
                         startPhysicalCaptureSession()
                     }
                 }
@@ -1193,13 +1233,15 @@ class MicrophoneEngine private constructor(private val context: Context) {
     }
 
     private fun scheduleContinuousReArmAfterUtterance(delayMs: Long) {
+        logDiag("MIC_REARM", "Scheduled utterance re-arm in ${delayMs}ms")
+        updateState(MicrophoneState.PROCESSING)
         rearmJob?.cancel()
         rearmJob = scope.launch {
             delay(delayMs)
             sessionMutex.withLock {
-                if (isContinuousListeningRequested && pauseReferenceCount.get() == 0 && !_isMuted.value) {
+                if (_microphoneEnabled.value && pauseReferenceCount.get() == 0 && !_isMuted.value) {
                     if (!isHardwareActuallyActive(activeCaptureMode)) {
-                        Log.d(TAG, "Continuous listening re-arming after user utterance window")
+                        logDiag("MIC_REARM_STARTED", "Continuous listening re-arming after user utterance window")
                         startPhysicalCaptureSession()
                     }
                 }
@@ -1246,7 +1288,6 @@ class MicrophoneEngine private constructor(private val context: Context) {
         } finally {
             activeAudioRecord = null
         }
-
         cleanupSpeechRecognizerSync()
     }
 
@@ -1255,9 +1296,10 @@ class MicrophoneEngine private constructor(private val context: Context) {
         val mappedVoiceState = when (newState) {
             MicrophoneState.IDLE -> VoiceState.IDLE
             MicrophoneState.REQUESTING_PERMISSION -> VoiceState.IDLE
-            MicrophoneState.STARTING -> VoiceState.IDLE
+            MicrophoneState.STARTING -> if (_microphoneEnabled.value) VoiceState.LISTENING else VoiceState.IDLE
             MicrophoneState.LISTENING -> VoiceState.LISTENING
             MicrophoneState.PROCESSING -> VoiceState.THINKING
+            MicrophoneState.REARMING -> if (_microphoneEnabled.value) VoiceState.LISTENING else VoiceState.IDLE
             MicrophoneState.STOPPING -> VoiceState.IDLE
             MicrophoneState.ERROR -> VoiceState.ERROR
         }

@@ -58,6 +58,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val voiceState by viewModel.voiceState.collectAsState()
     val micAmplitude by viewModel.micAmplitude.collectAsState()
     val micEngineState by viewModel.micEngineState.collectAsState()
+    val isMicActive by viewModel.isMicActive.collectAsState()
     val emotionState by viewModel.emotionState.collectAsState()
     val globalState by com.example.state.KavyaStateManager.state.collectAsState()
     var showScreenShareSheet by remember { mutableStateOf(false) }
@@ -325,7 +326,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 onPlusClick = {
                     showScreenShareSheet = true
                 },
-                isListening = (voiceState == VoiceState.LISTENING || micEngineState == com.example.agent.MicrophoneState.LISTENING),
+                isListening = (isMicActive || voiceState == VoiceState.LISTENING || micEngineState in listOf(com.example.agent.MicrophoneState.STARTING, com.example.agent.MicrophoneState.LISTENING, com.example.agent.MicrophoneState.PROCESSING, com.example.agent.MicrophoneState.REARMING)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)

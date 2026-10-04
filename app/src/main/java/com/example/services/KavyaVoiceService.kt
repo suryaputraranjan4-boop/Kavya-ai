@@ -64,9 +64,12 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
         const val ACTION_SLEEP = "ACTION_SLEEP"
         const val ACTION_TOGGLE_MIC = "ACTION_TOGGLE_MIC"
 
-        @Volatile
-        var isListening = false
-            private set
+        val isListening: Boolean
+            get() = try {
+                KavyaStateManager.state.value.voiceState == VoiceState.LISTENING
+            } catch (_: Exception) {
+                false
+            }
     }
 
     private val serviceJob = SupervisorJob()
@@ -149,7 +152,6 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             micEngine.micEvents.collect { event ->
                 when (event) {
                     is com.example.agent.MicEvent.ListeningStarted -> {
-                        isListening = true
                         val currentSleep = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
                         val vState = if (currentSleep) VoiceState.IDLE else VoiceState.LISTENING
                         KavyaStateManager.updateVoiceState(vState)
@@ -193,12 +195,14 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
                         }
                     }
                     is com.example.agent.MicEvent.Error -> {
-                        isListening = false
                         Log.w(TAG, "Continuous listening notice: ${event.error}")
-                        updateNotification(getNotificationTitle(), "Listening standby...")
+                        if (micEngine.isFeatureEnabled()) {
+                            updateNotification(getNotificationTitle(), "Listening standby (re-arming)...")
+                        } else {
+                            updateNotification(getNotificationTitle(), getNotificationContent())
+                        }
                     }
                     is com.example.agent.MicEvent.Stopped -> {
-                        isListening = false
                         updateNotification(getNotificationTitle(), getNotificationContent())
                     }
                 }
@@ -254,7 +258,7 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
                 }
             }
             else -> {
-                if (AppPreferences.isMicListeningEnabled(this) && !isListening) {
+                if (AppPreferences.isMicListeningEnabled(this) && !micEngine.isListeningOrStarting()) {
                     startListening()
                 }
             }
@@ -286,7 +290,6 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
 
         if (micEngine.isListeningOrStarting()) {
             Log.d(TAG, "startListening: MicrophoneEngine already running with active hardware. Coordinating as listener.")
-            isListening = true
             return
         }
 
@@ -294,13 +297,10 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
     }
 
     private fun stopListening() {
-        if (isListening) {
-            isListening = false
-            micEngine.setContinuousListening(false)
-            micEngine.stopListening()
-            KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-            releaseWakeLock()
-        }
+        micEngine.setContinuousListening(false)
+        micEngine.stopListening()
+        KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+        releaseWakeLock()
     }
 
     private fun acquireWakeLock() {
