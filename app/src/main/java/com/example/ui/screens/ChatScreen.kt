@@ -50,6 +50,10 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
     var showScreenShareSheet by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
 
+    val micEngineState by viewModel.microphoneEngine.engineState.collectAsState()
+    val isMicListening = micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.AWAKE ||
+            micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.SLEEP_LISTENING
+
     val currentChatTitle = allChats.find { it.id == currentChatId }?.title ?: "Conversation"
 
     Scaffold(
@@ -134,6 +138,14 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
             ChatBar(
                 onSend = { viewModel.sendMessage(it) },
                 onPlusClick = { showScreenShareSheet = true },
+                onMicClick = {
+                    if (isMicListening) {
+                        viewModel.stopListening()
+                    } else {
+                        viewModel.startListening()
+                    }
+                },
+                isMicListening = isMicListening,
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 10.dp)
                     .navigationBarsPadding()

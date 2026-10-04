@@ -16,6 +16,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,7 +37,9 @@ fun ChatBar(
     onSend: (String) -> Unit,
     onPlusClick: () -> Unit,
     modifier: Modifier = Modifier,
-    placeholderText: String = "Type a message to Kavya..."
+    placeholderText: String = "Type a message to Kavya...",
+    onMicClick: (() -> Unit)? = null,
+    isMicListening: Boolean = false
 ) {
     var text by remember { mutableStateOf("") }
 
@@ -115,9 +119,11 @@ fun ChatBar(
                 if (isTyping) {
                     onSend(text)
                     text = ""
+                } else {
+                    onMicClick?.invoke()
                 }
             },
-            enabled = isTyping,
+            enabled = isTyping || onMicClick != null,
             modifier = Modifier
                 .size(44.dp)
                 .scale(btnScale)
@@ -128,7 +134,7 @@ fun ChatBar(
                     .size(38.dp)
                     .clip(CircleShape)
                     .background(
-                        if (isTyping) {
+                        if (isTyping || isMicListening) {
                             Brush.linearGradient(listOf(BrandGradientStart, BrandGradientEnd))
                         } else {
                             Brush.linearGradient(listOf(SurfaceElevated, SurfaceVariant))
@@ -136,14 +142,21 @@ fun ChatBar(
                     )
                     .border(
                         1.dp,
-                        if (isTyping) Color.White.copy(alpha = 0.2f) else GlassBorder,
+                        if (isTyping || isMicListening) Color.White.copy(alpha = 0.2f) else GlassBorder,
                         CircleShape
                     )
             ) {
+                val icon = if (isTyping) {
+                    Icons.AutoMirrored.Filled.Send
+                } else if (isMicListening) {
+                    Icons.Default.Mic
+                } else {
+                    Icons.Default.MicOff
+                }
                 Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send message",
-                    tint = if (isTyping) Color.White else TextTertiary,
+                    imageVector = icon,
+                    contentDescription = if (isTyping) "Send message" else "Voice input",
+                    tint = if (isTyping || isMicListening) Color.White else TextTertiary,
                     modifier = Modifier.size(18.dp)
                 )
             }

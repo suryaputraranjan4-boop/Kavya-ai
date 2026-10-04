@@ -134,6 +134,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, KavyaAI(application))
+    val microphoneEngine = com.example.voice.KavyaMicrophoneEngine.getInstance(application)
     private val database = AppDatabase.getDatabase(application)
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
@@ -223,6 +224,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        microphoneEngine.setCommandListener { recognizedText ->
+            viewModelScope.launch {
+                sendMessage(recognizedText)
+            }
+        }
+
         viewModelScope.launch {
             try {
                 schedulerEngine.executeDueSchedules { dueTask ->
@@ -304,6 +311,24 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         _voiceState.value = state
         com.example.state.KavyaStateManager.updateVoiceState(state)
         proactiveController.onKavyaSpeechStateChanged(state == VoiceState.SPEAKING)
+    }
+
+    fun startListening() {
+        com.example.voice.KavyaMicService.startService(getApplication())
+        microphoneEngine.start()
+    }
+
+    fun stopListening() {
+        microphoneEngine.stop()
+        com.example.voice.KavyaMicService.stopService(getApplication())
+    }
+
+    fun sleepMicrophone() {
+        microphoneEngine.sleep()
+    }
+
+    fun wakeMicrophone() {
+        microphoneEngine.wake()
     }
 
     private fun handleProactiveSpeech(text: String?, reason: String) {
