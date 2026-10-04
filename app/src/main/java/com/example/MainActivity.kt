@@ -32,6 +32,10 @@ class MainActivity : ComponentActivity() {
     ActivityResultContracts.RequestMultiplePermissions()
   ) { permissions ->
     Log.d(TAG, "Permissions result: $permissions")
+    if (permissions[Manifest.permission.RECORD_AUDIO] == true) {
+      Log.i(TAG, "RECORD_AUDIO granted. Starting single microphone architecture...")
+      com.example.voice.KavyaMicrophoneEngine.startService(this)
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,6 +85,7 @@ class MainActivity : ComponentActivity() {
 
   private fun requestAppPermissions() {
     val permissions = mutableListOf<String>()
+    permissions.add(Manifest.permission.RECORD_AUDIO)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
       permissions.add(Manifest.permission.POST_NOTIFICATIONS)
     }
@@ -91,6 +96,9 @@ class MainActivity : ComponentActivity() {
 
     if (missing.isNotEmpty()) {
       permissionLauncher.launch(missing.toTypedArray())
+    } else {
+      // Permission already granted, start microphone architecture once
+      com.example.voice.KavyaMicrophoneEngine.startService(this)
     }
   }
 

@@ -50,7 +50,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
     var showScreenShareSheet by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
 
-    val micEngineState by viewModel.microphoneEngine.engineState.collectAsState()
+    val micEngineState by com.example.voice.KavyaMicrophoneEngine.engineState.collectAsState()
     val isMicListening = micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.AWAKE ||
             micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.SLEEP_LISTENING
 

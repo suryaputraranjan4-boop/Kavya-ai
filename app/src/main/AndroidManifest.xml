@@ -68,7 +68,7 @@
             android:exported="false" />
 
         <service
-            android:name="com.example.voice.KavyaMicService"
+            android:name="com.example.voice.KavyaMicrophoneEngine"
             android:foregroundServiceType="microphone"
             android:exported="false" />
     </application>

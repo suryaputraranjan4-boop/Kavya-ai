@@ -1,48 +1,94 @@
 package com.example.voice
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Single Source of Truth for Kavya AI's Microphone & Voice Input System.
+ * Single Authoritative File for Kavya AI's Microphone Input System.
  *
- * Responsibilities:
- * - Single-instance SpeechRecognizer lifecycle & collision protection
- * - Continuous audio capture & speech recognition with automatic recovery
- * - Single-threaded Main-thread execution for Android SpeechRecognizer compliance
- * - Wake / Sleep / Stop state machine ("Wake Kavya", "Sleep Kavya", "Stop Kavya")
- * - Partial results, final results, & audio amplitude metering
- * - Dispatches clean commands to existing Kavya AI pipeline
+ * Serves as both the Android Foreground Service host and the Engine state manager.
+ * Guarantees a single SpeechRecognizer instance, background execution, and wake/sleep/stop states.
  */
-class KavyaMicrophoneEngine private constructor(context: Context) {
+class KavyaMicrophoneEngine : Service() {
 
     companion object {
         private const val TAG = "KavyaMicEngine"
-        private const val BASE_RESTART_DELAY_MS = 300L
+        private const val NOTIFICATION_ID = 2001
+        private const val CHANNEL_ID = "kavya_mic_channel"
+        private const val CHANNEL_NAME = "Kavya Voice Input"
+
+        private const val BASE_RESTART_DELAY_MS = 350L
         private const val MAX_BACKOFF_DELAY_MS = 5000L
 
         @Volatile
         private var instance: KavyaMicrophoneEngine? = null
 
-        fun getInstance(context: Context): KavyaMicrophoneEngine {
-            return instance ?: synchronized(this) {
-                instance ?: KavyaMicrophoneEngine(context.applicationContext).also { instance = it }
+        fun getInstance(): KavyaMicrophoneEngine? = instance
+
+        private val _engineState = MutableStateFlow(EngineState.IDLE)
+        val engineState: StateFlow<EngineState> = _engineState.asStateFlow()
+
+        private val _partialText = MutableStateFlow("")
+        val partialText: StateFlow<String> = _partialText.asStateFlow()
+
+        private val _amplitude = MutableStateFlow(0f)
+        val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
+
+        private var commandListener: ((String) -> Unit)? = null
+
+        fun setCommandListener(listener: (String) -> Unit) {
+            commandListener = listener
+        }
+
+        /**
+         * Single public entry point to start microphone capture & foreground service.
+         */
+        fun startService(context: Context) {
+            val intent = Intent(context, KavyaMicrophoneEngine::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
             }
+        }
+
+        /**
+         * Single public entry point to stop microphone capture & foreground service.
+         */
+        fun stopService(context: Context) {
+            val intent = Intent(context, KavyaMicrophoneEngine::class.java)
+            context.stopService(intent)
+            instance?.stopListeningLoop()
+        }
+
+        fun sleep(context: Context) {
+            instance?.sleepInternal()
+        }
+
+        fun wake(context: Context) {
+            instance?.wakeInternal()
         }
     }
 
@@ -54,33 +100,19 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
         ERROR
     }
 
-    private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
-    private val _engineState = MutableStateFlow(EngineState.IDLE)
-    val engineState: StateFlow<EngineState> = _engineState.asStateFlow()
-
-    private val _partialText = MutableStateFlow("")
-    val partialText: StateFlow<String> = _partialText.asStateFlow()
-
-    private val _amplitude = MutableStateFlow(0f)
-    val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
-
     private var speechRecognizer: SpeechRecognizer? = null
     private var isRecognizerActive = false
     private var isListeningLoopDesired = false
+    private var currentSessionId = 0L
 
     private var backoffDelayMs = BASE_RESTART_DELAY_MS
     private var restartRunnable: Runnable? = null
 
-    private var commandListener: ((String) -> Unit)? = null
-    private var stateChangeListener: ((EngineState) -> Unit)? = null
-
     private val WAKE_PHRASES = setOf(
         "wake kavya", "wake kavia", "wake kavya ai", "utho kavya", "kavya utho",
         "wake up kavya", "kavya wake up", "wake up", "hey kavya", "hello kavya",
-        "hi kavya", "ok kavya", "okay kavya", "kavya suno", "suno kavya", " wake kavya"
+        "hi kavya", "ok kavya", "okay kavya", "kavya suno", "suno kavya"
     )
 
     private val SLEEP_PHRASES = setOf(
@@ -94,92 +126,94 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
         "ruko kavya", "kavya ruko"
     )
 
-    fun setCommandListener(listener: (String) -> Unit) {
-        this.commandListener = listener
+    override fun onCreate() {
+        super.onCreate()
+        Log.i(TAG, "KavyaMicrophoneEngine service created.")
+        instance = this
     }
 
-    fun setStateListener(listener: (EngineState) -> Unit) {
-        this.stateChangeListener = listener
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "KavyaMicrophoneEngine onStartCommand: promoting to foreground...")
+        createNotificationChannel()
+        val notification = buildForegroundNotification()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            } else {
+                0
+            }
+            startForeground(NOTIFICATION_ID, notification, serviceType)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
+        startListeningLoop()
+
+        return START_STICKY
     }
 
-    /**
-     * Starts or resumes continuous microphone listening.
-     */
-    fun start() {
+    override fun onDestroy() {
+        Log.i(TAG, "KavyaMicrophoneEngine service destroyed.")
+        stopListeningLoop()
+        instance = null
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun startListeningLoop() {
         mainHandler.post {
             if (!hasAudioPermission()) {
-                Log.w(TAG, "RECORD_AUDIO permission missing. Engine cannot start.")
-                updateState(EngineState.ERROR)
+                Log.w(TAG, "RECORD_AUDIO permission missing.")
+                _engineState.value = EngineState.ERROR
                 return@post
             }
 
-            Log.i(TAG, "Starting KavyaMicrophoneEngine...")
             isListeningLoopDesired = true
             if (_engineState.value == EngineState.STOPPED || _engineState.value == EngineState.IDLE) {
-                updateState(EngineState.AWAKE)
+                _engineState.value = EngineState.AWAKE
             }
             backoffDelayMs = BASE_RESTART_DELAY_MS
             startListeningInternal()
         }
     }
 
-    /**
-     * Enters Sleep Listening mode ("Sleep Kavya").
-     * Minimum wake-word listening mechanism active to detect "Wake Kavya".
-     */
-    fun sleep() {
+    private fun sleepInternal() {
         mainHandler.post {
-            Log.i(TAG, "KavyaMicrophoneEngine entering SLEEP_LISTENING mode.")
-            updateState(EngineState.SLEEP_LISTENING)
+            Log.i(TAG, "Entering SLEEP_LISTENING state.")
+            _engineState.value = EngineState.SLEEP_LISTENING
             _partialText.value = ""
             startListeningInternal()
         }
     }
 
-    /**
-     * Awakens Kavya from Sleep mode ("Wake Kavya").
-     */
-    fun wake() {
+    private fun wakeInternal() {
         mainHandler.post {
-            Log.i(TAG, "KavyaMicrophoneEngine AWAKENED.")
-            updateState(EngineState.AWAKE)
+            Log.i(TAG, "Entering AWAKE state.")
+            _engineState.value = EngineState.AWAKE
             _partialText.value = ""
             startListeningInternal()
         }
     }
 
-    /**
-     * Completely stops microphone capture and releases resources ("Stop Kavya").
-     */
-    fun stop() {
+    private fun stopListeningLoop() {
         mainHandler.post {
-            Log.i(TAG, "Stopping KavyaMicrophoneEngine and releasing microphone.")
+            Log.i(TAG, "Stopping microphone engine.")
             isListeningLoopDesired = false
             cancelPendingRestart()
             destroyRecognizer()
-            updateState(EngineState.STOPPED)
+            _engineState.value = EngineState.STOPPED
             _partialText.value = ""
             _amplitude.value = 0f
         }
     }
 
-    fun isListening(): Boolean = isRecognizerActive && isListeningLoopDesired
-
-    fun isSleeping(): Boolean = _engineState.value == EngineState.SLEEP_LISTENING
-
     private fun hasAudioPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
-            appContext,
+            this,
             android.Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun updateState(newState: EngineState) {
-        if (_engineState.value != newState) {
-            _engineState.value = newState
-            stateChangeListener?.invoke(newState)
-            Log.d(TAG, "Engine state updated to: $newState")
-        }
     }
 
     private fun startListeningInternal() {
@@ -188,8 +222,7 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
         }
 
         if (!hasAudioPermission()) {
-            Log.w(TAG, "Cannot start listening: RECORD_AUDIO permission missing.")
-            updateState(EngineState.ERROR)
+            _engineState.value = EngineState.ERROR
             return
         }
 
@@ -197,17 +230,20 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
         destroyRecognizer()
 
         try {
-            if (!SpeechRecognizer.isRecognitionAvailable(appContext)) {
+            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
                 Log.e(TAG, "SpeechRecognizer is NOT available on this device!")
-                updateState(EngineState.ERROR)
+                _engineState.value = EngineState.ERROR
                 scheduleRestartWithBackoff()
                 return
             }
 
-            val recognizer = SpeechRecognizer.createSpeechRecognizer(appContext)
+            val session = System.currentTimeMillis()
+            this.currentSessionId = session
+
+            val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
             this.speechRecognizer = recognizer
 
-            recognizer.setRecognitionListener(createRecognitionListener())
+            recognizer.setRecognitionListener(createRecognitionListener(session))
 
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -216,31 +252,35 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
                 putExtra(RecognizerIntent.EXTRA_SUPPORTED_LANGUAGES, arrayListOf("en-IN", "hi-IN", "en-US"))
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
             }
 
             recognizer.startListening(intent)
             isRecognizerActive = true
-            Log.d(TAG, "SpeechRecognizer listening started in state: ${_engineState.value}")
+            Log.d(TAG, "SpeechRecognizer started in state ${_engineState.value} (session=$session)")
         } catch (e: Throwable) {
-            Log.e(TAG, "Failed to start SpeechRecognizer: ${e.message}", e)
+            Log.e(TAG, "Error starting SpeechRecognizer: ${e.message}", e)
             isRecognizerActive = false
             scheduleRestartWithBackoff()
         }
     }
 
-    private fun createRecognitionListener() = object : RecognitionListener {
+    private fun createRecognitionListener(sessionId: Long) = object : RecognitionListener {
+        private fun isStale(): Boolean = currentSessionId != sessionId || !isListeningLoopDesired
+
         override fun onReadyForSpeech(params: Bundle?) {
-            Log.d(TAG, "SpeechRecognizer: Ready for speech.")
+            if (isStale()) return
+            Log.d(TAG, "SpeechRecognizer ready for speech.")
             backoffDelayMs = BASE_RESTART_DELAY_MS
         }
 
         override fun onBeginningOfSpeech() {
-            Log.d(TAG, "SpeechRecognizer: Beginning of speech detected.")
+            if (isStale()) return
+            Log.d(TAG, "SpeechRecognizer beginning of speech.")
         }
 
         override fun onRmsChanged(rmsdB: Float) {
-            // Convert dB (-2 to 10 typical) into 0.0 - 1.0 amplitude
+            if (isStale()) return
             val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
             _amplitude.value = normalized
         }
@@ -248,11 +288,13 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
         override fun onBufferReceived(buffer: ByteArray?) {}
 
         override fun onEndOfSpeech() {
-            Log.d(TAG, "SpeechRecognizer: End of speech detected.")
+            if (isStale()) return
+            Log.d(TAG, "SpeechRecognizer end of speech.")
             _amplitude.value = 0f
         }
 
         override fun onError(error: Int) {
+            if (isStale()) return
             val errorMsg = getErrorMessage(error)
             Log.w(TAG, "SpeechRecognizer error: $errorMsg ($error)")
             _amplitude.value = 0f
@@ -261,16 +303,7 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
             when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH,
                 SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                    // Normal silence/no-match during continuous listening loop
                     scheduleRestart(BASE_RESTART_DELAY_MS)
-                }
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
-                SpeechRecognizer.ERROR_CLIENT,
-                SpeechRecognizer.ERROR_NETWORK,
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
-                SpeechRecognizer.ERROR_SERVER,
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
-                    scheduleRestartWithBackoff()
                 }
                 else -> {
                     scheduleRestartWithBackoff()
@@ -279,8 +312,10 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
         }
 
         override fun onResults(results: Bundle?) {
+            if (isStale()) return
             _amplitude.value = 0f
             isRecognizerActive = false
+
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val bestResult = matches?.firstOrNull()?.trim() ?: ""
             Log.i(TAG, "SpeechRecognizer Final Result: \"$bestResult\"")
@@ -297,11 +332,11 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
+            if (isStale()) return
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val partial = matches?.firstOrNull()?.trim() ?: ""
             if (partial.isNotBlank()) {
                 _partialText.value = partial
-                Log.d(TAG, "SpeechRecognizer Partial Result: \"$partial\"")
                 checkPartialWakeOrStop(partial)
             }
         }
@@ -312,35 +347,35 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
     private fun handleRecognizedText(text: String) {
         val lower = text.lowercase(Locale.ROOT).trim()
 
-        // 1. Check Stop Command
+        // 1. Stop Command
         if (isMatch(lower, STOP_PHRASES)) {
-            Log.i(TAG, "Stop phrase detected in recognized text: \"$text\"")
-            stop()
+            Log.i(TAG, "Stop phrase detected: \"$text\"")
+            stopService(this)
             return
         }
 
-        // 2. Check Sleep Command
+        // 2. Sleep Command
         if (isMatch(lower, SLEEP_PHRASES)) {
-            Log.i(TAG, "Sleep phrase detected in recognized text: \"$text\"")
-            sleep()
+            Log.i(TAG, "Sleep phrase detected: \"$text\"")
+            sleepInternal()
             return
         }
 
-        // 3. Check Wake Command
+        // 3. Wake Command
         if (_engineState.value == EngineState.SLEEP_LISTENING || isMatch(lower, WAKE_PHRASES)) {
             if (isMatch(lower, WAKE_PHRASES)) {
-                Log.i(TAG, "Wake phrase detected in recognized text: \"$text\"")
-                wake()
+                Log.i(TAG, "Wake phrase detected: \"$text\"")
+                wakeInternal()
                 return
             } else {
-                Log.d(TAG, "Sleeping mode active. Ignoring normal speech: \"$text\"")
+                Log.d(TAG, "Ignoring normal speech during SLEEP_LISTENING: \"$text\"")
                 return
             }
         }
 
         // 4. Normal AWAKE Command Delivery
         if (_engineState.value == EngineState.AWAKE) {
-            Log.i(TAG, "Delivering recognized command to Kavya Pipeline: \"$text\"")
+            Log.i(TAG, "Dispatching command to Kavya: \"$text\"")
             commandListener?.invoke(text)
         }
     }
@@ -348,11 +383,11 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
     private fun checkPartialWakeOrStop(partial: String) {
         val lower = partial.lowercase(Locale.ROOT).trim()
         if (isMatch(lower, STOP_PHRASES)) {
-            Log.i(TAG, "Partial stop phrase detected: \"$partial\"")
-            stop()
+            Log.i(TAG, "Partial stop detected: \"$partial\"")
+            stopService(this)
         } else if (_engineState.value == EngineState.SLEEP_LISTENING && isMatch(lower, WAKE_PHRASES)) {
-            Log.i(TAG, "Partial wake phrase detected: \"$partial\"")
-            wake()
+            Log.i(TAG, "Partial wake detected: \"$partial\"")
+            wakeInternal()
         }
     }
 
@@ -397,6 +432,44 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
             speechRecognizer = null
             isRecognizerActive = false
         }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Kavya AI Active Microphone Listening"
+                    setShowBadge(false)
+                }
+                manager.createNotificationChannel(channel)
+            }
+        }
+    }
+
+    private fun buildForegroundNotification(): Notification {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingIntent = if (launchIntent != null) {
+            PendingIntent.getActivity(
+                this,
+                0,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        } else null
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Kavya AI Voice Active")
+            .setContentText("Listening for commands...")
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pendingIntent)
+            .build()
     }
 
     private fun getErrorMessage(errorCode: Int): String = when (errorCode) {
