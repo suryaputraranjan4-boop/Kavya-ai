@@ -122,8 +122,14 @@ class MainActivity : ComponentActivity() {
 
   override fun onResume() {
     super.onResume()
+    com.example.state.KavyaStateManager.isActivityVisible = true
     viewModel.microphoneEngine.refreshHardwareDiagnostics()
     startVoiceServiceIfPermitted()
+  }
+
+  override fun onPause() {
+    super.onPause()
+    com.example.state.KavyaStateManager.isActivityVisible = false
   }
 
   override fun onDestroy() {

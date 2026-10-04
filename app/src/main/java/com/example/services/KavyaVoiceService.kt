@@ -144,6 +144,67 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
 
+        // Observe centralized MicrophoneEngine events
+        serviceScope.launch {
+            micEngine.micEvents.collect { event ->
+                when (event) {
+                    is com.example.agent.MicEvent.ListeningStarted -> {
+                        isListening = true
+                        val currentSleep = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
+                        val vState = if (currentSleep) VoiceState.IDLE else VoiceState.LISTENING
+                        KavyaStateManager.updateVoiceState(vState)
+                        val statusMsg = if (currentSleep) {
+                            "Kavya is sleeping (Say 'Wake Kavya' to resume)"
+                        } else {
+                            "Listening... (Say a command or 'Sleep Kavya')"
+                        }
+                        updateNotification(getNotificationTitle(), statusMsg)
+                    }
+                    is com.example.agent.MicEvent.PartialResult -> {
+                        if (event.text.isNotBlank()) {
+                            updateNotification(getNotificationTitle(), event.text)
+                        }
+                    }
+                    is com.example.agent.MicEvent.Result -> {
+                        val recognizedText = event.text
+                        if (recognizedText.isNotBlank()) {
+                            if (!KavyaStateManager.isActivityVisible) {
+                                Log.i(TAG, "VOICE_INPUT_RECEIVED (Background): \"$recognizedText\"")
+                                updateNotification(getNotificationTitle(), "Executing: $recognizedText")
+                                assistantPipeline.processUtterance(
+                                    rawText = recognizedText,
+                                    autoSpeak = true,
+                                    onProgress = { ann ->
+                                        updateNotification(getNotificationTitle(), ann)
+                                    },
+                                    onTurnFinished = { reply ->
+                                        val currentSleep = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
+                                        val statusMsg = if (currentSleep) {
+                                            "Kavya is sleeping (Say 'Wake Kavya' to resume)"
+                                        } else {
+                                            "Listening and ready to assist..."
+                                        }
+                                        updateNotification(getNotificationTitle(), statusMsg)
+                                    }
+                                )
+                            } else {
+                                Log.d(TAG, "VOICE_INPUT_RECEIVED: Activity in foreground; handled by ViewModel.")
+                            }
+                        }
+                    }
+                    is com.example.agent.MicEvent.Error -> {
+                        isListening = false
+                        Log.w(TAG, "Continuous listening notice: ${event.error}")
+                        updateNotification(getNotificationTitle(), "Listening standby...")
+                    }
+                    is com.example.agent.MicEvent.Stopped -> {
+                        isListening = false
+                        updateNotification(getNotificationTitle(), getNotificationContent())
+                    }
+                }
+            }
+        }
+
         // Start continuous background listening loop if enabled
         if (AppPreferences.isMicListeningEnabled(this)) {
             startListening()
@@ -155,6 +216,7 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             ACTION_WAKE -> {
                 Log.i(TAG, "Received ACTION_WAKE from notification or app")
                 AppPreferences.setKavyaState(this, "ACTIVE")
+                micEngine.setSleeping(false)
                 KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                 updateNotification(getNotificationTitle(), "Kavya is awake and listening.")
                 serviceScope.launch {
@@ -168,6 +230,7 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             ACTION_SLEEP -> {
                 Log.i(TAG, "Received ACTION_SLEEP from notification or app")
                 AppPreferences.setKavyaState(this, "SLEEP")
+                micEngine.setSleeping(true)
                 KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                 updateNotification(getNotificationTitle(), "Kavya is sleeping (Say 'Wake Kavya' to resume)")
                 serviceScope.launch {
@@ -219,68 +282,15 @@ class KavyaVoiceService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             return
         }
 
-        if (isListening) {
-            Log.d(TAG, "startListening: Already active in continuous mode.")
+        acquireWakeLock()
+
+        if (micEngine.isListeningOrStarting()) {
+            Log.d(TAG, "startListening: MicrophoneEngine already running with active hardware. Coordinating as listener.")
+            isListening = true
             return
         }
 
-        isListening = true
-        acquireWakeLock()
-
-        val isSleep = AppPreferences.getKavyaState(this) == "SLEEP"
-
-        micEngine.startContinuousListening(
-            onListeningStarted = {
-                serviceScope.launch(Dispatchers.Main) {
-                    val currentSleep = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
-                    val vState = if (currentSleep) VoiceState.IDLE else VoiceState.LISTENING
-                    KavyaStateManager.updateVoiceState(vState)
-                    val statusMsg = if (currentSleep) {
-                        "Kavya is sleeping (Say 'Wake Kavya' to resume)"
-                    } else {
-                        "Listening... (Say a command or 'Sleep Kavya')"
-                    }
-                    updateNotification(getNotificationTitle(), statusMsg)
-                }
-            },
-            onPartialResult = { partial ->
-                serviceScope.launch(Dispatchers.Main) {
-                    if (partial.isNotBlank()) {
-                        updateNotification(getNotificationTitle(), partial)
-                    }
-                }
-            },
-            onResult = { recognizedText ->
-                if (recognizedText.isNotBlank()) {
-                    Log.i(TAG, "VOICE_INPUT_RECEIVED: \"$recognizedText\"")
-                    serviceScope.launch(Dispatchers.Main) {
-                        updateNotification(getNotificationTitle(), "Executing: $recognizedText")
-                    }
-                    assistantPipeline.processUtterance(
-                        rawText = recognizedText,
-                        autoSpeak = true,
-                        onProgress = { ann ->
-                            updateNotification(getNotificationTitle(), ann)
-                        },
-                        onTurnFinished = { reply ->
-                            val currentSleep = AppPreferences.getKavyaState(this@KavyaVoiceService) == "SLEEP"
-                            val statusMsg = if (currentSleep) {
-                                "Kavya is sleeping (Say 'Wake Kavya' to resume)"
-                            } else {
-                                "Listening and ready to assist..."
-                            }
-                            updateNotification(getNotificationTitle(), statusMsg)
-                        }
-                    )
-                }
-            },
-            onError = { err ->
-                Log.w(TAG, "Continuous listening notice: $err")
-                serviceScope.launch(Dispatchers.Main) {
-                    updateNotification(getNotificationTitle(), "Listening standby...")
-                }
-            }
-        )
+        micEngine.startContinuousListening()
     }
 
     private fun stopListening() {

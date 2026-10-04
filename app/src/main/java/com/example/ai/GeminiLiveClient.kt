@@ -388,14 +388,9 @@ class GeminiLiveClient(
         try {
             val micEngine = com.example.agent.MicrophoneEngine.getInstance(context)
             micEngine.subscribeAudioFrames(frameSubscriber)
-            micEngine.startRecording(
-                onRecordingStarted = { isRecording = true },
-                onAudioCaptured = { _, _ -> },
-                onError = { onStateChange("ERROR") }
-            )
             isRecording = true
         } catch (e: Exception) {
-            Log.e(TAG, "Audio recording failed", e)
+            Log.e(TAG, "Audio frame subscription failed", e)
             onStateChange("ERROR")
         }
     }

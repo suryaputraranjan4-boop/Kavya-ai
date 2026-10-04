@@ -51,6 +51,9 @@ data class KavyaGlobalState(
 )
 
 object KavyaStateManager {
+    @Volatile
+    var isActivityVisible: Boolean = false
+
     private val _state = MutableStateFlow(KavyaGlobalState())
     val state = _state.asStateFlow()
 

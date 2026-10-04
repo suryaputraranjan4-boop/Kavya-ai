@@ -119,6 +119,7 @@ class KavyaAssistantPipeline(
                     if (SleepWakeDetector.isWakeCommand(prompt)) {
                         Log.i(TAG, "WAKE_COMMAND detected while sleeping: \"$prompt\"")
                         AppPreferences.setKavyaState(app, "ACTIVE")
+                        microphoneEngine.setSleeping(false)
                         KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                         val wakeReply = "Kavya is awake and listening! How can I help you?"
                         if (autoSpeak) {
@@ -141,6 +142,7 @@ class KavyaAssistantPipeline(
                 if (SleepWakeDetector.isSleepCommand(prompt)) {
                     Log.i(TAG, "SLEEP_COMMAND detected: \"$prompt\"")
                     AppPreferences.setKavyaState(app, "SLEEP")
+                    microphoneEngine.setSleeping(true)
                     KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                     val sleepReply = "Going to sleep. Say 'Wake Kavya' whenever you need me."
                     if (autoSpeak) {
@@ -157,7 +159,8 @@ class KavyaAssistantPipeline(
                 // 2. EMERGENCY STOP COMMAND CHECK
                 // =============================================================
                 val lower = prompt.lowercase().trim()
-                if (lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
+                if (SleepWakeDetector.isStopCommand(prompt) ||
+                    lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
                     lower.contains("stop kavya") || lower.contains("kavya stop") ||
                     lower.contains("chup ho jao") || lower.contains("kavya chup")
                 ) {

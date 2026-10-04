@@ -24,10 +24,14 @@ object SleepWakeDetector {
         "so jao",
         "stop listening",
         "kavya rest karo",
-        "rest karo kavya"
+        "rest karo kavya",
+        "सो जाओ काव्या",
+        "काव्या सो जाओ",
+        "सो जाओ"
     )
 
     private val WAKE_EXACT_MATCHES = setOf(
+        "kavya",
         "wake kavya",
         "wake up kavya",
         "kavya wake up",
@@ -41,9 +45,18 @@ object SleepWakeDetector {
         "hello kavya",
         "hey kavya",
         "hi kavya",
+        "ok kavya",
+        "okay kavya",
         "kavya suno",
         "suno kavya",
-        "kavya ji utho"
+        "kavya ji utho",
+        "काव्या",
+        "उठो काव्या",
+        "काव्या उठो",
+        "जाग जाओ काव्या",
+        "काव्या सुनो",
+        "सुनो काव्या",
+        "नमस्ते काव्या"
     )
 
     fun isSleepCommand(input: String): Boolean {
@@ -89,9 +102,22 @@ object SleepWakeDetector {
         return wakeRegex.matches(cleaned) || hindiWakeRegex.matches(cleaned) || greetingRegex.matches(cleaned)
     }
 
+    fun isStopCommand(input: String): Boolean {
+        val cleaned = cleanInput(input)
+        if (cleaned.isBlank()) return false
+        val stopSet = setOf(
+            "stop", "ruko", "cancel", "bas", "kavya stop", "stop kavya",
+            "kavya chup", "chup ho jao", "chup ho jao kavya", "kavya chup ho jao",
+            "ruk jao", "ruk jao kavya", "kavya ruk jao"
+        )
+        if (stopSet.contains(cleaned)) return true
+        val stopRegex = Regex("^(?:kavya\\s+)?(?:please\\s+)?(?:stop|cancel|ruko|bas)(?:\\s+kavya)?$", RegexOption.IGNORE_CASE)
+        return stopRegex.matches(cleaned)
+    }
+
     private fun cleanInput(raw: String): String {
         return raw.trim().lowercase(Locale.ROOT)
-            .replace(Regex("[.,!?;:\"]"), " ")
+            .replace(Regex("[.,!?;:\"'’‘“”\\-_]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
     }
