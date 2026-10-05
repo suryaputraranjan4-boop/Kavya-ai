@@ -113,7 +113,20 @@ fun AiApiHubScreen(navController: NavController) {
         if (uri != null) {
             coroutineScope.launch {
                 isGemmaImporting = true
-                val success = com.example.ai.offline.GemmaModelManager.importModelFromUri(context, uri)
+                val originalName = context.contentResolver.query(
+                    uri,
+                    arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+                val success = com.example.ai.offline.GemmaModelManager.importModelFromUri(
+                    context,
+                    uri,
+                    originalName
+                )
                 if (success) {
                     gemmaFile = com.example.ai.offline.GemmaModelManager.getModelFile(context)
                 }
