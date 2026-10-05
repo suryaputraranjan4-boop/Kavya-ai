@@ -42,7 +42,7 @@ class CeoOrchestrator(
         if (skill != null) {
             val result = skill.execute(intent, context)
             skillOpt.recordExecution(
-                skillId = skill.id,
+                botId = bot.id,
                 task = task.goal,
                 success = result.success,
                 output = result.outputMessage
