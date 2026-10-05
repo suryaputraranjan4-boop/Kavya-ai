@@ -48,7 +48,7 @@ Java_com_example_ai_offline_LlamaCppEngine_nativeGenerate(
 
     const int nPrompt = -llama_tokenize(
             vocab, prompt.c_str(), prompt.size(), nullptr, 0, true, true);
-    if (nPrompt <= 0) return env->NewStringUTF("");
+    if (nPrompt <= 0 || nPrompt > 4096) return env->NewStringUTF("");
 
     std::vector<llama_token> promptTokens(nPrompt);
     if (llama_tokenize(
@@ -62,7 +62,8 @@ Java_com_example_ai_offline_LlamaCppEngine_nativeGenerate(
     const uint32_t contextSize = std::max<uint32_t>(
             512u,
             std::min<uint32_t>(requestedCtx ? requestedCtx : 2048u, 4096u));
-    ctxParams.n_ctx = std::max<uint32_t>(contextSize, static_cast<uint32_t>(nPrompt + 64));
+    if (static_cast<uint32_t>(nPrompt + 64) > contextSize) return env->NewStringUTF("");
+    ctxParams.n_ctx = contextSize;
     ctxParams.n_batch = std::min<uint32_t>(ctxParams.n_ctx, 512u);
     ctxParams.n_threads = 4;
     ctxParams.n_threads_batch = 4;
