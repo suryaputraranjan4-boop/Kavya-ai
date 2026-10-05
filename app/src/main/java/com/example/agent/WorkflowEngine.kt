@@ -189,7 +189,35 @@ class WorkflowEngine(
                 service.clickSearchOrSubmitButton()
             }
             UniversalActionType.SCROLL -> {
-                service.scroll("forward")
+                val direction = step.text.ifBlank { step.query }.lowercase(java.util.Locale.ROOT)
+                if (direction.contains("up")) service.scroll("BACKWARD") else service.scroll("FORWARD")
+            }
+            UniversalActionType.SWIPE -> {
+                val direction = step.text.ifBlank { step.query }.lowercase(java.util.Locale.ROOT)
+                val metrics = context.resources.displayMetrics
+                val x = metrics.widthPixels * 0.5f
+                val down = direction.contains("down")
+                val left = direction.contains("left")
+                val right = direction.contains("right")
+                val startX = when {
+                    left -> metrics.widthPixels * 0.80f
+                    right -> metrics.widthPixels * 0.20f
+                    else -> x
+                }
+                val endX = when {
+                    left -> metrics.widthPixels * 0.20f
+                    right -> metrics.widthPixels * 0.80f
+                    else -> x
+                }
+                val startY = when {
+                    down -> metrics.heightPixels * 0.25f
+                    else -> metrics.heightPixels * 0.78f
+                }
+                val endY = when {
+                    down -> metrics.heightPixels * 0.78f
+                    else -> metrics.heightPixels * 0.25f
+                }
+                service.swipeGesture(startX, startY, endX, endY, 420L)
             }
             UniversalActionType.BACK -> {
                 service.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
