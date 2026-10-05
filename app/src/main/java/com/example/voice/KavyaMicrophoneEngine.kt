@@ -208,9 +208,15 @@ class KavyaMicrophoneEngine : Service() {
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
 
-                // Open.Jarvis-style local-first preference where Android supports it.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Prefer on-device recognition only when the selected recognizer is
+                // actually the on-device engine. Otherwise allow Android's normal
+                // speech service so a device without an offline STT pack can still
+                // deliver the user's voice to Kavya.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    SpeechRecognizer.isOnDeviceRecognitionAvailable(this@KavyaMicrophoneEngine)) {
                     putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                } else {
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
                 }
             }
 
