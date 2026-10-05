@@ -129,8 +129,8 @@ object GemmaModelManager {
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.GGUF,
-                isSupported = false,
-                validationMessage = "GGUF detected. The generic model manager can catalog GGUF files, but this build does not yet have a linked native llama.cpp inference backend. Keeping it non-runnable is intentional.",
+                isSupported = true,
+                validationMessage = "GGUF detected. llama.cpp native runtime is available for offline inference.",
                 quantization = "GGUF Quantized"
             )
         }
@@ -249,7 +249,7 @@ object GemmaModelManager {
             }
 
             val tempFile = File(targetDir, "import_temp_${System.currentTimeMillis()}$ext")
-            val finalFile = File(targetDir, "gemma_4_e4b_model$ext")
+            val finalFile = File(targetDir, "local_model$ext")
 
             context.contentResolver.openInputStream(uri)?.use { inputStream ->
                 FileOutputStream(tempFile).use { outputStream ->
@@ -295,10 +295,10 @@ object GemmaModelManager {
             _cachedInfo = finalInfo
             _status.value = GemmaModelStatus.VALIDATING
 
-            Log.i(TAG, "Gemma 4 E4B model imported successfully: ${finalFile.absolutePath} (${finalFile.length()} bytes)")
+            Log.i(TAG, "Local model imported successfully: ${finalFile.absolutePath} (${finalFile.length()} bytes)")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to import Gemma model", e)
+            Log.e(TAG, "Failed to import local model", e)
             _status.value = GemmaModelStatus.ERROR
             _lastError = "Import failed: ${e.localizedMessage}"
             false
