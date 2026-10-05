@@ -1005,13 +1005,33 @@ class KavyaAccessibilityService : AccessibilityService() {
 
     fun scroll(direction: String): Boolean {
         val root = safeGetRootInActiveWindow() ?: return false
-        val scrollableNode = findScrollableNode(root) ?: return false
+        val isForward = direction.equals("FORWARD", true) ||
+                direction.equals("DOWN", true) ||
+                direction.equals("BOTTOM", true)
 
-        return if (direction.equals("FORWARD", true) || direction.equals("DOWN", true) || direction.equals("BOTTOM", true)) {
-            scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-        } else {
-            scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+        // Prefer semantic Accessibility scrolling when the app exposes a scroll container.
+        val scrollableNode = findScrollableNode(root)
+        if (scrollableNode != null) {
+            val semanticResult = if (isForward) {
+                scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            } else {
+                scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            }
+            if (semanticResult) return true
         }
+
+        // Real touch fallback for apps/games/webviews that do not expose a scrollable node.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val metrics = resources.displayMetrics
+            val width = metrics.widthPixels.toFloat()
+            val height = metrics.heightPixels.toFloat()
+            val x = width * 0.5f
+            val startY = if (isForward) height * 0.78f else height * 0.25f
+            val endY = if (isForward) height * 0.25f else height * 0.78f
+            return swipeGesture(x, startY, x, endY, 420L)
+        }
+
+        return false
     }
 
     private fun findScrollableNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
