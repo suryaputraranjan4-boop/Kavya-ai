@@ -22,11 +22,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android SDK packages
         run: |
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Set up Gradle
@@ -34,9 +32,20 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Create build environment file
+      - name: Create debug keystore
         run: |
-          cp .env.example .env
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Create build environment file
+        run: cp .env.example .env
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
