@@ -315,6 +315,20 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 onPlusClick = {
                     showScreenShareSheet = true
                 },
+                onMicClick = {
+                    if (
+                        micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_OFF ||
+                        micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ERROR
+                    ) {
+                        viewModel.startListening()
+                    } else {
+                        viewModel.stopListening()
+                    }
+                },
+                isMicListening =
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ACTIVE ||
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_SLEEPING ||
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_STARTING,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)
