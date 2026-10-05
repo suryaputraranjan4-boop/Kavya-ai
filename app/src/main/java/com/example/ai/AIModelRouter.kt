@@ -95,6 +95,13 @@ class AIModelRouter(private val context: Context) {
         return if (isOfflineMode()) {
             Log.d(TAG, "Routing streamChat request to LOCAL selected local model engine")
             val sysInstruction = SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+            if (!localEngine.isReady()) {
+                val initResult = localEngine.initialize(context)
+                if (initResult.isFailure) {
+                    val error = initResult.exceptionOrNull()?.localizedMessage ?: "Local model initialization failed."
+                    return kotlinx.coroutines.flow.flowOf("LOCAL OFFLINE ERROR: $error")
+                }
+            }
             localEngine.streamGenerate(prompt, sysInstruction, context)
         } else {
             Log.d(TAG, "Routing streamChat request to ONLINE Gemini model")
@@ -118,6 +125,10 @@ class AIModelRouter(private val context: Context) {
         pitchMultiplier: Float = 1.0f,
         speedMultiplier: Float = 1.0f
     ): ByteArray? {
+        if (isOfflineMode()) {
+            Log.w(TAG, "Offline mode: refusing cloud TTS to preserve zero-network offline behavior")
+            return null
+        }
         return onlineEngine.generateSpeechAudio(text, voiceName, emotionLabel, pitchMultiplier, speedMultiplier)
     }
 }
