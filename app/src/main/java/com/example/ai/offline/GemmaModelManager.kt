@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.zip.ZipFile
 
 enum class GemmaModelFormat {
     UNKNOWN,
@@ -127,6 +128,15 @@ object GemmaModelManager {
 
         // 2. Check ZIP / MediaPipe Task Bundle magic bytes: "PK\x03\x04" (0x50 0x4B 0x03 0x04)
         if (file.extension.equals("task", ignoreCase = true)) {
+            try {
+                ZipFile(file).use { zip ->
+                    if (zip.size() == 0) {
+                        return GemmaModelInfo(file, size, GemmaModelFormat.UNKNOWN, false, "MediaPipe Task bundle is empty.")
+                    }
+                }
+            } catch (e: Exception) {
+                return GemmaModelInfo(file, size, GemmaModelFormat.UNKNOWN, false, "Invalid MediaPipe Task bundle: ${e.localizedMessage}")
+            }
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
