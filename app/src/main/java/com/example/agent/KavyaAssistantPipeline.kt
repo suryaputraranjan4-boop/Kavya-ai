@@ -8,6 +8,7 @@ import com.example.data.AppDatabase
 import com.example.data.ChatEntity
 import com.example.data.MessageEntity
 import com.example.skills.SkillsRegistry
+import com.example.skillopt.SkillOptEngine
 import com.example.state.KavyaStateManager
 import com.example.state.TaskState
 import com.example.ui.components.VoiceState
@@ -72,6 +73,7 @@ class KavyaAssistantPipeline(
     private val durableTaskEngine = DurableTaskEngine(context, db.taskDao())
     private val sessionSearchEngine = SessionSearchEngine(chatDao)
     private val schedulerEngine = com.example.scheduler.SchedulerEngine(context)
+    private val skillOptEngine = SkillOptEngine(context, com.example.ai.AIModelRouter(context)).also { it.initialize() }
 
     @Volatile
     private var isBusyProcessing = false
@@ -155,14 +157,14 @@ class KavyaAssistantPipeline(
                 when (gateDecision.category) {
                     IntentCategory.SCHEDULE -> {
                         val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        val res = skill?.execute(gateDecision, context)
+                        val res = skill?.let { executeSkillWithLearning(it, gateDecision) }
                         finalResponse = res?.outputMessage ?: "Scheduled."
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
 
                     IntentCategory.MEMORY_SAVE -> {
                         val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        val res = skill?.execute(gateDecision, context)
+                        val res = skill?.let { executeSkillWithLearning(it, gateDecision) }
                         finalResponse = res?.outputMessage ?: "Memory saved."
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
@@ -185,7 +187,7 @@ class KavyaAssistantPipeline(
                         KavyaStateManager.updateTaskState(TaskState.EXECUTING, prompt)
                         val skill = SkillsRegistry.findSkillForIntent(gateDecision)
                         if (skill != null) {
-                            val res = skill.execute(gateDecision, context)
+                            val res = executeSkillWithLearning(skill, gateDecision)
                             finalResponse = res.outputMessage
                         } else if (commandRouter.isDirectDeviceCommand(prompt)) {
                             val directRes = commandRouter.executeDirectUserCommand(prompt)
@@ -266,6 +268,20 @@ class KavyaAssistantPipeline(
                 KavyaStateManager.updateVoiceState(VoiceState.IDLE)
             }
         }
+    }
+
+    private suspend fun executeSkillWithLearning(
+        skill: com.example.skills.KavyaSkill,
+        gateDecision: IntentGateDecision
+    ): com.example.skills.SkillResult {
+        val result = skill.execute(gateDecision, context)
+        skillOptEngine.recordExecution(
+            skillId = skill.id,
+            task = gateDecision.rawPrompt,
+            success = result.success,
+            output = result.outputMessage
+        )
+        return result
     }
 
     private suspend fun executeConversationalTurn(prompt: String): String = withContext(Dispatchers.IO) {
