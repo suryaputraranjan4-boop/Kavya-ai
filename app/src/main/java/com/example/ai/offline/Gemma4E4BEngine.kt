@@ -75,30 +75,12 @@ class MediaPipeTaskRuntime : GemmaRuntime {
         }
     }
 
-    override fun streamGenerate(prompt: String): Flow<String> = callbackFlow {
-        val engine = llmInference
-        if (engine == null) {
-            trySend("Local runtime is not initialized.")
-            close()
-            return@callbackFlow
-        }
-
-        try {
-            engine.generateResponseAsync(prompt) { partialResult, done ->
-                if (!partialResult.isNullOrEmpty()) trySend(partialResult)
-                if (done) close()
-            }
-        } catch (e: Exception) {
-            try {
-                trySend(engine.generateResponse(prompt))
-            } catch (err: Exception) {
-                trySend("Local inference error: " + (err.localizedMessage ?: "unknown error"))
-            }
-            close()
-        }
-
-        awaitClose { }
-    }.flowOn(Dispatchers.IO)
+    override fun streamGenerate(prompt: String): Flow<String> =
+        kotlinx.coroutines.flow.flow {
+            val engine = llmInference
+                ?: throw IllegalStateException("Local runtime is not initialized.")
+            emit(engine.generateResponse(prompt))
+        }.flowOn(Dispatchers.IO)
 
     override suspend fun close() = withContext(Dispatchers.IO) {
         try {
@@ -149,9 +131,13 @@ class LiteRtLmRuntime : GemmaRuntime {
             val conv = conversation
                 ?: return@withContext Result.failure(IllegalStateException("LiteRT-LM conversation is not initialized."))
             try {
-                val output = conv.sendMessageAsync(prompt).toList().joinToString("")
-                if (output.isBlank()) Result.failure(IllegalStateException("LiteRT-LM returned no text."))
-                else Result.success(output.trim())
+                val output = StringBuilder()
+                conv.sendMessageAsync(prompt).collect { message ->
+                    output.append(message.toString())
+                }
+                val text = output.toString().trim()
+                if (text.isBlank()) Result.failure(IllegalStateException("LiteRT-LM returned no text."))
+                else Result.success(text)
             } catch (t: Throwable) {
                 Result.failure(t)
             }
@@ -160,7 +146,7 @@ class LiteRtLmRuntime : GemmaRuntime {
     override fun streamGenerate(prompt: String): Flow<String> = kotlinx.coroutines.flow.flow {
         val conv = conversation
             ?: throw IllegalStateException("LiteRT-LM conversation is not initialized.")
-        conv.sendMessageAsync(prompt).collect { emit(it) }
+        conv.sendMessageAsync(prompt).collect { message -> emit(message.toString()) }
     }.flowOn(Dispatchers.IO)
 
     override suspend fun close() = withContext(Dispatchers.IO) {
