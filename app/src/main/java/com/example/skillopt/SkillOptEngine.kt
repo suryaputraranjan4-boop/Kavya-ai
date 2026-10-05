@@ -30,9 +30,9 @@ class SkillOptEngine(context: Context, private val modelRouter: AIModelRouter) {
         }
     }
 
-    fun recordExecution(skillId: String, task: String, success: Boolean, output: String) {
-        val bot = KavyaBotTeam.all.firstOrNull { skillId in it.skillIds } ?: return
-        store.appendTrajectory(bot.id, task.take(1200), success, output.take(2000))
+    fun recordExecution(botId: String, task: String, success: Boolean, output: String) {
+        if (KavyaBotTeam.byId(botId) == null || botId == "ceo") return
+        store.appendTrajectory(botId, task.take(1200), success, output.take(2000))
     }
 
     fun skillForBot(botId: String): String =
