@@ -18,23 +18,22 @@ object GeminiModelRegistry {
     const val LIVE_STREAM_MODEL = "models/gemini-2.5-flash"
 
     // Primary High-Fidelity Audio & Speech Synthesis Model (Gemini TTS)
-    const val PRIMARY_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+    const val PRIMARY_TTS_MODEL = "gemini-3.8-flash-tts"
 
     // High-volume / Low-latency Audio Model Fallback
-    const val SECONDARY_TTS_MODEL = "gemini-2.5-flash"
+    const val SECONDARY_TTS_MODEL = "gemini-3.8-flash-lite-tts"
 
     // Real-time Screen & UI Vision Understanding Model
     const val VISION_ANALYZER_MODEL = "gemini-2.5-flash"
 
     // Semantic Text Embedding Model for Knowledge & Memory Retrieval
-    const val EMBEDDING_MODEL = "text-embedding-004"
+    const val EMBEDDING_MODEL = "gemini-embedding-2"
 
     // Ordered candidate tiers for fallback audio generation
     val AUDIO_MODEL_TIERS = listOf(
         PRIMARY_TTS_MODEL,
         SECONDARY_TTS_MODEL,
-        "gemini-2.0-flash",
-        "gemini-flash-latest"
+        "gemini-2.5-flash-preview-tts"
     )
 
     // Ordered candidate tiers for chat and reasoning
