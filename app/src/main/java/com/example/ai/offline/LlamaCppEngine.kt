@@ -1,6 +1,5 @@
 package com.example.ai.offline
 
-import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -27,55 +26,64 @@ class LlamaCppEngine private constructor() {
     private var loadedPath: String? = null
     private val nativeLock = Any()
 
-    fun isReady(): Boolean = nativeHandle != 0L
+    fun isReady(): Boolean = synchronized(nativeLock) { nativeHandle != 0L }
 
-    suspend fun load(modelFile: File): Result<Unit> = synchronized(nativeLock) { kotlinx.coroutines.runBlocking { withContext(Dispatchers.IO) {
-        if (!modelFile.exists() || !modelFile.isFile) {
-            return@withContext Result.failure(IllegalArgumentException("GGUF model file does not exist."))
-        }
-        if (!modelFile.name.endsWith(".gguf", ignoreCase = true)) {
-            return@withContext Result.failure(IllegalArgumentException("Selected file is not a GGUF model."))
-        }
+    suspend fun load(modelFile: File): Result<Unit> = withContext(Dispatchers.IO) {
+        synchronized(nativeLock) {
+            if (!modelFile.exists() || !modelFile.isFile) {
+                return@withContext Result.failure(IllegalArgumentException("GGUF model file does not exist."))
+            }
+            if (!modelFile.name.endsWith(".gguf", ignoreCase = true)) {
+                return@withContext Result.failure(IllegalArgumentException("Selected file is not a GGUF model."))
+            }
 
-        if (isReady() && loadedPath == modelFile.absolutePath) {
-            return@withContext Result.success(Unit)
-        }
+            if (nativeHandle != 0L && loadedPath == modelFile.absolutePath) {
+                return@withContext Result.success(Unit)
+            }
 
-        release()
-        val handle = nativeLoad(modelFile.absolutePath)
-        if (handle == 0L) {
-            return@withContext Result.failure(
-                IllegalStateException("llama.cpp could not load this GGUF model.")
-            )
-        }
+            releaseLocked()
 
-        nativeHandle = handle
-        loadedPath = modelFile.absolutePath
-        Result.success(Unit)
-    } } }
-
-    suspend fun generate(prompt: String, maxTokens: Int = 256): Result<String> =
-        synchronized(nativeLock) { kotlinx.coroutines.runBlocking { withContext(Dispatchers.Default) {
-            if (!isReady()) {
+            val handle = nativeLoad(modelFile.absolutePath)
+            if (handle == 0L) {
                 return@withContext Result.failure(
-                    IllegalStateException("GGUF runtime is not loaded.")
+                    IllegalStateException("llama.cpp could not load this GGUF model.")
                 )
             }
-            val text = nativeGenerate(nativeHandle, prompt, maxTokens)
-            if (text.isBlank()) {
-                Result.failure(IllegalStateException("GGUF inference returned no text."))
-            } else {
-                Result.success(text.trim())
-            }
-        } } }
 
-    fun release()
+            nativeHandle = handle
+            loadedPath = modelFile.absolutePath
+            Result.success(Unit)
+        }
+    }
+
+    suspend fun generate(prompt: String, maxTokens: Int = 256): Result<String> =
+        withContext(Dispatchers.Default) {
+            synchronized(nativeLock) {
+                if (nativeHandle == 0L) {
+                    return@withContext Result.failure(
+                        IllegalStateException("GGUF runtime is not loaded.")
+                    )
+                }
+                val text = nativeGenerate(nativeHandle, prompt, maxTokens)
+                if (text.isBlank()) {
+                    Result.failure(IllegalStateException("GGUF inference returned no text."))
+                } else {
+                    Result.success(text.trim())
+                }
+            }
+        }
+
     fun release() {
+        synchronized(nativeLock) {
+            releaseLocked()
+        }
+    }
+
+    private fun releaseLocked() {
         if (nativeHandle != 0L) {
             nativeFree(nativeHandle)
             nativeHandle = 0L
             loadedPath = null
-        }
         }
     }
 
