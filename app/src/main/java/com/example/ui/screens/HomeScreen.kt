@@ -216,8 +216,8 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 KavyaVoiceOrb(
                     state = voiceState,
                     onClick = {
-                        if (micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.STOPPED ||
-                            micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.IDLE
+                        if (micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_OFF ||
+                            micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ERROR
                         ) {
                             com.example.voice.KavyaMicrophoneEngine.startService(context)
                         } else {
@@ -245,11 +245,11 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     globalState.taskState == com.example.state.TaskState.FAILED -> globalState.taskStateDetail ?: "Task pura nahi ho paya."
                     voiceState == VoiceState.THINKING || voiceState == VoiceState.UNDERSTANDING -> "Request analyze ho rahi hai..."
                     voiceState == VoiceState.SPEAKING -> "Kavya bol rahi hai..."
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.SLEEP -> "Sleep Mode • Say 'Hey Kavya' to Wake"
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.WAKE_LISTENING ||
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.COMMAND_LISTENING -> "Mic Active • Say 'Hey Kavya'"
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.STOPPED ||
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.IDLE -> "Mic Off • Tap Orb to Start"
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_STARTING -> "Starting microphone..."
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_SLEEPING -> "Sleep Mode • Say 'Hey Kavya' to Wake"
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ACTIVE -> "Mic Active • Say 'Hey Kavya'"
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_OFF -> "Mic Off • Tap to Start"
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ERROR -> "Microphone unavailable"
                     else -> "Kavya AI Ready"
                 }
 

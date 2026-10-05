@@ -33,9 +33,10 @@ class MainActivity : ComponentActivity() {
   ) { permissions ->
     Log.d(TAG, "Permissions result: $permissions")
     if (permissions[Manifest.permission.RECORD_AUDIO] == true) {
-      Log.i(TAG, "RECORD_AUDIO granted. Starting single microphone architecture...")
-      com.example.utils.AppPreferences.setMicEnabled(this, true)
-      com.example.voice.KavyaMicrophoneEngine.startService(this)
+      Log.i(TAG, "RECORD_AUDIO granted.")
+      if (com.example.utils.AppPreferences.isMicEnabled(this)) {
+        com.example.voice.KavyaMicrophoneEngine.startService(this)
+      }
     }
   }
 
