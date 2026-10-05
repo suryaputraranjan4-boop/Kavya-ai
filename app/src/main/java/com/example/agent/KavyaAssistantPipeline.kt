@@ -157,8 +157,11 @@ class KavyaAssistantPipeline(
 
                 when (gateDecision.category) {
                     IntentCategory.SCHEDULE -> {
-                        val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        val res = ceoOrchestrator.execute(ceoOrchestrator.createTask(gateDecision), gateDecision, context)
+                        val res = ceoOrchestrator.execute(
+                            ceoOrchestrator.createTask(gateDecision),
+                            gateDecision,
+                            context
+                        )
                         finalResponse = res.summary
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
@@ -213,10 +216,19 @@ class KavyaAssistantPipeline(
                     }
 
                     else -> {
-                        // Conversational Turn (CHAT, QUESTION, EXPLANATION, RESEARCH)
+                        // All non-ambiguous intents use the CEO too, including chat,
+                        // questions, explanations, and explicit research.
                         KavyaStateManager.updateTaskState(TaskState.UNDERSTANDING, prompt)
-                        finalResponse = executeConversationalTurn(prompt)
-                        KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
+                        val res = ceoOrchestrator.execute(
+                            ceoOrchestrator.createTask(gateDecision),
+                            gateDecision,
+                            context
+                        )
+                        finalResponse = res.summary
+                        KavyaStateManager.updateTaskState(
+                            if (res.success) TaskState.COMPLETED else TaskState.FAILED,
+                            finalResponse
+                        )
                     }
                 }
 
