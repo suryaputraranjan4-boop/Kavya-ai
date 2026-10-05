@@ -107,20 +107,22 @@ class GeminiAudioPlayer(
                         mp.start()
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to start MediaPlayer", e)
+                        try { mp.release() } catch (_: Exception) {}
+                        if (mediaPlayer === mp) mediaPlayer = null
                         queuedItem.onComplete?.invoke()
                         processNextInQueue()
                     }
                 }
-                setOnCompletionListener {
-                    try {
-                        it.release()
-                    } catch (e: Exception) {}
-                    mediaPlayer = null
+                setOnCompletionListener { mp ->
+                    try { mp.release() } catch (_: Exception) {}
+                    if (mediaPlayer === mp) mediaPlayer = null
                     queuedItem.onComplete?.invoke()
                     processNextInQueue()
                 }
-                setOnErrorListener { _, what, extra ->
+                setOnErrorListener { mp, what, extra ->
                     Log.e(TAG, "MediaPlayer error: what=$what, extra=$extra")
+                    try { mp.reset(); mp.release() } catch (_: Exception) {}
+                    if (mediaPlayer === mp) mediaPlayer = null
                     queuedItem.onComplete?.invoke()
                     processNextInQueue()
                     true
