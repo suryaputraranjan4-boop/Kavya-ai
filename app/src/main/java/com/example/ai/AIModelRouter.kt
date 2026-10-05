@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
  *
  * Routes inference requests seamlessly between:
  * • ONLINE MODE → Gemini 2.5 Flash / Pro (Main Brain)
- * • OFFLINE MODE → Local Gemma 4 E4B Engine (LiteRT-LM On-Device)
+ * • OFFLINE MODE → selected local model runtime (GGUF / LiteRT-LM / MediaPipe Task)
  *
  * Guarantees zero cloud leakage when Offline Mode is enabled.
  * Preserves normalized conversation context, persistent memories, and assistant actions across modes.
@@ -28,7 +28,7 @@ class AIModelRouter(private val context: Context) {
     }
 
     private val onlineEngine = KavyaAI(context)
-    private val gemmaEngine = Gemma4E4BEngine.getInstance()
+    private val localEngine = Gemma4E4BEngine.getInstance()
 
     fun isOfflineMode(): Boolean {
         return AppPreferences.isOfflineFallbackEnabled(context) || AppPreferences.getAiProvider(context) == "GEMMA_OFFLINE"
@@ -38,7 +38,7 @@ class AIModelRouter(private val context: Context) {
         AppPreferences.setOfflineFallbackEnabled(context, enabled)
         if (enabled) {
             AppPreferences.setAiProvider(context, "GEMMA_OFFLINE")
-            Log.i(TAG, "AI Model Router switched to OFFLINE MODE (Gemma 4 E4B)")
+            Log.i(TAG, "AI Model Router switched to OFFLINE MODE (selected local model)")
             GemmaModelManager.checkModelStatus(context)
         } else {
             AppPreferences.setAiProvider(context, "GEMINI")
@@ -57,18 +57,18 @@ class AIModelRouter(private val context: Context) {
         isProactiveMode: Boolean = false
     ): String = withContext(Dispatchers.IO) {
         if (isOfflineMode()) {
-            Log.d(TAG, "Routing chat request to LOCAL Gemma 4 E4B engine")
-            if (!gemmaEngine.isReady()) {
-                val initResult = gemmaEngine.initialize(context)
+            Log.d(TAG, "Routing chat request to LOCAL selected local model engine")
+            if (!localEngine.isReady()) {
+                val initResult = localEngine.initialize(context)
                 if (initResult.isFailure) {
-                    val err = initResult.exceptionOrNull()?.message ?: "Gemma 4 E4B model is not initialized or ready."
-                    return@withContext "GEMMA OFFLINE ERROR: $err"
+                    val err = initResult.exceptionOrNull()?.message ?: "selected local model model is not initialized or ready."
+                    return@withContext "LOCAL OFFLINE ERROR: $err"
                 }
             }
             val sysInstruction = SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
-            val genResult = gemmaEngine.generate(prompt, sysInstruction)
+            val genResult = localEngine.generate(prompt, sysInstruction)
             return@withContext genResult.getOrElse {
-                "GEMMA OFFLINE ERROR: ${it.localizedMessage ?: "Generation failed."}"
+                "LOCAL OFFLINE ERROR: ${it.localizedMessage ?: "Generation failed."}"
             }
         } else {
             Log.d(TAG, "Routing chat request to ONLINE Gemini model")
@@ -93,9 +93,9 @@ class AIModelRouter(private val context: Context) {
         isProactiveMode: Boolean = false
     ): Flow<String> {
         return if (isOfflineMode()) {
-            Log.d(TAG, "Routing streamChat request to LOCAL Gemma 4 E4B engine")
+            Log.d(TAG, "Routing streamChat request to LOCAL selected local model engine")
             val sysInstruction = SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
-            gemmaEngine.streamGenerate(prompt, sysInstruction, context)
+            localEngine.streamGenerate(prompt, sysInstruction, context)
         } else {
             Log.d(TAG, "Routing streamChat request to ONLINE Gemini model")
             onlineEngine.streamChat(
