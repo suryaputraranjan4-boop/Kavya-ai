@@ -137,8 +137,9 @@ object GemmaModelManager {
             )
         }
 
-        // 3. Check TFLite / FlatBuffers magic bytes at offset 4: "TFL3" (0x54 0x46 0x4C 0x33)
-        if (header[4] == 'T'.toByte() && header[5] == 'F'.toByte() && header[6] == 'L'.toByte() && header[7] == '3'.toByte()) {
+        // 3. Native LiteRT-LM containers are identified by their .litertlm extension.
+        // Do not classify ordinary TFLite files as LiteRT-LM merely from the TFL3 header.
+        if (file.extension.equals("litertlm", ignoreCase = true)) {
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
@@ -298,6 +299,29 @@ object GemmaModelManager {
             _lastError = "Import failed: ${e.localizedMessage}"
             false
         }
+    }
+
+    /** Returns all imported local models recognized by the format inspector. */
+    fun getAvailableModels(context: Context): List<GemmaModelInfo> =
+        getModelDirectory(context).listFiles()
+            ?.asSequence()
+            ?.filter { it.isFile }
+            ?.map { inspectModel(it) }
+            ?.filter { it.isSupported }
+            ?.sortedBy { it.file.name.lowercase() }
+            ?.toList()
+            ?: emptyList()
+
+    /** Selects one imported model without deleting other imported models. */
+    fun selectModel(context: Context, file: File): Boolean {
+        val candidate = file.absoluteFile
+        val info = inspectModel(candidate)
+        if (!candidate.isFile || !info.isSupported) return false
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            .edit().putString(KEY_SAVED_MODEL_PATH, candidate.absolutePath).apply()
+        _cachedInfo = info
+        _status.value = GemmaModelStatus.VALIDATING
+        return true
     }
 
     /**
