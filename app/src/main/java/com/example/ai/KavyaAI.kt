@@ -69,7 +69,7 @@ data class GenerationConfig(
     val topP: Float? = 0.95f,
     val topK: Int? = 40,
     val maxOutputTokens: Int? = 512,
-    val thinkingConfig: ThinkingConfig? = ThinkingConfig(thinkingBudget = 0),
+    val thinkingConfig: ThinkingConfig? = null,
     val responseModalities: List<String>? = null,
     val speechConfig: SpeechConfig? = null
 )
