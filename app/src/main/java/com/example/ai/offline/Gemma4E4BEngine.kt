@@ -244,7 +244,6 @@ class Gemma4E4BEngine private constructor() {
     private val mutex = Mutex()
     private var activeRuntime: GemmaRuntime? = null
     private var activeModelPath: String? = null
-    private var lastInitTimeMs: Long = 0L
 
     private var _diagnostics = GemmaDiagnostics()
     val diagnostics: GemmaDiagnostics get() = _diagnostics
@@ -265,7 +264,7 @@ class Gemma4E4BEngine private constructor() {
 
             // 1. Check available system memory
             val availRamMB = GemmaDiagnostics.getAvailableSystemMemoryMB(context)
-            if (availRamMB < 600) { //             // 2. Locate model file
+            // 2. Locate model file
             val modelFile = GemmaModelManager.getModelFile(context)
             if (modelFile == null || !modelFile.exists()) {
                 val msg = "Gemma model file is missing or not installed."
@@ -342,7 +341,6 @@ class Gemma4E4BEngine private constructor() {
             val healthResult = runtime.generate(healthPrompt)
 
             val totalInitTime = System.currentTimeMillis() - startTime
-            lastInitTimeMs = totalInitTime
 
             if (healthResult.isSuccess && healthResult.getOrNull()?.isNotBlank() == true) {
                 GemmaModelManager.setStatus(GemmaModelStatus.READY)
