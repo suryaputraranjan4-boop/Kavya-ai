@@ -3,8 +3,6 @@ package com.example.ai.offline
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 /**
@@ -27,11 +25,11 @@ class LlamaCppEngine private constructor() {
 
     private var nativeHandle: Long = 0L
     private var loadedPath: String? = null
-    private val nativeMutex = Mutex()
+    private val nativeLock = Any()
 
     fun isReady(): Boolean = nativeHandle != 0L
 
-    suspend fun load(modelFile: File): Result<Unit> = nativeMutex.withLock { withContext(Dispatchers.IO) {
+    suspend fun load(modelFile: File): Result<Unit> = synchronized(nativeLock) { kotlinx.coroutines.runBlocking { withContext(Dispatchers.IO) {
         if (!modelFile.exists() || !modelFile.isFile) {
             return@withContext Result.failure(IllegalArgumentException("GGUF model file does not exist."))
         }
@@ -54,10 +52,10 @@ class LlamaCppEngine private constructor() {
         nativeHandle = handle
         loadedPath = modelFile.absolutePath
         Result.success(Unit)
-    } }
+    } } }
 
     suspend fun generate(prompt: String, maxTokens: Int = 256): Result<String> =
-        nativeMutex.withLock { withContext(Dispatchers.Default) {
+        synchronized(nativeLock) { kotlinx.coroutines.runBlocking { withContext(Dispatchers.Default) {
             if (!isReady()) {
                 return@withContext Result.failure(
                     IllegalStateException("GGUF runtime is not loaded.")
@@ -69,14 +67,15 @@ class LlamaCppEngine private constructor() {
             } else {
                 Result.success(text.trim())
             }
-        } }
+        } } }
 
-    @Synchronized
+    fun release()
     fun release() {
         if (nativeHandle != 0L) {
             nativeFree(nativeHandle)
             nativeHandle = 0L
             loadedPath = null
+        }
         }
     }
 
