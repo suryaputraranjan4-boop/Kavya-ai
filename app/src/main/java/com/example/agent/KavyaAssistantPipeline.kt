@@ -8,6 +8,8 @@ import com.example.data.AppDatabase
 import com.example.data.ChatEntity
 import com.example.data.MessageEntity
 import com.example.skills.SkillsRegistry
+import com.example.ai.AIModelRouter
+import com.example.bots.CeoOrchestrator
 import com.example.state.KavyaStateManager
 import com.example.state.TaskState
 import com.example.ui.components.VoiceState
@@ -69,6 +71,7 @@ class KavyaAssistantPipeline(
     private val chatDao = db.chatDao()
     private val screenInspector = ScreenInspector()
     private val taskPlanner = TaskPlanner(commandRouter.appResolver)
+    private val ceoOrchestrator = CeoOrchestrator(context, AIModelRouter(context), androidAgent, taskPlanner)
     private val durableTaskEngine = DurableTaskEngine(context, db.taskDao())
     private val sessionSearchEngine = SessionSearchEngine(chatDao)
     private val schedulerEngine = com.example.scheduler.SchedulerEngine(context)
