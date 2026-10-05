@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.Flow
 class GemmaOfflineProvider : AIProvider {
 
     override val providerId: String = "gemma_offline"
-    override val displayName: String = "Gemma 4 E4B (Offline)"
+    override val displayName: String = "Local AI (Offline)"
     override val isPrimaryOrchestrator: Boolean = false
 
     override fun isConfigured(context: Context): Boolean {
@@ -28,7 +28,7 @@ class GemmaOfflineProvider : AIProvider {
     override suspend fun validateCredentials(context: Context): Pair<Boolean, String> {
         val modelFile = GemmaModelManager.getModelFile(context)
         if (modelFile == null || !modelFile.exists()) {
-            return Pair(false, "Local Gemma 4 E4B model file not found. Please import a compatible model in Settings.")
+            return Pair(false, "Local selected local model model file not found. Please import a compatible model in Settings.")
         }
 
         val info = GemmaModelManager.inspectModel(modelFile)
@@ -45,14 +45,14 @@ class GemmaOfflineProvider : AIProvider {
             }
         }
 
-        return Pair(true, "Gemma 4 E4B is loaded and responding offline.")
+        return Pair(true, "selected local model is loaded and responding offline.")
     }
 
     override suspend fun getModels(context: Context): List<ProviderModelInfo> {
         return listOf(
             ProviderModelInfo(
                 id = "local-offline",
-                name = "Gemma 4 E4B (Offline)",
+                name = "Local AI (Offline)",
                 provider = ProviderType.GEMMA_OFFLINE,
                 supportedTasks = listOf("chat", "reasoning", "phone_control", "offline_reasoning"),
                 contextLength = 2048,
@@ -71,12 +71,12 @@ class GemmaOfflineProvider : AIProvider {
         if (!engine.isReady()) {
             val initRes = engine.initialize(context)
             if (initRes.isFailure) {
-                val err = initRes.exceptionOrNull()?.localizedMessage ?: "Gemma 4 E4B engine is not ready."
+                val err = initRes.exceptionOrNull()?.localizedMessage ?: "selected local model engine is not ready."
                 return AIProviderResult(
                     success = false,
-                    text = "Gemma 4 E4B is not ready: $err",
+                    text = "selected local model is not ready: $err",
                     providerId = providerId,
-                    model = "Gemma 4 E4B",
+                    model = "selected local model",
                     error = err
                 )
             }
@@ -92,7 +92,7 @@ class GemmaOfflineProvider : AIProvider {
                 text = result.getOrDefault(""),
                 rawJson = null,
                 providerId = providerId,
-                model = "Gemma 4 E4B",
+                model = "selected local model",
                 latencyMs = latency
             )
         } else {
@@ -102,7 +102,7 @@ class GemmaOfflineProvider : AIProvider {
                 text = "Gemma Offline Generation Error: $err",
                 rawJson = null,
                 providerId = providerId,
-                model = "Gemma 4 E4B",
+                model = "selected local model",
                 error = err,
                 latencyMs = latency
             )
