@@ -62,6 +62,7 @@ class KavyaMicrophoneEngine : Service() {
 
         fun startService(context: Context) {
             AppPreferences.setMicEnabled(context, true)
+            AppPreferences.setKavyaState(context, "ACTIVE")
             val intent = Intent(context, KavyaMicrophoneEngine::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -72,6 +73,7 @@ class KavyaMicrophoneEngine : Service() {
 
         fun stopService(context: Context) {
             AppPreferences.setMicEnabled(context, false)
+            AppPreferences.setKavyaState(context, "OFF")
             instance?.stopEngine()
             context.stopService(Intent(context, KavyaMicrophoneEngine::class.java))
         }
@@ -131,7 +133,8 @@ class KavyaMicrophoneEngine : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        sleeping = false
+        // Restore the last explicit voice state if Android recreates the service.
+        sleeping = AppPreferences.getKavyaState(this).equals("SLEEP", ignoreCase = true)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -168,7 +171,9 @@ class KavyaMicrophoneEngine : Service() {
             retryMs = INITIAL_RETRY_MS
             if (stateFlow.value == EngineState.MIC_OFF ||
                 stateFlow.value == EngineState.MIC_ERROR) {
+                // Starting from the UI is an explicit start/wake action.
                 sleeping = false
+                AppPreferences.setKavyaState(this@KavyaMicrophoneEngine, "ACTIVE")
             }
             stateFlow.value = if (sleeping) EngineState.MIC_SLEEPING else EngineState.MIC_STARTING
             startRecognitionSession()
@@ -332,6 +337,7 @@ class KavyaMicrophoneEngine : Service() {
         if (sleeping) {
             if (wake == null) return
             sleeping = false
+            AppPreferences.setKavyaState(this, "ACTIVE")
             stateFlow.value = EngineState.MIC_ACTIVE
             val command = commandAfterWake(text, wake)
             if (command.isNotBlank()) dispatch(command)
@@ -350,6 +356,7 @@ class KavyaMicrophoneEngine : Service() {
     private fun setSleeping() {
         handler.post {
             sleeping = true
+            AppPreferences.setKavyaState(this, "SLEEP")
             partialFlow.value = ""
             stateFlow.value = EngineState.MIC_SLEEPING
             restartRecognition()
@@ -359,6 +366,7 @@ class KavyaMicrophoneEngine : Service() {
     private fun setAwake() {
         handler.post {
             sleeping = false
+            AppPreferences.setKavyaState(this, "ACTIVE")
             partialFlow.value = ""
             stateFlow.value = EngineState.MIC_ACTIVE
             restartRecognition()
