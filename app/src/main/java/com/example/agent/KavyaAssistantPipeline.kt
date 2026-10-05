@@ -158,15 +158,15 @@ class KavyaAssistantPipeline(
                 when (gateDecision.category) {
                     IntentCategory.SCHEDULE -> {
                         val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        val res = skill?.execute(gateDecision, context)
-                        finalResponse = res?.outputMessage ?: "Scheduled."
+                        val res = ceoOrchestrator.execute(ceoOrchestrator.createTask(gateDecision), gateDecision, context)
+                        finalResponse = res.summary
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
 
                     IntentCategory.MEMORY_SAVE -> {
                         val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        val res = skill?.execute(gateDecision, context)
-                        finalResponse = res?.outputMessage ?: "Memory saved."
+                        val res = ceoOrchestrator.execute(ceoOrchestrator.createTask(gateDecision), gateDecision, context)
+                        finalResponse = res.summary
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
 
