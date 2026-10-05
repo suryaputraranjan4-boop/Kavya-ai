@@ -4,6 +4,8 @@ import android.content.Context
 import com.example.ai.offline.Gemma4E4BEngine
 import com.example.ai.offline.GemmaModelManager
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.emitAll
 
 /**
  * On-Device Local AI Offline AI Provider.
@@ -114,8 +116,15 @@ class GemmaOfflineProvider : AIProvider {
         systemInstruction: String?,
         context: Context,
         modelOverride: String?
-    ): Flow<String> {
+    ): Flow<String> = flow {
         val engine = Gemma4E4BEngine.getInstance()
-        return engine.streamGenerate(prompt, systemInstruction, context)
+        if (!engine.isReady()) {
+            val initRes = engine.initialize(context)
+            if (initRes.isFailure) {
+                emit("LOCAL OFFLINE ERROR: ${initRes.exceptionOrNull()?.localizedMessage ?: "Runtime initialization failed."}")
+                return@flow
+            }
+        }
+        emitAll(engine.streamGenerate(prompt, systemInstruction, context))
     }
 }
