@@ -33,10 +33,6 @@ class LlamaCppEngine private constructor() {
             if (!modelFile.exists() || !modelFile.isFile) {
                 return@withContext Result.failure(IllegalArgumentException("GGUF model file does not exist."))
             }
-            if (!modelFile.name.endsWith(".gguf", ignoreCase = true)) {
-                return@withContext Result.failure(IllegalArgumentException("Selected file is not a GGUF model."))
-            }
-
             if (nativeHandle != 0L && loadedPath == modelFile.absolutePath) {
                 return@withContext Result.success(Unit)
             }
