@@ -89,16 +89,6 @@ object GemmaModelManager {
         }
 
         val size = file.length()
-        if (size < 1024 * 1024) { // Less than 1MB is invalid for Gemma LLM
-            return GemmaModelInfo(
-                file = file,
-                sizeBytes = size,
-                format = GemmaModelFormat.UNKNOWN,
-                isSupported = false,
-                validationMessage = "Model file is too small (${size / 1024} KB) to be a valid Gemma model."
-            )
-        }
-
         val header = ByteArray(16)
         try {
             FileInputStream(file).use { fis ->
@@ -136,13 +126,13 @@ object GemmaModelManager {
         }
 
         // 2. Check ZIP / MediaPipe Task Bundle magic bytes: "PK\x03\x04" (0x50 0x4B 0x03 0x04)
-        if (header[0] == 'P'.toByte() && header[1] == 'K'.toByte() && header[2] == 0x03.toByte() && header[3] == 0x04.toByte()) {
+        if (file.extension.equals("task", ignoreCase = true)) {
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.MEDIAPIPE_TASK,
                 isSupported = true,
-                validationMessage = "Valid MediaPipe Task bundle header detected.",
+                validationMessage = "MediaPipe Task selected; runtime will perform final validation.",
                 quantization = "LiteRT Task Bundle"
             )
         }
@@ -154,7 +144,7 @@ object GemmaModelManager {
                 sizeBytes = size,
                 format = GemmaModelFormat.LITERT_LM,
                 isSupported = true,
-                validationMessage = "Valid LiteRT-LM TFLite model binary header detected.",
+                validationMessage = "LiteRT-LM container selected; runtime will perform final validation.",
                 quantization = "TFLite / LiteRT FlatBuffer"
             )
         }
@@ -165,7 +155,7 @@ object GemmaModelManager {
             sizeBytes = size,
             format = GemmaModelFormat.UNKNOWN,
             isSupported = false,
-            validationMessage = "Unsupported or unknown Gemma model binary format structure."
+            validationMessage = "Unsupported local model format. Use .gguf, .litertlm, or .task."
         )
     }
 
@@ -187,7 +177,7 @@ object GemmaModelManager {
         val dirFiles = modelDir.listFiles()
         if (dirFiles != null) {
             for (f in dirFiles) {
-                if (f.isFile && f.length() > 1024 * 1024) {
+                if (f.isFile) {
                     val info = inspectModel(f)
                     if (info.isSupported) {
                         prefs.edit().putString(KEY_SAVED_MODEL_PATH, f.absolutePath).apply()
@@ -248,8 +238,13 @@ object GemmaModelManager {
                 ".task"
             }
 
+            val safeBaseName = (originalName?.substringBeforeLast(".") ?: "local_model").replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "local_model" }
             val tempFile = File(targetDir, "import_temp_${System.currentTimeMillis()}$ext")
-            val finalFile = File(targetDir, "local_model$ext")
+            var finalFile = File(targetDir, "$safeBaseName$ext")
+            var duplicateIndex = 2
+            while (finalFile.exists()) {
+                finalFile = File(targetDir, "${safeBaseName}_${duplicateIndex++}$ext")
+            }
 
             context.contentResolver.openInputStream(uri)?.use { inputStream ->
                 FileOutputStream(tempFile).use { outputStream ->
