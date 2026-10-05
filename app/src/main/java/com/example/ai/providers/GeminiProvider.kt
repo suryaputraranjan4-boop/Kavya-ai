@@ -30,7 +30,6 @@ class GeminiProvider : AIProvider {
 
         val VERIFIED_MODELS = listOf(
             ProviderModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Latest low-latency high-throughput Google Gemini model", true),
-            ProviderModelInfo("gemini-2.0-flash", "Gemini 2.0 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Next generation multimodal model", true),
             ProviderModelInfo("gemini-1.5-flash", "Gemini 1.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision"), 1048576, "Stable multimodal 1M context model", true),
             ProviderModelInfo("gemini-1.5-pro", "Gemini 1.5 Pro", ProviderType.GEMINI, listOf("reasoning", "coding", "analysis"), 2097152, "State of the art reasoning model", false)
         )
