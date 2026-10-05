@@ -114,8 +114,7 @@ class KavyaMicrophoneEngine : Service() {
         "hey kavya", "hi kavya", "hello kavya",
         "wake kavya", "wake up kavya", "kavya wake up",
         "utho kavya", "kavya utho", "ok kavya", "okay kavya",
-        "kavya suno", "suno kavya", "hey kavia",
-        "kavya", "kavia", "cavia"
+        "kavya suno", "suno kavya", "hey kavia"
     )
 
     private val sleepWords = setOf(
