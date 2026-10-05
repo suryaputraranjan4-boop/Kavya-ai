@@ -309,6 +309,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var messagesJob: kotlinx.coroutines.Job? = null
+    // Keep the latest user command instead of silently dropping it while another turn is running.
+    @Volatile private var queuedPrompt: String? = null
 
     fun setVoiceState(state: VoiceState) {
         _voiceState.value = state
@@ -329,7 +331,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun wakeMicrophone() {
-        com.example.voice.KavyaMicrophoneEngine.wake(getApplication())
+        val app = getApplication<Application>()
+        val mic = com.example.voice.KavyaMicrophoneEngine.getInstance()
+        if (mic == null) {
+            com.example.voice.KavyaMicrophoneEngine.startService(app)
+        } else {
+            com.example.voice.KavyaMicrophoneEngine.wake(app)
+        }
     }
 
     private fun handleProactiveSpeech(text: String?, reason: String) {
@@ -544,14 +552,37 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     fun sendMessage(text: String) {
         if (text.isBlank()) return
 
+        val normalized = text.lowercase(java.util.Locale.ROOT).trim()
+        val wakeCommand = normalized == "wake kavya" || normalized == "wake up kavya" || normalized == "hey kavya" || normalized == "hi kavya" || normalized == "hello kavya" || normalized == "kavya wake up"
+        val sleepCommand = normalized == "sleep kavya" || normalized == "kavya sleep" || normalized == "go to sleep kavya" || normalized == "kavya go to sleep" || normalized == "so jao kavya"
+        val stopCommand = normalized == "stop kavya" || normalized == "kavya stop" || normalized == "stop kavia" || normalized == "kavya ruko" || normalized == "ruko kavya"
+
+        if (wakeCommand) {
+            wakeMicrophone()
+            _latestKavyaCaption.value = "I am awake."
+            return
+        }
+        if (sleepCommand) {
+            sleepMicrophone()
+            _latestKavyaCaption.value = "Sleep mode on. Say Wake Kavya to wake me."
+            return
+        }
+        if (stopCommand) {
+            stopListening()
+            emergencyStop("Voice stop command: $text")
+            return
+        }
+
         // Emergency Stop Voice Trigger (Hindi / English: stop, ruko, cancel, bas, etc.)
         if (visualActionEngine.safetyController.isStopCommand(text)) {
+            stopListening()
             emergencyStop("Voice stop command: $text")
             return
         }
         
-        // Request Deduplication
+        // Queue the latest command instead of silently dropping it during an active turn.
         if (_isProcessing.value) {
+            queuedPrompt = text.trim()
             return
         }
         
@@ -742,6 +773,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         actionResult = "User stopped automation"
                     )
                     com.example.agent.AutomationEventLogger.task("Automation halted by user request.")
+                    stopListening()
                     emergencyStop("User requested stop")
                     cleanResponse = "Stopped, sir."
                     alreadySpoken = true
@@ -1542,13 +1574,25 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 
             } catch (e: Exception) {
-                _messages.value = _messages.value.map { 
-                    if (it.id == loadingMsgId) it.copy(text = "Connection error: ${e.message}", isLoading = false, isError = true) else it 
+                val safeError = "अभी connection में थोड़ी problem आ रही है। कृपया थोड़ी देर में फिर try करें।"
+                Log.w(TAG, "Agent turn failed: ${e.message}", e)
+                _messages.value = _messages.value.map {
+                    if (it.id == loadingMsgId) it.copy(text = safeError, isLoading = false, isError = true) else it
                 }
+                _latestKavyaCaption.value = safeError
+                com.example.state.KavyaStateManager.setGeminiState("ERROR")
             } finally {
                 if (!shouldRecurse || recursionDepth >= 5) {
                     _isProcessing.value = false
+                    _agentActionStatus.value = null
+                    _voiceState.value = VoiceState.IDLE
+                    com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
                     proactiveController.onKavyaTurnFinished(cleanResponse)
+                    val next = queuedPrompt
+                    queuedPrompt = null
+                    if (!next.isNullOrBlank()) {
+                        viewModelScope.launch { sendMessage(next) }
+                    }
                 }
             }
         }
