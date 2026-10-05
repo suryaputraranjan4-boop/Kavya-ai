@@ -6,11 +6,11 @@ import com.example.ai.offline.GemmaModelManager
 import kotlinx.coroutines.flow.Flow
 
 /**
- * On-Device Gemma 4 E4B Offline AI Provider.
+ * On-Device Local AI Offline AI Provider.
  * Implements AIProvider interface cleanly to integrate into Kavya's multi-provider orchestration.
  *
  * Identity: gemma_offline
- * Display Name: Gemma 4 E4B (Offline)
+ * Display Name: Local AI (Offline)
  */
 class GemmaOfflineProvider : AIProvider {
 
@@ -51,12 +51,12 @@ class GemmaOfflineProvider : AIProvider {
     override suspend fun getModels(context: Context): List<ProviderModelInfo> {
         return listOf(
             ProviderModelInfo(
-                id = "gemma-4-e4b",
+                id = "local-offline",
                 name = "Gemma 4 E4B (Offline)",
                 provider = ProviderType.GEMMA_OFFLINE,
                 supportedTasks = listOf("chat", "reasoning", "phone_control", "offline_reasoning"),
                 contextLength = 2048,
-                description = "Google AI Edge / LiteRT on-device offline LLM.",
+                description = "On-device offline LLM runtime supporting GGUF, LiteRT-LM and MediaPipe Task models.",
                 isFree = true
             )
         )
