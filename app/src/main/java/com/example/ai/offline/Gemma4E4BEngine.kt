@@ -78,38 +78,21 @@ class MediaPipeTaskRuntime : GemmaRuntime {
     override fun streamGenerate(prompt: String): Flow<String> = callbackFlow {
         val engine = llmInference
         if (engine == null) {
-            trySend("Gemma runtime is not initialized.")
+            trySend("Local runtime is not initialized.")
             close()
             return@callbackFlow
         }
 
         try {
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(initializedFile?.absolutePath ?: "")
-                .setMaxTokens(1024)
-                .setResultListener { partialResult: String?, done: Boolean ->
-                    if (!partialResult.isNullOrEmpty()) {
-                        trySend(partialResult)
-                    }
-                    if (done) {
-                        close()
-                    }
-                }
-                .build()
-
-            val asyncEngine = LlmInference.createFromOptions(initializedFile?.parentFile as? Context ?: run {
-                // If options fail async creation, fall back to non-streaming response
-                trySend(engine.generateResponse(prompt))
-                close()
-                return@callbackFlow
-            }, options)
-            asyncEngine.generateResponseAsync(prompt)
+            engine.generateResponseAsync(prompt) { partialResult, done ->
+                if (!partialResult.isNullOrEmpty()) trySend(partialResult)
+                if (done) close()
+            }
         } catch (e: Exception) {
-            // Fallback to synchronous generation
             try {
                 trySend(engine.generateResponse(prompt))
             } catch (err: Exception) {
-                trySend("Gemma inference error: ${err.localizedMessage}")
+                trySend("Local inference error: " + (err.localizedMessage ?: "unknown error"))
             }
             close()
         }
