@@ -65,8 +65,8 @@ android {
     debug { signingConfig = signingConfigs.getByName("debugConfig") }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
   buildFeatures {
     compose = true
@@ -126,6 +126,7 @@ dependencies {
   implementation(libs.retrofit.converter.serialization)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.mediapipe.tasks.genai)
+  implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.1")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
