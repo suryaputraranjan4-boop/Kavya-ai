@@ -10,9 +10,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -26,7 +23,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.utils.AppPreferences
-import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,7 +31,7 @@ import java.util.Locale
 /**
  * Authoritative Single-File Persistent Microphone Engine & Foreground Service Host.
  *
- * Implements a Continuous AudioRecord Stream Layer combined with SpeechRecognizer
+ * Implements a SpeechRecognizer-owned persistent microphone layer combined with
  * command recognition, Jarvis State Machine (MIC_OFF, MIC_STARTING, MIC_ACTIVE,
  * MIC_SLEEPING, MIC_ERROR), Variation-Tolerant Wake Word Matching, Inline Command Extraction,
  * and Speech-Output Collision Protection.
@@ -50,10 +46,6 @@ class KavyaMicrophoneEngine : Service() {
 
         private const val BASE_RESTART_DELAY_MS = 350L
         private const val MAX_BACKOFF_DELAY_MS = 5000L
-
-        private const val SAMPLE_RATE = 16000
-        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
-        private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
 
         @Volatile
         private var instance: KavyaMicrophoneEngine? = null
@@ -120,17 +112,10 @@ class KavyaMicrophoneEngine : Service() {
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
     private var speechRecognizer: SpeechRecognizer? = null
     private var isRecognizerActive = false
     private var isListeningLoopDesired = false
     private var currentSessionId = 0L
-
-    private var audioRecord: AudioRecord? = null
-    private var audioRecordJob: Job? = null
-    @Volatile
-    private var isAudioRecordRunning = false
 
     private var backoffDelayMs = BASE_RESTART_DELAY_MS
     private var restartRunnable: Runnable? = null
@@ -220,93 +205,8 @@ class KavyaMicrophoneEngine : Service() {
             _engineState.value = EngineState.MIC_STARTING
             backoffDelayMs = BASE_RESTART_DELAY_MS
 
-            startContinuousAudioRecord()
+            // SpeechRecognizer is the single microphone owner. Do not open AudioRecord here.
             startListeningInternal()
-        }
-    }
-
-    private fun startContinuousAudioRecord() {
-        if (isAudioRecordRunning) return
-
-        try {
-            val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
-            if (minBufSize <= 0) {
-                Log.e(TAG, "Invalid AudioRecord minBufferSize: $minBufSize")
-                _engineState.value = EngineState.MIC_ERROR
-                return
-            }
-
-            val record = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                SAMPLE_RATE,
-                CHANNEL_CONFIG,
-                AUDIO_FORMAT,
-                minBufSize * 2
-            )
-
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord failed to initialize!")
-                record.release()
-                _engineState.value = EngineState.MIC_ERROR
-                return
-            }
-
-            this.audioRecord = record
-            record.startRecording()
-            isAudioRecordRunning = true
-
-            Log.i(TAG, "AudioRecord continuous capture started successfully.")
-            _engineState.value = EngineState.MIC_ACTIVE
-
-            audioRecordJob = scope.launch(Dispatchers.IO) {
-                val buffer = ByteArray(minBufSize)
-                while (isActive && isAudioRecordRunning) {
-                    val readBytes = record.read(buffer, 0, buffer.size)
-                    if (readBytes > 0) {
-                        var sumSquare = 0.0
-                        for (i in 0 until readBytes step 2) {
-                            if (i + 1 < readBytes) {
-                                val sample = (buffer[i].toInt() and 0xFF) or (buffer[i + 1].toInt() shl 8)
-                                val sampleShort = sample.toShort()
-                                sumSquare += (sampleShort * sampleShort).toDouble()
-                            }
-                        }
-                        val sampleCount = readBytes / 2
-                        val rms = Math.sqrt(sumSquare / sampleCount)
-                        val normalizedAmplitude = (rms / 32768.0).toFloat().coerceIn(0f, 1f)
-
-                        withContext(Dispatchers.Main) {
-                            _amplitude.value = normalizedAmplitude
-                        }
-                    } else {
-                        delay(20)
-                    }
-                }
-            }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "SecurityException starting AudioRecord: ${e.message}")
-            _engineState.value = EngineState.MIC_ERROR
-        } catch (e: Throwable) {
-            Log.e(TAG, "Error starting AudioRecord: ${e.message}", e)
-            _engineState.value = EngineState.MIC_ERROR
-        }
-    }
-
-    private fun stopContinuousAudioRecord() {
-        isAudioRecordRunning = false
-        audioRecordJob?.cancel()
-        audioRecordJob = null
-        try {
-            audioRecord?.apply {
-                if (recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                    stop()
-                }
-                release()
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Error releasing AudioRecord: ${e.message}")
-        } finally {
-            audioRecord = null
         }
     }
 
@@ -352,7 +252,6 @@ class KavyaMicrophoneEngine : Service() {
             isListeningLoopDesired = false
             cancelPendingRestart()
             destroyRecognizer()
-            stopContinuousAudioRecord()
             _engineState.value = EngineState.MIC_OFF
             _partialText.value = ""
             _amplitude.value = 0f
@@ -403,6 +302,9 @@ class KavyaMicrophoneEngine : Service() {
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+                }
             }
 
             recognizer.startListening(intent)
@@ -432,10 +334,9 @@ class KavyaMicrophoneEngine : Service() {
         override fun onRmsChanged(rmsdB: Float) {
             // AudioRecord loop supplies primary amplitude; fallback when AudioRecord is idle
             if (isStale()) return
-            if (!isAudioRecordRunning) {
-                val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
-                _amplitude.value = normalized
-            }
+            // SpeechRecognizer owns the mic, so its RMS is the authoritative UI level.
+            val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
+            _amplitude.value = normalized
         }
 
         override fun onBufferReceived(buffer: ByteArray?) {}
