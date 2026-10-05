@@ -52,7 +52,7 @@ jobs:
       - name: Create build environment file
         run: cp .env.example .env
 
-      - name: Build debug APK
+      # No artificial model-size validation is applied by this build.\n      - name: Build debug APK/
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Upload APK
