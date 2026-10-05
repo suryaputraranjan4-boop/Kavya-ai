@@ -3,6 +3,7 @@ package com.example.skills
 import android.content.Context
 import com.example.agent.IntentGateDecision
 import com.example.agent.IntentCategory
+import com.example.bots.KavyaBotRegistry
 
 data class SkillResult(
     val success: Boolean,
@@ -55,6 +56,9 @@ object SkillsRegistry {
             return registeredSkills.firstOrNull { it.canHandle(intent) }
         }
     }
+
+    fun botIdForSkill(skillId: String): String? =
+        KavyaBotRegistry.forSkill(skillId)?.id
 
     fun getAllSkills(): List<KavyaSkill> {
         synchronized(registeredSkills) {
