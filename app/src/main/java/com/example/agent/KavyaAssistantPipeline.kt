@@ -171,46 +171,35 @@ class KavyaAssistantPipeline(
                     }
 
                     IntentCategory.MEMORY_RECALL -> {
-                        val pastSnippets = sessionSearchEngine.searchPastConversations(prompt)
-                        val storedMems = memoryEngine.retrieveRelevantMemories(prompt)
-                        finalResponse = if (pastSnippets.isNotEmpty()) {
-                            "Pichli baat-cheet ke anusaar:\n" + pastSnippets.take(2).joinToString("\n") { "• ${it.formattedDate}: ${it.snippet}" }
-                        } else if (storedMems.isNotEmpty()) {
-                            "Aapki saved preference: " + storedMems.first().content
-                        } else {
-                            "Mujhe is vishay me koi purani jaankari nahi mili."
-                        }
-                        KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
+                        val res = ceoOrchestrator.execute(
+                            ceoOrchestrator.createTask(gateDecision),
+                            gateDecision,
+                            context
+                        )
+                        finalResponse = res.summary
+                        KavyaStateManager.updateTaskState(
+                            if (res.success) TaskState.COMPLETED else TaskState.FAILED,
+                            finalResponse
+                        )
                     }
 
                     IntentCategory.ACTION, IntentCategory.MULTI_STEP_TASK -> {
-                        // Multi-step or direct action execution
+                        // All action execution is delegated through the single CEO layer.
+                        // The CEO reuses SkillsRegistry first, then the existing TaskPlanner +
+                        // AndroidAgent fallback, so there is no second automation engine.
                         KavyaStateManager.updateTaskState(TaskState.EXECUTING, prompt)
-                        val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        if (skill != null) {
-                            val res = skill.execute(gateDecision, context)
-                            finalResponse = res.outputMessage
-                        } else if (commandRouter.isDirectDeviceCommand(prompt)) {
-                            val directRes = commandRouter.executeDirectUserCommand(prompt)
-                            finalResponse = directRes.output
-                        } else {
-                            val plan = taskPlanner.createPlan(prompt, ContextEngine())
-                            if (plan != null && plan.steps.isNotEmpty()) {
-                                durableTaskEngine.createAndPersistTask(prompt, gateDecision.category, gateDecision.steps)
-                                val outcome = androidAgent.executeTaskPlan(
-                                    plan,
-                                    onSpeakProgress = { ann ->
-                                        onProgress?.invoke(ann)
-                                    }
-                                )
-                                finalResponse = outcome.finalSpokenMessage.ifBlank {
-                                    if (outcome.success) "Task pura ho gaya." else "Task execution me rukawat aayi."
-                                }
-                            } else {
-                                finalResponse = "Action plan nahi ban paya."
-                            }
+                        val res = ceoOrchestrator.execute(
+                            ceoOrchestrator.createTask(gateDecision),
+                            gateDecision,
+                            context
+                        )
+                        finalResponse = res.summary.ifBlank {
+                            if (res.success) "Task pura ho gaya." else "Task execution me rukawat aayi."
                         }
-                        KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
+                        KavyaStateManager.updateTaskState(
+                            if (res.success) TaskState.COMPLETED else TaskState.FAILED,
+                            finalResponse
+                        )
                     }
 
                     IntentCategory.UNKNOWN_OR_AMBIGUOUS -> {
