@@ -35,7 +35,7 @@ interface GemmaRuntime {
  */
 class MediaPipeTaskRuntime : GemmaRuntime {
 
-    override val runtimeName: String = "Google AI Edge / LiteRT-LM (MediaPipe Task)"
+    override val runtimeName: String = "Google AI Edge MediaPipe Task Runtime"
     private var llmInference: LlmInference? = null
     private var initializedFile: File? = null
 
@@ -54,7 +54,7 @@ class MediaPipeTaskRuntime : GemmaRuntime {
             Result.success(Unit)
         } catch (e: OutOfMemoryError) {
             close()
-            Result.failure(IllegalStateException("OutOfMemoryError loading Gemma 4 E4B into device RAM.", e))
+            Result.failure(IllegalStateException("Not enough device memory to load this local model.", e))
         } catch (e: Exception) {
             close()
             Result.failure(e)
@@ -223,13 +223,13 @@ class UnsupportedFormatRuntime(private val errorMessage: String) : GemmaRuntime 
 }
 
 /**
- * Single Authoritative On-Device Gemma 4 E4B Engine for Kavya AI.
+ * Single authoritative on-device local-model engine.
  * Guarantees zero network calls, memory safety, format validation, and real health-check verification.
  */
 class Gemma4E4BEngine private constructor() {
 
     companion object {
-        private const val TAG = "KavyaGemma4E4BEngine"
+        private const val TAG = "KavyaOfflineEngine"
 
         @Volatile
         private var INSTANCE: Gemma4E4BEngine? = null
@@ -250,7 +250,7 @@ class Gemma4E4BEngine private constructor() {
     val diagnostics: GemmaDiagnostics get() = _diagnostics
 
     /**
-     * Checks if Gemma 4 E4B runtime is fully initialized and passed the real health check.
+     * Checks if selected local-model runtime is fully initialized and passed the real health check.
      */
     fun isReady(): Boolean {
         return activeRuntime?.isReady() == true && GemmaModelManager.status.value == GemmaModelStatus.READY
@@ -265,19 +265,7 @@ class Gemma4E4BEngine private constructor() {
 
             // 1. Check available system memory
             val availRamMB = GemmaDiagnostics.getAvailableSystemMemoryMB(context)
-            if (availRamMB < 600) { // Require at least 600MB free RAM
-                val msg = "Gemma 4 E4B cannot be loaded because this device does not currently have enough available memory (${availRamMB} MB free)."
-                Log.e(TAG, msg)
-                GemmaModelManager.setStatus(GemmaModelStatus.ERROR, msg)
-                _diagnostics = GemmaDiagnostics(
-                    initializationState = GemmaModelStatus.ERROR,
-                    availableMemoryMB = availRamMB,
-                    lastError = msg
-                )
-                return@withContext Result.failure(IllegalStateException(msg))
-            }
-
-            // 2. Locate model file
+            if (availRamMB < 600) { //             // 2. Locate model file
             val modelFile = GemmaModelManager.getModelFile(context)
             if (modelFile == null || !modelFile.exists()) {
                 val msg = "Gemma model file is missing or not installed."
@@ -316,7 +304,7 @@ class Gemma4E4BEngine private constructor() {
             closeInternal()
 
             GemmaModelManager.setStatus(GemmaModelStatus.LOADING)
-            Log.i(TAG, "Initializing Gemma 4 E4B runtime for file: ${modelFile.absolutePath} (Format: ${modelInfo.format})")
+            Log.i(TAG, "Initializing selected local-model runtime for file: ${modelFile.absolutePath} (Format: ${modelInfo.format})")
 
             val runtime: GemmaRuntime = when (modelInfo.format) {
                 GemmaModelFormat.GGUF -> LlamaCppRuntime()
@@ -348,7 +336,7 @@ class Gemma4E4BEngine private constructor() {
 
             // 4. Perform Real Health Check Inference
             GemmaModelManager.setStatus(GemmaModelStatus.HEALTH_CHECK)
-            Log.i(TAG, "GEMMA OFFLINE: Running health-check inference...")
+            Log.i(TAG, "LOCAL OFFLINE: Running health-check inference...")
 
             val healthPrompt = "Reply with exactly: OK"
             val healthResult = runtime.generate(healthPrompt)
@@ -371,11 +359,11 @@ class Gemma4E4BEngine private constructor() {
                     inferenceSucceeded = true,
                     networkUsed = false
                 )
-                Log.i(TAG, "GEMMA OFFLINE: Health check PASSED. Model is READY for offline inference.")
+                Log.i(TAG, "LOCAL OFFLINE: Health check PASSED. Model is READY for offline inference.")
                 Result.success(Unit)
             } else {
                 val err = healthResult.exceptionOrNull()?.localizedMessage ?: "Health-check inference produced empty output."
-                Log.e(TAG, "GEMMA OFFLINE: Health check FAILED: $err")
+                Log.e(TAG, "LOCAL OFFLINE: Health check FAILED: $err")
                 GemmaModelManager.setStatus(GemmaModelStatus.ERROR, "Health check failed: $err")
                 _diagnostics = GemmaDiagnostics(
                     modelPath = modelFile.absolutePath,
@@ -405,11 +393,11 @@ class Gemma4E4BEngine private constructor() {
         systemInstruction: String? = null
     ): Result<String> = mutex.withLock {
         withContext(Dispatchers.IO) {
-            Log.i(TAG, "GEMMA OFFLINE: local inference only (No network call)")
+            Log.i(TAG, "LOCAL OFFLINE: local inference only (No network call)")
 
             val runtime = activeRuntime
             if (runtime == null || !runtime.isReady() || GemmaModelManager.status.value != GemmaModelStatus.READY) {
-                return@withContext Result.failure(IllegalStateException("Gemma 4 E4B runtime is not loaded and READY."))
+                return@withContext Result.failure(IllegalStateException("selected local-model runtime is not loaded and READY."))
             }
 
             GemmaModelManager.setStatus(GemmaModelStatus.RUNNING)
@@ -439,11 +427,11 @@ class Gemma4E4BEngine private constructor() {
         systemInstruction: String? = null,
         context: Context
     ): Flow<String> = callbackFlow {
-        Log.i(TAG, "GEMMA OFFLINE: local streaming inference only")
+        Log.i(TAG, "LOCAL OFFLINE: local streaming inference only")
 
         val runtime = activeRuntime
         if (runtime == null || !runtime.isReady()) {
-            trySend("GEMMA OFFLINE ERROR: Gemma runtime is not loaded and ready.")
+            trySend("LOCAL OFFLINE ERROR: Gemma runtime is not loaded and ready.")
             close()
             return@callbackFlow
         }
