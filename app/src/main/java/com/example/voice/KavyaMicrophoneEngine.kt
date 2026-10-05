@@ -46,6 +46,8 @@ class KavyaMicrophoneEngine : Service() {
 
         private const val BASE_RESTART_DELAY_MS = 350L
         private const val MAX_BACKOFF_DELAY_MS = 5000L
+        private const val RESTART_DELAY_MS = 450L
+        private const val BUSY_RESTART_DELAY_MS = 1000L
 
         @Volatile
         private var instance: KavyaMicrophoneEngine? = null
@@ -115,7 +117,6 @@ class KavyaMicrophoneEngine : Service() {
     private var speechRecognizer: SpeechRecognizer? = null
     private var isRecognizerActive = false
     private var isListeningLoopDesired = false
-    private var currentSessionId = 0L
 
     private var backoffDelayMs = BASE_RESTART_DELAY_MS
     private var restartRunnable: Runnable? = null
@@ -266,17 +267,13 @@ class KavyaMicrophoneEngine : Service() {
     }
 
     private fun startListeningInternal() {
-        if (!isListeningLoopDesired || _engineState.value == EngineState.MIC_OFF) {
-            return
-        }
-
+        if (!isListeningLoopDesired || _engineState.value == EngineState.MIC_OFF) return
         if (!hasAudioPermission()) {
             _engineState.value = EngineState.MIC_ERROR
             return
         }
 
         cancelPendingRestart()
-        destroyRecognizer()
 
         try {
             if (!SpeechRecognizer.isRecognitionAvailable(this)) {
@@ -286,13 +283,14 @@ class KavyaMicrophoneEngine : Service() {
                 return
             }
 
-            val session = System.currentTimeMillis()
-            this.currentSessionId = session
+            // Keep one recognizer instance between short recognition sessions.
+            // This avoids repeated create/destroy loading delays and busy/audio races.
+            if (speechRecognizer == null) {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+                speechRecognizer?.setRecognitionListener(createRecognitionListener())
+            }
 
-            val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
-            this.speechRecognizer = recognizer
-
-            recognizer.setRecognitionListener(createRecognitionListener(session))
+            if (isRecognizerActive) return
 
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -302,38 +300,41 @@ class KavyaMicrophoneEngine : Service() {
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
                 }
             }
 
-            recognizer.startListening(intent)
+            speechRecognizer?.startListening(intent)
             isRecognizerActive = true
-            Log.d(TAG, "SpeechRecognizer started in state ${_engineState.value} (session=$session)")
+            _engineState.value = if (_engineState.value == EngineState.MIC_SLEEPING) {
+                EngineState.MIC_SLEEPING
+            } else {
+                EngineState.MIC_ACTIVE
+            }
+            Log.d(TAG, "SpeechRecognizer listening session started")
         } catch (e: Throwable) {
-            Log.e(TAG, "Error starting SpeechRecognizer: ${e.message}", e)
+            Log.e(TAG, "Error starting SpeechRecognizer: " + e.message, e)
             isRecognizerActive = false
             scheduleRestartWithBackoff()
         }
     }
 
-    private fun createRecognitionListener(sessionId: Long) = object : RecognitionListener {
-        private fun isStale(): Boolean = currentSessionId != sessionId || !isListeningLoopDesired
-
+    private fun createRecognitionListener() = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
-            if (isStale()) return
             Log.d(TAG, "SpeechRecognizer ready for speech.")
             backoffDelayMs = BASE_RESTART_DELAY_MS
         }
 
         override fun onBeginningOfSpeech() {
-            if (isStale()) return
             Log.d(TAG, "SpeechRecognizer beginning of speech.")
         }
 
         override fun onRmsChanged(rmsdB: Float) {
             // AudioRecord loop supplies primary amplitude; fallback when AudioRecord is idle
-            if (isStale()) return
             // SpeechRecognizer owns the mic, so its RMS is the authoritative UI level.
             val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
             _amplitude.value = normalized
@@ -342,12 +343,10 @@ class KavyaMicrophoneEngine : Service() {
         override fun onBufferReceived(buffer: ByteArray?) {}
 
         override fun onEndOfSpeech() {
-            if (isStale()) return
             Log.d(TAG, "SpeechRecognizer end of speech.")
         }
 
         override fun onError(error: Int) {
-            if (isStale()) return
             val errorMsg = getErrorMessage(error)
             Log.w(TAG, "SpeechRecognizer error: $errorMsg ($error)")
             isRecognizerActive = false
@@ -355,7 +354,10 @@ class KavyaMicrophoneEngine : Service() {
             when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH,
                 SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                    scheduleRestart(BASE_RESTART_DELAY_MS)
+                    scheduleRestart(RESTART_DELAY_MS)
+                }
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
+                    scheduleRestart(BUSY_RESTART_DELAY_MS)
                 }
                 else -> {
                     scheduleRestartWithBackoff()
@@ -364,7 +366,6 @@ class KavyaMicrophoneEngine : Service() {
         }
 
         override fun onResults(results: Bundle?) {
-            if (isStale()) return
             isRecognizerActive = false
 
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
@@ -378,12 +379,11 @@ class KavyaMicrophoneEngine : Service() {
             }
 
             if (isListeningLoopDesired && _engineState.value != EngineState.MIC_OFF) {
-                scheduleRestart(BASE_RESTART_DELAY_MS)
+                scheduleRestart(RESTART_DELAY_MS)
             }
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
-            if (isStale()) return
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val partial = matches?.firstOrNull()?.trim() ?: ""
             if (partial.isNotBlank()) {
