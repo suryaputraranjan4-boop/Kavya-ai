@@ -18,19 +18,19 @@ class SkillOptStore(context: Context) {
     }
 
     fun readSkill(botId: String): String? {
-        val file = File(botsRoot, "$" + "{botId}/SKILL.md")
+        val file = File(botsRoot, botId + "/SKILL.md")
         return file.takeIf { it.exists() }?.readText()
     }
 
     fun writeInitialSkill(botId: String, content: String) {
-        val dir = File(botsRoot, "$" + "{botId}").apply { mkdirs() }
+        val dir = File(botsRoot, botId).apply { mkdirs() }
         val live = File(dir, "SKILL.md")
         if (!live.exists()) live.writeText(content)
     }
 
     fun stageCandidate(botId: String, candidate: String): File {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        val dir = File(stagingRoot, "$" + "{botId}/$" + "{stamp}").apply { mkdirs() }
+        val dir = File(stagingRoot, botId + "/" + stamp).apply { mkdirs() }
         return File(dir, "SKILL.md").also { it.writeText(candidate) }
     }
 
@@ -64,7 +64,7 @@ class SkillOptStore(context: Context) {
                 val task = String(Base64.decode(parts[0], Base64.DEFAULT), Charsets.UTF_8)
                 val success = String(Base64.decode(parts[1], Base64.DEFAULT), Charsets.UTF_8)
                 val output = String(Base64.decode(parts[2], Base64.DEFAULT), Charsets.UTF_8)
-                "success=$" + "success | task=$" + "task | output=$" + "output"
+                "success=" + success + " | task=" + task + " | output=" + output
             } catch (_: Exception) {
                 null
             }
