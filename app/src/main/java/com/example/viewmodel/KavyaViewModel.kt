@@ -223,6 +223,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        voiceEngine.onSpeakingStateChanged = { isSpeaking ->
+            com.example.voice.KavyaMicrophoneEngine.onKavyaSpeakingChanged(isSpeaking)
+        }
+
         com.example.voice.KavyaMicrophoneEngine.setCommandListener { recognizedText ->
             viewModelScope.launch {
                 sendMessage(recognizedText)

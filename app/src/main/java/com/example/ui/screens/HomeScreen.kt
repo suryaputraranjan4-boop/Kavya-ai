@@ -63,6 +63,8 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
     val agentActionStatus by viewModel.agentActionStatus.collectAsState()
     val isOfflineMode by viewModel.isOfflineMode.collectAsState()
+    val micEngineState by com.example.voice.KavyaMicrophoneEngine.engineState.collectAsState()
+    val micAmplitude by com.example.voice.KavyaMicrophoneEngine.amplitude.collectAsState()
     
     val drawerState = LocalDrawerState.current
     val scope = rememberCoroutineScope()
@@ -214,14 +216,21 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 KavyaVoiceOrb(
                     state = voiceState,
                     onClick = {
-                        // Orb tap triggers interactive assist
+                        if (micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.STOPPED ||
+                            micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.IDLE
+                        ) {
+                            com.example.voice.KavyaMicrophoneEngine.startService(context)
+                        } else {
+                            com.example.voice.KavyaMicrophoneEngine.stopService(context)
+                        }
                     },
-                    baseSize = 72.dp
+                    baseSize = 72.dp,
+                    amplitude = micAmplitude
                 )
                 
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                // Dynamic, event-driven status text from current task state
+                // Dynamic, event-driven status text from current task and microphone state
                 val statusText: String? = when {
                     agentActionStatus != null -> agentActionStatus
                     globalState.taskState == com.example.state.TaskState.OPENING_APP -> globalState.taskStateDetail ?: "App open ho raha hai..."
@@ -236,9 +245,12 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     globalState.taskState == com.example.state.TaskState.FAILED -> globalState.taskStateDetail ?: "Task pura nahi ho paya."
                     voiceState == VoiceState.THINKING || voiceState == VoiceState.UNDERSTANDING -> "Request analyze ho rahi hai..."
                     voiceState == VoiceState.SPEAKING -> "Kavya bol rahi hai..."
-                    com.example.utils.AppPreferences.getKavyaState(context) == "SLEEP" -> "Kavya is in sleep mode"
-                    voiceState == VoiceState.IDLE -> "Kavya AI Ready"
-                    else -> null
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.SLEEP -> "Sleep Mode • Say 'Hey Kavya' to Wake"
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.WAKE_LISTENING ||
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.COMMAND_LISTENING -> "Mic Active • Say 'Hey Kavya'"
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.STOPPED ||
+                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.IDLE -> "Mic Off • Tap Orb to Start"
+                    else -> "Kavya AI Ready"
                 }
 
                 AnimatedVisibility(visible = !statusText.isNullOrBlank()) {

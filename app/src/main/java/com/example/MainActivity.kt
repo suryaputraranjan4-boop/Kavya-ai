@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
     Log.d(TAG, "Permissions result: $permissions")
     if (permissions[Manifest.permission.RECORD_AUDIO] == true) {
       Log.i(TAG, "RECORD_AUDIO granted. Starting single microphone architecture...")
+      com.example.utils.AppPreferences.setMicEnabled(this, true)
       com.example.voice.KavyaMicrophoneEngine.startService(this)
     }
   }
@@ -97,8 +98,10 @@ class MainActivity : ComponentActivity() {
     if (missing.isNotEmpty()) {
       permissionLauncher.launch(missing.toTypedArray())
     } else {
-      // Permission already granted, start microphone architecture once
-      com.example.voice.KavyaMicrophoneEngine.startService(this)
+      // Permission already granted, start microphone architecture if enabled by user
+      if (com.example.utils.AppPreferences.isMicEnabled(this)) {
+        com.example.voice.KavyaMicrophoneEngine.startService(this)
+      }
     }
   }
 

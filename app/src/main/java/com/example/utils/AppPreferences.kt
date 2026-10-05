@@ -48,6 +48,7 @@ object AppPreferences {
     private const val KEY_MAPS_SCRAPER_PROXY_HOST = "key_maps_scraper_proxy_host"
     private const val KEY_MAPS_SCRAPER_PROXY_PORT = "key_maps_scraper_proxy_port"
     private const val KEY_OKF_MEMORY_ENABLED = "key_okf_memory_enabled"
+    private const val KEY_MIC_ENABLED = "key_kavya_mic_enabled"
     private const val PREFIX_PROVIDER_STATUS = "provider_status_"
     private const val PREFIX_PROVIDER_COUNT = "provider_count_"
     private const val PREFIX_PROVIDER_LAST_SUCCESS = "provider_last_success_"
@@ -55,6 +56,14 @@ object AppPreferences {
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    fun isMicEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_MIC_ENABLED, true)
+    }
+
+    fun setMicEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_MIC_ENABLED, enabled).apply()
     }
 
     fun isProactiveModeEnabled(context: Context): Boolean {
