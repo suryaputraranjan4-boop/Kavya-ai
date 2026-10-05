@@ -76,7 +76,8 @@ data class GenerationConfig(
 
 @Serializable
 data class SpeechConfig(
-    val voiceConfig: VoiceConfig
+    val voiceConfig: VoiceConfig,
+    val languageCode: String? = "hi-IN"
 )
 
 @Serializable

@@ -8,6 +8,8 @@ import com.example.data.AppDatabase
 import com.example.data.ChatEntity
 import com.example.data.MessageEntity
 import com.example.skills.SkillsRegistry
+import com.example.ai.AIModelRouter
+import com.example.bots.CeoOrchestrator
 import com.example.state.KavyaStateManager
 import com.example.state.TaskState
 import com.example.ui.components.VoiceState
@@ -69,6 +71,7 @@ class KavyaAssistantPipeline(
     private val chatDao = db.chatDao()
     private val screenInspector = ScreenInspector()
     private val taskPlanner = TaskPlanner(commandRouter.appResolver)
+    private val ceoOrchestrator = CeoOrchestrator(context, AIModelRouter(context), androidAgent, taskPlanner)
     private val durableTaskEngine = DurableTaskEngine(context, db.taskDao())
     private val sessionSearchEngine = SessionSearchEngine(chatDao)
     private val schedulerEngine = com.example.scheduler.SchedulerEngine(context)
@@ -154,60 +157,52 @@ class KavyaAssistantPipeline(
 
                 when (gateDecision.category) {
                     IntentCategory.SCHEDULE -> {
-                        val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        val res = skill?.execute(gateDecision, context)
-                        finalResponse = res?.outputMessage ?: "Scheduled."
+                        val res = ceoOrchestrator.execute(
+                            ceoOrchestrator.createTask(gateDecision),
+                            gateDecision,
+                            context
+                        )
+                        finalResponse = res.summary
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
 
                     IntentCategory.MEMORY_SAVE -> {
                         val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        val res = skill?.execute(gateDecision, context)
-                        finalResponse = res?.outputMessage ?: "Memory saved."
+                        val res = ceoOrchestrator.execute(ceoOrchestrator.createTask(gateDecision), gateDecision, context)
+                        finalResponse = res.summary
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
 
                     IntentCategory.MEMORY_RECALL -> {
-                        val pastSnippets = sessionSearchEngine.searchPastConversations(prompt)
-                        val storedMems = memoryEngine.retrieveRelevantMemories(prompt)
-                        finalResponse = if (pastSnippets.isNotEmpty()) {
-                            "Pichli baat-cheet ke anusaar:\n" + pastSnippets.take(2).joinToString("\n") { "• ${it.formattedDate}: ${it.snippet}" }
-                        } else if (storedMems.isNotEmpty()) {
-                            "Aapki saved preference: " + storedMems.first().content
-                        } else {
-                            "Mujhe is vishay me koi purani jaankari nahi mili."
-                        }
-                        KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
+                        val res = ceoOrchestrator.execute(
+                            ceoOrchestrator.createTask(gateDecision),
+                            gateDecision,
+                            context
+                        )
+                        finalResponse = res.summary
+                        KavyaStateManager.updateTaskState(
+                            if (res.success) TaskState.COMPLETED else TaskState.FAILED,
+                            finalResponse
+                        )
                     }
 
                     IntentCategory.ACTION, IntentCategory.MULTI_STEP_TASK -> {
-                        // Multi-step or direct action execution
+                        // All action execution is delegated through the single CEO layer.
+                        // The CEO reuses SkillsRegistry first, then the existing TaskPlanner +
+                        // AndroidAgent fallback, so there is no second automation engine.
                         KavyaStateManager.updateTaskState(TaskState.EXECUTING, prompt)
-                        val skill = SkillsRegistry.findSkillForIntent(gateDecision)
-                        if (skill != null) {
-                            val res = skill.execute(gateDecision, context)
-                            finalResponse = res.outputMessage
-                        } else if (commandRouter.isDirectDeviceCommand(prompt)) {
-                            val directRes = commandRouter.executeDirectUserCommand(prompt)
-                            finalResponse = directRes.output
-                        } else {
-                            val plan = taskPlanner.createPlan(prompt, ContextEngine())
-                            if (plan != null && plan.steps.isNotEmpty()) {
-                                durableTaskEngine.createAndPersistTask(prompt, gateDecision.category, gateDecision.steps)
-                                val outcome = androidAgent.executeTaskPlan(
-                                    plan,
-                                    onSpeakProgress = { ann ->
-                                        onProgress?.invoke(ann)
-                                    }
-                                )
-                                finalResponse = outcome.finalSpokenMessage.ifBlank {
-                                    if (outcome.success) "Task pura ho gaya." else "Task execution me rukawat aayi."
-                                }
-                            } else {
-                                finalResponse = "Action plan nahi ban paya."
-                            }
+                        val res = ceoOrchestrator.execute(
+                            ceoOrchestrator.createTask(gateDecision),
+                            gateDecision,
+                            context
+                        )
+                        finalResponse = res.summary.ifBlank {
+                            if (res.success) "Task pura ho gaya." else "Task execution me rukawat aayi."
                         }
-                        KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
+                        KavyaStateManager.updateTaskState(
+                            if (res.success) TaskState.COMPLETED else TaskState.FAILED,
+                            finalResponse
+                        )
                     }
 
                     IntentCategory.UNKNOWN_OR_AMBIGUOUS -> {
@@ -221,10 +216,19 @@ class KavyaAssistantPipeline(
                     }
 
                     else -> {
-                        // Conversational Turn (CHAT, QUESTION, EXPLANATION, RESEARCH)
+                        // All non-ambiguous intents use the CEO too, including chat,
+                        // questions, explanations, and explicit research.
                         KavyaStateManager.updateTaskState(TaskState.UNDERSTANDING, prompt)
-                        finalResponse = executeConversationalTurn(prompt)
-                        KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
+                        val res = ceoOrchestrator.execute(
+                            ceoOrchestrator.createTask(gateDecision),
+                            gateDecision,
+                            context
+                        )
+                        finalResponse = res.summary
+                        KavyaStateManager.updateTaskState(
+                            if (res.success) TaskState.COMPLETED else TaskState.FAILED,
+                            finalResponse
+                        )
                     }
                 }
 
