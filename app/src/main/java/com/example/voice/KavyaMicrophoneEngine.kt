@@ -309,9 +309,9 @@ class KavyaMicrophoneEngine : Service() {
             return
         }
 
-        if (sleeping && findWake(normalized) != null) {
-            setAwake()
-        }
+        // Do not restart recognition from a partial wake-word match.
+        // Waiting for final results preserves commands such as:
+        // "Hey Kavya, open YouTube".
     }
 
     private fun handleRecognizedText(text: String) {
@@ -445,7 +445,7 @@ class KavyaMicrophoneEngine : Service() {
         }
 
     private fun commandAfterWake(original: String, wake: String): String {
-        val normalized = normalize(original)
+        val normalized = original.lowercase(Locale.ROOT)
         val index = normalized.indexOf(wake)
         if (index < 0) return ""
         return original.substring((index + wake.length).coerceAtMost(original.length))
