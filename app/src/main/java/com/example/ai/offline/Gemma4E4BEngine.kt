@@ -2,6 +2,11 @@ package com.example.ai.offline
 
 import android.content.Context
 import android.util.Log
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -118,6 +123,95 @@ class MediaPipeTaskRuntime : GemmaRuntime {
         } catch (_: Exception) {}
         llmInference = null
         initializedFile = null
+    }
+}
+
+/**
+ * Direct LiteRT-LM runtime for native .litertlm containers.
+ * Uses Google's Kotlin API and keeps the engine fully on-device.
+ */
+class LiteRtLmRuntime : GemmaRuntime {
+    override val runtimeName: String = "Google LiteRT-LM Kotlin Runtime"
+    private var engine: Engine? = null
+    private var conversation: com.google.ai.edge.litertlm.Conversation? = null
+
+    override fun isReady(): Boolean = engine != null && conversation != null
+
+    override suspend fun initialize(context: Context, modelFile: File): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                close()
+                val config = EngineConfig(
+                    modelPath = modelFile.absolutePath,
+                    backend = Backend.CPU(),
+                    cacheDir = context.cacheDir.absolutePath
+                )
+                val e = Engine(config)
+                e.initialize()
+                engine = e
+                conversation = e.createConversation(
+                    ConversationConfig(
+                        systemInstruction = Contents.of("You are Kavya, an offline Android assistant.")
+                    )
+                )
+                Result.success(Unit)
+            } catch (t: Throwable) {
+                close()
+                Result.failure(t)
+            }
+        }
+
+    override suspend fun generate(prompt: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            val conv = conversation
+                ?: return@withContext Result.failure(IllegalStateException("LiteRT-LM conversation is not initialized."))
+            try {
+                val output = conv.sendMessageAsync(prompt).toList().joinToString("")
+                if (output.isBlank()) Result.failure(IllegalStateException("LiteRT-LM returned no text."))
+                else Result.success(output.trim())
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
+        }
+
+    override fun streamGenerate(prompt: String): Flow<String> = kotlinx.coroutines.flow.flow {
+        val conv = conversation
+            ?: throw IllegalStateException("LiteRT-LM conversation is not initialized.")
+        conv.sendMessageAsync(prompt).collect { emit(it) }
+    }.flowOn(Dispatchers.IO)
+
+    override suspend fun close() = withContext(Dispatchers.IO) {
+        try { conversation?.close() } catch (_: Throwable) {}
+        try { engine?.close() } catch (_: Throwable) {}
+        conversation = null
+        engine = null
+    }
+}
+
+/**
+ * Native llama.cpp runtime for GGUF models.
+ */
+class LlamaCppRuntime : GemmaRuntime {
+    override val runtimeName: String = "llama.cpp GGUF Native Runtime"
+    private val bridge = LlamaCppEngine.getInstance()
+
+    override fun isReady(): Boolean = bridge.isReady()
+
+    override suspend fun initialize(context: Context, modelFile: File): Result<Unit> =
+        bridge.load(modelFile)
+
+    override suspend fun generate(prompt: String): Result<String> =
+        bridge.generate(prompt, 256)
+
+    override fun streamGenerate(prompt: String): Flow<String> =
+        kotlinx.coroutines.flow.flow {
+            emit(generate(prompt).getOrElse {
+                throw it
+            }.orEmpty())
+        }.flowOn(Dispatchers.IO)
+
+    override suspend fun close() = withContext(Dispatchers.IO) {
+        bridge.release()
     }
 }
 
@@ -242,7 +336,9 @@ class Gemma4E4BEngine private constructor() {
             Log.i(TAG, "Initializing Gemma 4 E4B runtime for file: ${modelFile.absolutePath} (Format: ${modelInfo.format})")
 
             val runtime: GemmaRuntime = when (modelInfo.format) {
-                GemmaModelFormat.MEDIAPIPE_TASK, GemmaModelFormat.LITERT_LM -> MediaPipeTaskRuntime()
+                GemmaModelFormat.GGUF -> LlamaCppRuntime()
+                GemmaModelFormat.LITERT_LM -> LiteRtLmRuntime()
+                GemmaModelFormat.MEDIAPIPE_TASK -> MediaPipeTaskRuntime()
                 else -> UnsupportedFormatRuntime(modelInfo.validationMessage)
             }
 
