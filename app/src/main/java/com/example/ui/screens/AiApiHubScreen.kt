@@ -105,6 +105,7 @@ fun AiApiHubScreen(navController: NavController) {
     var gemmaFile by remember { mutableStateOf(com.example.ai.offline.GemmaModelManager.getModelFile(context)) }
     var isGemmaImporting by remember { mutableStateOf(false) }
     var selectedAiProvider by remember { mutableStateOf(AppPreferences.getAiProvider(context)) }
+    var offlineAiEnabled by remember { mutableStateOf(AppPreferences.isOfflineFallbackEnabled(context)) }
 
     val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -250,7 +251,7 @@ fun AiApiHubScreen(navController: NavController) {
             // Offline Gemma 4 E4B Section
             item {
                 Text(
-                    text = "Offline Gemma 4 E4B AI Engine",
+                    text = "Offline AI Engine",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = TextPrimary,
                     modifier = Modifier.padding(start = 4.dp, top = 4.dp)
@@ -283,12 +284,12 @@ fun AiApiHubScreen(navController: NavController) {
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Column {
                                     Text(
-                                        "Gemma 4 E4B (Offline)",
+                                        "Local AI (Offline)",
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                         color = TextPrimary
                                     )
                                     Text(
-                                        "On-Device LiteRT-LM Engine (Samsung Galaxy A16 5G Optimized)",
+                                        "GGUF + LiteRT-LM + MediaPipe Task — fully on-device",
                                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                                         color = TextSecondary
                                     )
@@ -298,6 +299,22 @@ fun AiApiHubScreen(navController: NavController) {
                             RoleBadge(
                                 label = if (selectedAiProvider == "GEMMA_OFFLINE") "ACTIVE ENGINE" else "OFFLINE READY",
                                 color = if (selectedAiProvider == "GEMMA_OFFLINE") SuccessGreenGlow else AccentCyan
+                            )
+
+                            Switch(
+                                checked = offlineAiEnabled,
+                                onCheckedChange = {
+                                    offlineAiEnabled = it
+                                    AppPreferences.setOfflineFallbackEnabled(context, it)
+                                    if (it) {
+                                        AppPreferences.setAiProvider(context, "GEMMA_OFFLINE")
+                                        selectedAiProvider = "GEMMA_OFFLINE"
+                                    } else {
+                                        AppPreferences.setAiProvider(context, "GEMINI")
+                                        selectedAiProvider = "GEMINI"
+                                    }
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = SuccessGreenGlow)
                             )
                         }
 
