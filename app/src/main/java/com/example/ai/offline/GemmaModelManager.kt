@@ -36,9 +36,9 @@ data class GemmaModelInfo(
     val format: GemmaModelFormat,
     val isSupported: Boolean,
     val validationMessage: String,
-    val modelFamily: String = "Gemma 4 E4B",
+    val modelFamily: String = "Generic Local Model",
     val quantization: String = "4-bit / 8-bit Quantized",
-    val architecture: String = "ARM64 LiteRT-LM"
+    val architecture: String = "Android local inference"
 )
 
 /**
@@ -49,8 +49,8 @@ data class GemmaModelInfo(
 object GemmaModelManager {
 
     private const val TAG = "KavyaGemmaModelManager"
-    private const val PREF_NAME = "kavya_gemma_model_prefs"
-    private const val KEY_SAVED_MODEL_PATH = "key_saved_gemma_model_path"
+    private const val PREF_NAME = "kavya_offline_model_prefs"
+    private const val KEY_SAVED_MODEL_PATH = "key_saved_offline_model_path"
 
     private val mutex = Mutex()
     private val _status = MutableStateFlow(GemmaModelStatus.NOT_INSTALLED)
@@ -66,7 +66,7 @@ object GemmaModelManager {
      * Directory inside private app files reserved for model storage.
      */
     fun getModelDirectory(context: Context): File {
-        val dir = File(context.filesDir, "models/gemma")
+        val dir = File(context.filesDir, "models/offline")
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -129,8 +129,8 @@ object GemmaModelManager {
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.GGUF,
-                isSupported = false, // Current LiteRT-LM build expects MediaPipe/LiteRT task bundle format
-                validationMessage = "GGUF format detected. This LiteRT build expects a Google AI Edge / MediaPipe task bundle (.task or .bin with TFL3/FlatBuffers header). Please supply a compatible MediaPipe Gemma task bundle.",
+                isSupported = false,
+                validationMessage = "GGUF detected. The generic model manager can catalog GGUF files, but this build does not yet have a linked native llama.cpp inference backend. Keeping it non-runnable is intentional.",
                 quantization = "GGUF Quantized"
             )
         }
