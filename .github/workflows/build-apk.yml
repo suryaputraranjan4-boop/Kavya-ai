@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -52,6 +54,9 @@ jobs:
 
       - name: Create build environment file
         run: cp .env.example .env
+
+      - name: Run unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
 
       # No artificial model-size validation is applied by this build.
       - name: Build debug APK

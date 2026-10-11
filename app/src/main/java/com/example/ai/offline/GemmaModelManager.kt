@@ -90,6 +90,16 @@ object GemmaModelManager {
         }
 
         val size = file.length()
+        if (size < 16L) {
+            return GemmaModelInfo(
+                file = file,
+                sizeBytes = size,
+                format = GemmaModelFormat.UNKNOWN,
+                isSupported = false,
+                validationMessage = "Model file is too small to contain a valid binary header."
+            )
+        }
+
         val header = ByteArray(16)
         try {
             FileInputStream(file).use { fis ->
@@ -121,7 +131,7 @@ object GemmaModelManager {
                 sizeBytes = size,
                 format = GemmaModelFormat.GGUF,
                 isSupported = true,
-                validationMessage = "GGUF detected. llama.cpp native runtime is available for offline inference.",
+                validationMessage = "GGUF format detected. llama.cpp native runtime is available for offline inference.",
                 quantization = "GGUF Quantized"
             )
         }
@@ -166,7 +176,7 @@ object GemmaModelManager {
             sizeBytes = size,
             format = GemmaModelFormat.UNKNOWN,
             isSupported = false,
-            validationMessage = "Unsupported local model format. Use .gguf, .litertlm, or .task."
+            validationMessage = "Unsupported or unknown local model format. Use .gguf, .litertlm, or .task."
         )
     }
 
