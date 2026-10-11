@@ -79,8 +79,7 @@ class DurableTaskEngine(
             )
         }
 
-        taskDao.insertTask(taskEntity)
-        taskDao.insertSteps(stepEntities)
+        taskDao.insertTaskWithSteps(taskEntity, stepEntities)
         Log.d(TAG, "Created durable task $taskId with ${steps.size} steps")
         return@withContext taskEntity
     }
@@ -97,20 +96,17 @@ class DurableTaskEngine(
         val status = if (success) TaskExecutionStatus.COMPLETED else TaskExecutionStatus.FAILED
         val stepId = "${taskId}_step_$stepIndex"
 
-        taskDao.updateStep(
-            DurableTaskStepEntity(
-                id = stepId,
-                taskId = taskId,
-                stepIndex = stepIndex,
-                title = "Step $stepIndex",
-                actionType = "ACTION",
-                status = status.name,
-                actualState = actualState,
-                result = result,
-                failureReason = failureReason,
-                timestamp = now
-            )
+        val updatedRows = taskDao.updateStepCheckpoint(
+            stepId = stepId,
+            status = status.name,
+            actualState = actualState,
+            result = result,
+            failureReason = failureReason,
+            timestamp = now
         )
+        check(updatedRows == 1) {
+            "Cannot checkpoint missing task step $stepId; refusing to advance task progress."
+        }
 
         val taskStatus = if (success) TaskExecutionStatus.CHECKPOINTED.name else TaskExecutionStatus.FAILED.name
         taskDao.updateTaskProgress(
