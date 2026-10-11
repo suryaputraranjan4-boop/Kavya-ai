@@ -34,15 +34,22 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
             currentPkg = screenInspector.getCurrentForegroundPackage()
             val serviceRootPkg = service?.safeRootPackage() ?: ""
 
-            val isMatch = currentPkg.equals(expectedPackage, ignoreCase = true) ||
+            // Empty/placeholder package values must never satisfy verification.
+            // In particular, String.contains("") is true and used to create false positives.
+            val hasUsablePackage = expectedPackage.isNotBlank() &&
+                currentPkg.isNotBlank() &&
+                !currentPkg.equals("unknown", ignoreCase = true) &&
+                !currentPkg.equals("com.example", ignoreCase = true)
+            val isMatch = hasUsablePackage && (
+                currentPkg.equals(expectedPackage, ignoreCase = true) ||
                 currentPkg.contains(expectedPackage, ignoreCase = true) ||
-                expectedPackage.contains(currentPkg, ignoreCase = true) ||
                 (service?.isForegroundPackage(expectedPackage) == true) ||
                 (expectedPackage.contains("youtube", ignoreCase = true) && (currentPkg.contains("youtube") || serviceRootPkg.contains("youtube"))) ||
                 (expectedPackage.contains("spotify", ignoreCase = true) && (currentPkg.contains("spotify") || serviceRootPkg.contains("spotify"))) ||
                 (expectedPackage.contains("whatsapp", ignoreCase = true) && (currentPkg.contains("whatsapp") || serviceRootPkg.contains("whatsapp"))) ||
                 (expectedPackage.contains("chrome", ignoreCase = true) && (currentPkg.contains("chrome") || currentPkg.contains("browser") || serviceRootPkg.contains("chrome"))) ||
                 (expectedPackage.contains("freefire", ignoreCase = true) && (currentPkg.contains("freefire") || currentPkg.contains("dts") || serviceRootPkg.contains("freefire")))
+            )
 
             if (isMatch) {
                 val active = if (currentPkg != "com.example" && currentPkg != "unknown") currentPkg else if (serviceRootPkg.isNotBlank()) serviceRootPkg else expectedPackage
