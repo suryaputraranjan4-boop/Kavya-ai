@@ -146,11 +146,25 @@ class WorkflowEngine(
                 context.startActivity(intent)
                 true
             } else false
-            delay(300)
-            val perception = observe(step.expectedPackage ?: targetPkg)
+            val expectedPackage = step.expectedPackage ?: targetPkg
+            val verification = if (launched) {
+                verificationEngine.verifyAppForeground(expectedPackage, timeoutMs = 3000L)
+            } else {
+                VerificationResult(
+                    passed = false,
+                    reason = "Launch intent was unavailable for $targetPkg",
+                    currentPackage = screenInspector.getCurrentForegroundPackage()
+                )
+            }
+            val perception = observe(expectedPackage)
+            val verified = launched && verification.passed
             return WorkflowStepExecutionResult(
-                success = launched,
-                message = if (launched) "Launched ${step.target}" else "Failed to find or launch ${step.target}",
+                success = verified,
+                message = when {
+                    !launched -> "Failed to find or launch ${step.target}"
+                    verified -> "Launched and verified ${step.target}"
+                    else -> "Launch requested but foreground verification failed: ${verification.reason}"
+                },
                 perceptionAfterStep = perception
             )
         }
