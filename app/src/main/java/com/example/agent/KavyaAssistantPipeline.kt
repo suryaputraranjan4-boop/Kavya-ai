@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Production-grade Master Assistant Pipeline for Kavya AI.
@@ -73,10 +74,9 @@ class KavyaAssistantPipeline(
     private val sessionSearchEngine = SessionSearchEngine(chatDao)
     private val schedulerEngine = com.example.scheduler.SchedulerEngine(context)
 
-    @Volatile
-    private var isBusyProcessing = false
+    private val isBusyProcessing = AtomicBoolean(false)
 
-    fun isBusy(): Boolean = isBusyProcessing
+    fun isBusy(): Boolean = isBusyProcessing.get()
 
     /**
      * Executes a user utterance through the master pipeline.
@@ -93,37 +93,37 @@ class KavyaAssistantPipeline(
             return
         }
 
-        if (isBusyProcessing) {
-            Log.w(TAG, "Pipeline is busy. Dropping duplicate request: \"$prompt\"")
+        // Emergency stop bypasses the busy gate so it can interrupt a running task.
+        val lower = prompt.lowercase(java.util.Locale.ROOT).trim()
+        val isEmergencyStop = lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
+            lower.contains("stop kavya") || lower.contains("kavya stop") ||
+            lower.contains("chup ho jao") || lower.contains("kavya chup")
+        if (isEmergencyStop) {
+            Log.i(TAG, "EMERGENCY_STOP triggered: \"$prompt\"")
+            voiceEngine.stop()
+            androidAgent.stopExecution("Stop command: $prompt")
+            KavyaStateManager.updateTaskState(TaskState.STOPPED, "Halted by user")
+            val stopReply = "Stopped, sir."
+            pipelineScope.launch {
+                try {
+                    if (autoSpeak) voiceEngine.speakSuspending(stopReply)
+                    onTurnFinished?.invoke(stopReply)
+                } finally {
+                    KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                }
+            }
             return
         }
 
-        isBusyProcessing = true
+        if (!isBusyProcessing.compareAndSet(false, true)) {
+            Log.w(TAG, "Pipeline is busy. Dropping duplicate request: \"$prompt\"")
+            return
+        }
 
         pipelineScope.launch {
             try {
                 // Immediate barge-in stop of any ongoing speech
                 voiceEngine.stop()
-
-                // =============================================================
-                // 1. EMERGENCY STOP COMMAND CHECK
-                // =============================================================
-                val lower = prompt.lowercase().trim()
-                if (lower == "stop" || lower == "ruko" || lower == "cancel" || lower == "bas" ||
-                    lower.contains("stop kavya") || lower.contains("kavya stop") ||
-                    lower.contains("chup ho jao") || lower.contains("kavya chup")
-                ) {
-                    Log.i(TAG, "EMERGENCY_STOP triggered: \"$prompt\"")
-                    androidAgent.stopExecution("Stop command: $prompt")
-                    KavyaStateManager.updateTaskState(TaskState.STOPPED, "Halted by user")
-                    KavyaStateManager.updateVoiceState(VoiceState.IDLE)
-                    val stopReply = "Stopped, sir."
-                    if (autoSpeak) {
-                        voiceEngine.speakSuspending(stopReply)
-                    }
-                    onTurnFinished?.invoke(stopReply)
-                    return@launch
-                }
 
                 // =============================================================
                 // 2. PERSIST REAL USER MESSAGE TO ROOM DATABASE
@@ -262,7 +262,7 @@ class KavyaAssistantPipeline(
                 }
                 onTurnFinished?.invoke(errMsg)
             } finally {
-                isBusyProcessing = false
+                isBusyProcessing.set(false)
                 KavyaStateManager.updateVoiceState(VoiceState.IDLE)
             }
         }
