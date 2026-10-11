@@ -36,10 +36,12 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
 
             // Empty/placeholder package values must never satisfy verification.
             // In particular, String.contains("") is true and used to create false positives.
-            val hasUsablePackage = expectedPackage.isNotBlank() &&
-                currentPkg.isNotBlank() &&
-                !currentPkg.equals("unknown", ignoreCase = true) &&
-                !currentPkg.equals("com.example", ignoreCase = true)
+            val hasUsablePackage = expectedPackage.isNotBlank() && (
+                (currentPkg.isNotBlank() &&
+                    !currentPkg.equals("unknown", ignoreCase = true) &&
+                    !currentPkg.equals("com.example", ignoreCase = true)) ||
+                serviceRootPkg.isNotBlank()
+            )
             val isMatch = hasUsablePackage && (
                 currentPkg.equals(expectedPackage, ignoreCase = true) ||
                 currentPkg.contains(expectedPackage, ignoreCase = true) ||
