@@ -19,6 +19,13 @@ interface TaskDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTask(task: DurableTaskEntity)
 
+    /** Persist the task and its steps atomically so a failed second insert cannot leave an orphan task. */
+    @Transaction
+    suspend fun insertTaskWithSteps(task: DurableTaskEntity, steps: List<DurableTaskStepEntity>) {
+        insertTask(task)
+        if (steps.isNotEmpty()) insertSteps(steps)
+    }
+
     @Update
     suspend fun updateTask(task: DurableTaskEntity)
 
@@ -50,6 +57,17 @@ interface TaskDao {
 
     @Update
     suspend fun updateStep(step: DurableTaskStepEntity)
+
+    /** Update only checkpoint fields; preserve the original title, action, target, parameters, and expected state. */
+    @Query("UPDATE durable_task_steps SET status = :status, actualState = :actualState, result = :result, failureReason = :failureReason, timestamp = :timestamp WHERE id = :stepId")
+    suspend fun updateStepCheckpoint(
+        stepId: String,
+        status: String,
+        actualState: String,
+        result: String?,
+        failureReason: String?,
+        timestamp: Long
+    ): Int
 
     @Query("DELETE FROM durable_task_steps WHERE taskId = :taskId")
     suspend fun deleteStepsForTask(taskId: String)
