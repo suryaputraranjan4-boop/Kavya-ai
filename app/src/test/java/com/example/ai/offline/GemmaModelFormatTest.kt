@@ -6,6 +6,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class GemmaModelFormatTest {
 
@@ -48,21 +50,18 @@ class GemmaModelFormatTest {
 
         val info = GemmaModelManager.inspectModel(ggufFile)
         assertEquals(GemmaModelFormat.GGUF, info.format)
-        assertFalse("GGUF format must not be marked supported without a native GGUF engine", info.isSupported)
+        assertTrue("GGUF is supported by the bundled llama.cpp native runtime", info.isSupported)
         assertTrue(info.validationMessage.contains("GGUF format detected"))
     }
 
     @Test
     fun testMediaPipeTaskBundleDetection() {
         val taskFile = tempFolder.newFile("gemma.task")
-        FileOutputStream(taskFile).use { fos ->
-            val data = ByteArray(2 * 1024 * 1024)
-            // Write ZIP magic header: 0x50 0x4B 0x03 0x04 ('P' 'K' 0x03 0x04)
-            data[0] = 'P'.toByte()
-            data[1] = 'K'.toByte()
-            data[2] = 0x03.toByte()
-            data[3] = 0x04.toByte()
-            fos.write(data)
+        ZipOutputStream(FileOutputStream(taskFile)).use { zip ->
+            // A real ZIP entry is required; a four-byte PK header plus zeroes is corrupt.
+            zip.putNextEntry(ZipEntry("metadata.txt"))
+            zip.write("valid test task bundle".toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
         }
 
         val info = GemmaModelManager.inspectModel(taskFile)
@@ -73,14 +72,11 @@ class GemmaModelFormatTest {
 
     @Test
     fun testLiteRtFlatBufferDetection() {
-        val tfliteFile = tempFolder.newFile("gemma.bin")
+        val tfliteFile = tempFolder.newFile("gemma.litertlm")
         FileOutputStream(tfliteFile).use { fos ->
             val data = ByteArray(2 * 1024 * 1024)
-            // Write TFL3 magic header at offset 4: 'T' 'F' 'L' '3'
-            data[4] = 'T'.toByte()
-            data[5] = 'F'.toByte()
-            data[6] = 'L'.toByte()
-            data[7] = '3'.toByte()
+            // LiteRT-LM selection is based on its documented .litertlm container extension;
+            // a TFL3 header alone is not sufficient to identify a LiteRT-LM model.
             fos.write(data)
         }
 
