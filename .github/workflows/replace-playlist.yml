@@ -1,0 +1,61 @@
+name: Replace Kavya-ai with Playlist and build check
+on:
+  push:
+    branches:
+      - backup-before-playlist-replacement-2026-10-12
+permissions:
+  contents: write
+  actions: read
+jobs:
+  replace-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout backup branch
+        uses: actions/checkout@v4
+        with:
+          ref: backup-before-playlist-replacement-2026-10-12
+          fetch-depth: 0
+      - name: Download exact source repository
+        run: |
+          git clone --depth 1 https://github.com/techgptx/Playlist.git /tmp/Playlist
+      - name: Replace target working tree with source tree
+        run: |
+          rsync -a --delete --exclude='.git' /tmp/Playlist/ ./
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan playlist-source-replacement
+          git add -A
+          git commit -m "Replace repository contents with techgptx/Playlist"
+          git push --force origin HEAD:main
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Build-check each Android project
+        shell: bash
+        run: |
+          set +e
+          failed=0
+          for part in "Part 1" "Part 2" "Part 3" "Part 4" "Part 5" "Part 6" "Part 7"; do
+            echo "===== BUILD CHECK: $part ====="
+            if [[ -x "$part/gradlew" ]]; then
+              (cd "$part" && ./gradlew assembleDebug --no-daemon)
+              status=$?
+            elif [[ -f "$part/gradlew" ]]; then
+              (cd "$part" && bash gradlew assembleDebug --no-daemon)
+              status=$?
+            else
+              echo "No Gradle wrapper found in $part"
+              status=2
+            fi
+            if [[ $status -ne 0 ]]; then
+              echo "BUILD FAILED: $part (exit $status)"
+              failed=1
+            else
+              echo "BUILD PASSED: $part"
+            fi
+          done
+          exit $failed
