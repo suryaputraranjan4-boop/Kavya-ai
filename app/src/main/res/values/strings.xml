@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Kavya</string>
+    <string name="accessibility_service_description">Kavya Accessibility Service allows the AI companion to automate UI interactions and understand screen context.</string>
+</resources>
