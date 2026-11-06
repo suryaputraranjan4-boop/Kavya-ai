@@ -66,6 +66,7 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 - Released intermediate padded screen-capture bitmaps and temporary scaled bitmaps used by visual frame hashing/compression.
 - Made MediaProjection shutdown idempotent so the projection stop callback and service destruction cannot repeatedly tear down the same capture resources.
 - Preserve MediaProjection startup failures through service teardown, so cleanup does not overwrite a useful error state with a misleading "Stopped" state.
+- Prevent late ImageReader callbacks from changing a stopped/failed screen-share session back to Active, and clear retained frames/counters on errors and shutdown.
 - Added a final cleanup path for raw ImageReader bitmaps when pixel copying or cropping fails, not only when a complete frame reaches the consumers.
 - Corrected screenshot bitmap ownership: failed/unretained encodes release their input and scaled bitmaps, while retained output remains available to its caller.
 - Removed artificial minimum screen dimensions from screenshot metadata so coordinate planning uses the actual display size.
