@@ -53,6 +53,7 @@ class ScreenCaptureService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     @Volatile private var isStopping = false
+    @Volatile private var pendingServiceError: String? = null
 
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
@@ -93,7 +94,7 @@ class ScreenCaptureService : Service() {
 
             if (resultCode == 0 || resultData == null) {
                 Log.e(TAG, "Invalid screen capture permission data received.")
-                ScreenShareManager.reportServiceError("Invalid screen capture permission token.")
+                pendingServiceError = "Invalid screen capture permission token."
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -150,7 +151,7 @@ class ScreenCaptureService : Service() {
         try {
             val projection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
             if (projection == null) {
-                ScreenShareManager.reportServiceError("Unable to initialize MediaProjection token.")
+                pendingServiceError = "Unable to initialize MediaProjection token."
                 stopSelf()
                 return
             }
@@ -237,7 +238,7 @@ class ScreenCaptureService : Service() {
             Log.i(TAG, "VirtualDisplay created successfully (${targetWidth}x${targetHeight} @ ${densityDpi}dpi). Screen capture active.")
         } catch (e: Exception) {
             Log.e(TAG, "Fatal failure starting virtual screen capture", e)
-            ScreenShareManager.reportServiceError("Capture failed: ${e.message}")
+            pendingServiceError = "Capture failed: ${e.message ?: e.javaClass.simpleName}"
             stopSelf()
         }
     }
@@ -260,7 +261,13 @@ class ScreenCaptureService : Service() {
             Log.w(TAG, "Error cleaning projection: ${e.message}")
         }
 
-        ScreenShareManager.onServiceStopped()
+        val serviceError = pendingServiceError
+        pendingServiceError = null
+        if (serviceError != null) {
+            ScreenShareManager.reportServiceError(serviceError)
+        } else {
+            ScreenShareManager.onServiceStopped()
+        }
         VisionPipeline.reset()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
