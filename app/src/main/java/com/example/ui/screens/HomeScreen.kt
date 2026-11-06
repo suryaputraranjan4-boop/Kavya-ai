@@ -216,9 +216,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 KavyaVoiceOrb(
                     state = voiceState,
                     onClick = {
-                        if (micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_OFF ||
-                            micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ERROR
-                        ) {
+                        if (!micEngineState.isListening) {
                             com.example.voice.KavyaMicrophoneEngine.startService(context)
                         } else {
                             com.example.voice.KavyaMicrophoneEngine.stopService(context)
@@ -325,10 +323,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         viewModel.stopListening()
                     }
                 },
-                isMicListening =
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ACTIVE ||
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_SLEEPING ||
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_STARTING,
+                isMicListening = micEngineState.isListening,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)
