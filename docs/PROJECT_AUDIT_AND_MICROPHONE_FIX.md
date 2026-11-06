@@ -58,7 +58,7 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 - Wrapped the full streaming provider-routing path in quota cleanup so early returns from offline mode, OpenRouter, and missing-key fallback do not leak active-request slots.
 - Replaced the short 32-bit prompt/history quota key with a SHA-256 key incorporating recent conversation, screen context, memory context, proactive mode, and provider selection to reduce false duplicate collisions.
 - Reconciled active-request counts after stale request cleanup and corrected daily quota reset so it is independent of the minute window.
-- Made suspending voice playback cancel its audio job/player when the 10-second timeout or caller cancellation occurs.
+- Made suspending voice playback cancel its audio job/player when the 10-second timeout or caller cancellation occurs; generation checks prevent older in-flight TTS requests from starting playback after Stop or a newer turn.
 - Added a playback generation guard so late MediaPlayer callbacks cannot restart audio after stop/interrupt; temporary audio files are deleted on completion, error, and stop.
 - Released intermediate padded screen-capture bitmaps and temporary scaled bitmaps used by visual frame hashing/compression.
 - Removed duplicate coroutine imports from the ViewModel.
