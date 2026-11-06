@@ -86,9 +86,15 @@ object VisionPipeline {
 
     /** Returns an independent frame snapshot safe for asynchronous AI analysis. */
     @Synchronized
-    fun getLatestFrameCopy(): Bitmap? {
+    fun getLatestFrameCopy(maxAgeMs: Long = 2500L): Bitmap? {
         val frame = cachedLatestFrame ?: return null
         if (frame.isRecycled) return null
+        val frameTimestamp = _perceptionState.value.timestamp
+        val ageMs = if (frameTimestamp > 0L) System.currentTimeMillis() - frameTimestamp else Long.MAX_VALUE
+        if (ageMs > maxAgeMs) {
+            Log.w(TAG, "Refusing stale screen frame (age=$ageMs ms)")
+            return null
+        }
         return try { frame.copy(Bitmap.Config.ARGB_8888, false) } catch (e: Exception) {
             Log.w(TAG, "Unable to copy current screen frame: ${e.message}")
             null
