@@ -51,12 +51,25 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 | Camera capture pipeline | Camera permission is declared, but no dedicated camera capture module was found in tracked paths | Not evidenced as an implemented flow |
 | WebSocket streaming | No dedicated WebSocket transport module found in tracked paths | Not evidenced; OkHttp dependency alone is not proof of WebSocket streaming |
 
+## Additional runtime glitch repairs
+
+- Fixed the OpenRouter selection path so non-streaming chat requests use the selected OpenRouter provider instead of silently falling through to Gemini.
+- Fixed OpenRouter streaming's nested quota acquisition: it previously called the quota-managed `chat()` path from inside another quota-managed request, causing the duplicate-request guard to reject the nested call.
+- Wrapped the full streaming provider-routing path in quota cleanup so early returns from offline mode, OpenRouter, and missing-key fallback do not leak active-request slots.
+- Replaced the short 32-bit prompt/history quota key with a SHA-256 key incorporating recent conversation, screen context, memory context, proactive mode, and provider selection to reduce false duplicate collisions.
+- Reconciled active-request counts after stale request cleanup and corrected daily quota reset so it is independent of the minute window.
+- Made suspending voice playback cancel its audio job/player when the 10-second timeout or caller cancellation occurs.
+- Added a playback generation guard so late MediaPlayer callbacks cannot restart audio after stop/interrupt; temporary audio files are deleted on completion, error, and stop.
+- Released intermediate padded screen-capture bitmaps and temporary scaled bitmaps used by visual frame hashing/compression.
+- Removed duplicate coroutine imports from the ViewModel.
+- Pinned the Android NDK and installed the matching NDK/CMake packages in CI to make native builds reproducible.
+
 ## Build and validation
 
 - Source-level changes are committed to this branch for review.
-- The GitHub Actions APK workflow now runs for pull requests and executes `gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace`.
-- The workflow result must be checked on this pull request before treating the changes as build-verified.
-- No APK is claimed as built or device-tested until the CI build completes; physical-device testing is still required.
+- The GitHub Actions APK workflow runs unit tests and the debug APK build for pull requests: `gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace`.
+- The latest observed CI run was still in progress and was triggered before the newest runtime-fix commits; a successful run for the final branch head is still required.
+- No APK is claimed as built or device-tested until CI completes successfully; physical-device testing is still required.
 - Before release, run `gradle :app:testDebugUnitTest` and `gradle :app:assembleDebug`, then verify repeated ON/OFF taps, app relaunch, service recreation, permission denial/regrant, wake phrase, speech playback interruption, and screen navigation on a physical Android device.
 
 ## Next implementation priorities
