@@ -109,6 +109,12 @@ object ScreenShareManager {
      * Invoked by ScreenCaptureService when a new frame is captured from the VirtualDisplay.
      */
     fun onFrameCaptured(bitmap: Bitmap, width: Int, height: Int) {
+        // A late ImageReader callback must not reactivate a share after stop/error.
+        if (_state.value is ScreenShareState.Stopped ||
+            _state.value is ScreenShareState.Error ||
+            _state.value is ScreenShareState.PermissionDenied ||
+            _state.value is ScreenShareState.Idle) return
+
         val now = System.currentTimeMillis()
         val totalFrames = frameCounter.incrementAndGet()
         activeResolution = Pair(width, height)
@@ -157,6 +163,8 @@ object ScreenShareManager {
         }
         frameCounter.set(0)
         currentFps = 0
+        framesInLastSecond = 0
+        lastFpsCalculationTime = 0L
         latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
         latestFrameBitmap = null
         activeResolution = null
@@ -169,6 +177,14 @@ object ScreenShareManager {
      */
     fun reportServiceError(errorMessage: String) {
         Log.e(TAG, "Screen share service error: $errorMessage")
+        frameCounter.set(0)
+        currentFps = 0
+        framesInLastSecond = 0
+        lastFpsCalculationTime = 0L
+        latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
+        latestFrameBitmap = null
+        activeResolution = null
+        lastRetainedFrameTime = 0L
         _state.value = ScreenShareState.Error(errorMessage)
     }
 
@@ -178,6 +194,8 @@ object ScreenShareManager {
     fun onServiceStopped() {
         frameCounter.set(0)
         currentFps = 0
+        framesInLastSecond = 0
+        lastFpsCalculationTime = 0L
         latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
         latestFrameBitmap = null
         activeResolution = null
