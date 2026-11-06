@@ -296,9 +296,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
         prompt: String,
         systemInstruction: String? = null
     ): String? = withContext(Dispatchers.IO) {
-        val ctx = context ?: return@withContext null
+        val ctx = context ?: return@withContext "OpenRouter is unavailable: application context is missing."
         val openRouterKey = com.example.utils.AppPreferences.getOpenRouterApiKey(ctx)
-        if (openRouterKey.isBlank() || !com.example.utils.AppPreferences.isOpenRouterEnabled(ctx)) return@withContext null
+        if (openRouterKey.isBlank()) return@withContext "OpenRouter API key is missing. Add a key in provider settings."
+        if (!com.example.utils.AppPreferences.isOpenRouterEnabled(ctx)) {
+            return@withContext "OpenRouter is disabled in provider settings."
+        }
 
         val modelId = com.example.utils.AppPreferences.getOpenRouterModel(ctx).ifBlank { "openrouter/free" }
         val messages = mutableListOf<OpenRouterMessage>()
@@ -509,9 +512,34 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 request = OpenRouterRequest(model = modelId, messages = orMessages)
             )
             response.choices?.firstOrNull()?.message?.content?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: "OpenRouter responded, but returned no message for model '$modelId'."
+        } catch (e: HttpException) {
+            val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+            val detail = try {
+                if (body.isNullOrBlank()) null
+                else org.json.JSONObject(body).optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) { null }
+            val reason = when (e.code()) {
+                401 -> "API key rejected (HTTP 401)."
+                402 -> "Account credit or payment required (HTTP 402)."
+                403 -> "Access denied for this model/key (HTTP 403)."
+                404 -> "Model '$modelId' was not found (HTTP 404)."
+                429 -> "Rate limit reached (HTTP 429)."
+                in 500..599 -> "OpenRouter server error (HTTP ${e.code()})."
+                else -> "HTTP ${e.code()}."
+            }
+            Log.w(TAG, "OpenRouter direct call failed: $reason ${detail.orEmpty()}")
+            "OpenRouter connection failed: $reason ${detail.orEmpty()}"
+        } catch (e: java.net.UnknownHostException) {
+            "Cannot reach OpenRouter: DNS/network unavailable."
+        } catch (e: java.net.SocketTimeoutException) {
+            "OpenRouter connection timed out. Check your internet connection."
+        } catch (e: IOException) {
+            "OpenRouter network error: ${e.localizedMessage ?: "I/O failure"}"
         } catch (e: Exception) {
-            Log.w(TAG, "OpenRouter direct call failed: ${e.message}")
-            null
+            Log.w(TAG, "OpenRouter direct call failed: ${e.message}", e)
+            "OpenRouter request failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
         }
     }
 
@@ -532,6 +560,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         }
         
         var lastError: Exception? = null
+        var lastErrorMessage: String? = null
         try {
             if (context != null) {
                 val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
@@ -675,6 +704,19 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         if (code == 429) rateLimitErrorsCount++
                     }
                     val errorBodyString = e.response()?.errorBody()?.string()
+                    val apiDetail = try {
+                        if (errorBodyString.isNullOrBlank()) null
+                        else org.json.JSONObject(errorBodyString).optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+                    } catch (_: Exception) { null }
+                    lastErrorMessage = when (code) {
+                        400 -> "Gemini rejected the request/model '$model' (HTTP 400). ${apiDetail.orEmpty()}"
+                        401 -> "Gemini API key was rejected (HTTP 401)."
+                        403 -> "Gemini access denied for this key/model (HTTP 403). ${apiDetail.orEmpty()}"
+                        404 -> "Gemini model '$model' was not found (HTTP 404)."
+                        429 -> "Gemini quota or rate limit reached (HTTP 429)."
+                        in 500..599 -> "Google Gemini server error (HTTP $code)."
+                        else -> "Gemini returned HTTP $code. ${apiDetail.orEmpty()}"
+                    }
                     Log.e(TAG, "Gemini API HttpException $code from model $model on attempt $attempt: ${e.message()} - Body: $errorBodyString")
                     
                     if (code == 429 || code == 503 || code == 500) {
@@ -695,6 +737,11 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     }
                 } catch (e: IOException) {
                     lastError = e
+                    lastErrorMessage = when (e) {
+                        is java.net.UnknownHostException -> "DNS/network unavailable while reaching Google Gemini."
+                        is java.net.SocketTimeoutException -> "Gemini request timed out. Check internet connectivity."
+                        else -> "Gemini network I/O error: ${e.localizedMessage ?: "unknown I/O error"}"
+                    }
                     com.example.api.QuotaManager.instance.apply {
                         lastErrorType = "IOException"
                         lastErrorTime = System.currentTimeMillis()
@@ -709,6 +756,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     }
                 } catch (e: Exception) {
                     lastError = e
+                    lastErrorMessage = "Gemini request failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
                     com.example.api.QuotaManager.instance.apply {
                         lastErrorType = "Exception"
                         lastErrorTime = System.currentTimeMillis()
@@ -723,7 +771,14 @@ class KavyaAI(private val context: android.content.Context? = null) {
         } finally {
             com.example.api.QuotaManager.instance.releaseQuota(requestId)
         }
-        return@withContext "AI model is currently unavailable."
+        return@withContext lastErrorMessage
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "Gemini connection/request error: $it" }
+            ?: if (lastError == null) {
+                "Gemini returned an empty response from all supported models. Check model access and API settings."
+            } else {
+                "Gemini request failed: ${lastError.localizedMessage ?: lastError.javaClass.simpleName}"
+            }
     }
 
     suspend fun generateSpeechAudio(
