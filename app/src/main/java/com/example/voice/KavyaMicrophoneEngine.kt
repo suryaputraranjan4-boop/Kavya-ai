@@ -258,9 +258,9 @@ class KavyaMicrophoneEngine : Service() {
                 // speech segments instead of closing/reopening the microphone per phrase.
                 if (segmentedSessionRequested) {
                     putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS)
-                    // A longer segment boundary avoids splitting natural pauses
-                    // into rapid stop/restart cycles on segmented-session providers.
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
+                    // Keep the long silence window configured above. Overriding it
+                    // here with 1.8 seconds forced frequent session endings and
+                    // audible microphone reactivation cues after each response.
                 }
             }
 
