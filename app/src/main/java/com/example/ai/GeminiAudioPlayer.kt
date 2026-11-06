@@ -28,7 +28,7 @@ class GeminiAudioPlayer(
 
     private var mediaPlayer: MediaPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var isPlaying = false
+    @Volatile private var isPlaying = false
     
     private val audioQueue: Queue<QueuedAudio> = LinkedList()
     private var isProcessingQueue = false
