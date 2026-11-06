@@ -523,6 +523,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 }
             }
 
+            if (context != null && com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER") {
+                val openRouterResponse = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
+                return@withContext openRouterResponse
+                    ?: "OpenRouter could not generate a response. Check its API key and model settings."
+            }
+
             val apiKey = if (context != null) {
                 com.example.utils.AppPreferences.getEffectiveApiKey(context)
             } else {
