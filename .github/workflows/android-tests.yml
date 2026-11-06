@@ -3,6 +3,8 @@ name: Android source checks
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [fix/microphone-state-and-audit]
   workflow_dispatch:
 
 permissions:
