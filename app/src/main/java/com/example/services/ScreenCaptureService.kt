@@ -201,8 +201,14 @@ class ScreenCaptureService : Service() {
                         }
                     }
 
-                    ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
-                    VisionPipeline.onNewFrame(cleanBitmap)
+                    try {
+                        ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
+                        VisionPipeline.onNewFrame(cleanBitmap)
+                    } finally {
+                        // Both consumers retain their own copies. Release the
+                        // ImageReader frame even if one consumer throws.
+                        if (!cleanBitmap.isRecycled) cleanBitmap.recycle()
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
                 } finally {
