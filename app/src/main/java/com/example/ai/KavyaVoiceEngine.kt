@@ -197,8 +197,7 @@ class KavyaVoiceEngine(
                         onComplete?.invoke()
                     }
                 } else {
-                    geminiPlayer?.notifySpeaking(false)
-                    updateSpeakingState(false)
+                    notifyIdleIfPlaybackQueueEmpty()
                     onComplete?.invoke()
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
