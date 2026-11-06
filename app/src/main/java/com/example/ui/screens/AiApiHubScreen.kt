@@ -824,6 +824,9 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isOrTesting) {
                         ConnectionStatus.TESTING
+                    } else if (orTestResult?.second?.let { it.contains("429") || it.contains("rate limit", ignoreCase = true) || it.contains("quota", ignoreCase = true) } == true ||
+                        AppPreferences.getProviderStatus(context, "openrouter") == ConnectionStatus.RATE_LIMITED.name) {
+                        ConnectionStatus.RATE_LIMITED
                     } else if (orTestResult?.first == true || (orTestResult == null && AppPreferences.getProviderStatus(context, "openrouter") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (orTestResult?.first == false) {
@@ -905,6 +908,9 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isHfTesting) {
                         ConnectionStatus.TESTING
+                    } else if (hfTestResult?.second?.let { it.contains("429") || it.contains("rate limit", ignoreCase = true) || it.contains("quota", ignoreCase = true) } == true ||
+                        AppPreferences.getProviderStatus(context, "huggingface") == ConnectionStatus.RATE_LIMITED.name) {
+                        ConnectionStatus.RATE_LIMITED
                     } else if (hfTestResult?.first == true || (hfTestResult == null && AppPreferences.getProviderStatus(context, "huggingface") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (hfTestResult?.first == false) {
@@ -981,6 +987,9 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isGeminiTesting) {
                         ConnectionStatus.TESTING
+                    } else if (geminiTestResult?.second?.let { it.contains("429") || it.contains("rate limit", ignoreCase = true) || it.contains("quota", ignoreCase = true) } == true ||
+                        AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.RATE_LIMITED.name) {
+                        ConnectionStatus.RATE_LIMITED
                     } else if (geminiTestResult?.first == true || (geminiTestResult == null && AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (geminiTestResult?.first == false) {
