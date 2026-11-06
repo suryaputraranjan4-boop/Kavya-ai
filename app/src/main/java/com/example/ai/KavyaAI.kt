@@ -25,6 +25,7 @@ import retrofit2.http.Query
 import retrofit2.http.Header
 import retrofit2.http.Headers
 import java.io.IOException
+import java.security.MessageDigest
 
 @Serializable
 data class GenerateContentRequest(
@@ -195,6 +196,31 @@ object RetrofitClient {
 }
 
 class KavyaAI(private val context: android.content.Context? = null) {
+    private fun buildQuotaRequestId(
+        prompt: String,
+        history: List<MessageEntity>,
+        screenContext: String?,
+        memoryContext: String,
+        isProactiveMode: Boolean
+    ): String {
+        val material = buildString {
+            append(prompt).append('\u0000')
+            history.takeLast(12).forEach { message ->
+                append(if (message.isUser) "user" else "assistant")
+                    .append('\u0000')
+                    .append(message.text)
+                    .append('\u0000')
+            }
+            append(screenContext.orEmpty()).append('\u0000')
+            append(memoryContext).append('\u0000')
+            append(isProactiveMode).append('\u0000')
+            append(context?.let { com.example.utils.AppPreferences.getAiProvider(it) } ?: "GEMINI")
+        }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(material.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
     fun isApiKeyConfigured(): Boolean {
         val key = if (context != null) {
             com.example.utils.AppPreferences.getEffectiveApiKey(context)
@@ -455,7 +481,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
     ): String? = withContext(Dispatchers.IO) {
         val ctx = context ?: return@withContext null
         val openRouterKey = com.example.utils.AppPreferences.getOpenRouterApiKey(ctx)
-        if (openRouterKey.isBlank()) return@withContext null
+        if (openRouterKey.isBlank() || !com.example.utils.AppPreferences.isOpenRouterEnabled(ctx)) return@withContext null
 
         val modelId = com.example.utils.AppPreferences.getOpenRouterModel(ctx).ifBlank { "openrouter/free" }
         val systemInstructionText = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
@@ -496,7 +522,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         memoryContext: String = "",
         isProactiveMode: Boolean = false
     ): String = withContext(Dispatchers.IO) {
-        val requestId = (prompt.hashCode() * 31 + history.size).toString()
+        val requestId = buildQuotaRequestId(prompt, history, screenContext, memoryContext, isProactiveMode)
         val priority = if (isProactiveMode) com.example.api.RequestPriority.P3_PROACTIVE_CONVERSATION else com.example.api.RequestPriority.P0_ACTIVE_USER_REQUEST
         
         if (!com.example.api.QuotaManager.instance.acquireQuota(requestId, priority)) {
