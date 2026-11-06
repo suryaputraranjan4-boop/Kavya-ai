@@ -36,6 +36,7 @@ class QuotaManager {
     
     private val minuteWindowStart = MutableStateFlow(System.currentTimeMillis())
     private val hourWindowStart = MutableStateFlow(System.currentTimeMillis())
+    private var dayWindowStart = System.currentTimeMillis() / 86_400_000L
 
     private val activeRequestMap = mutableMapOf<String, Long>()
 
@@ -67,9 +68,10 @@ class QuotaManager {
                 requestsInLastHour = 0
             }
             
-            // Just simple daily reset hack for dashboard
-            val todayDate = now / (1000 * 60 * 60 * 24)
-            if (minuteWindowStart.value / (1000 * 60 * 60 * 24) != todayDate) {
+            // Reset the daily counter independently from the minute window.
+            val today = now / 86_400_000L
+            if (dayWindowStart != today) {
+                dayWindowStart = today
                 requestsToday = 0
             }
 
