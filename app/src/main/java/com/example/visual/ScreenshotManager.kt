@@ -51,6 +51,17 @@ class ScreenshotManager(private val context: Context) {
      * Respects Android privacy and security constraints.
      */
     suspend fun captureScreen(): Bitmap? {
+        // When the user has explicitly enabled screen sharing, use the same fresh
+        // MediaProjection frame that the assistant is already analyzing. This keeps
+        // perception and touch-coordinate planning aligned on games/canvas screens
+        // where the Accessibility screenshot API may return null or incomplete data.
+        if (com.example.services.ScreenShareManager.isScreenSharingActive) {
+            val sharedFrame = com.example.visual.VisionPipeline.getLatestFrameCopy(maxAgeMs = 2500L)
+            if (sharedFrame != null) return sharedFrame
+            Log.w(TAG, "Screen sharing is active, but no fresh MediaProjection frame is available.")
+            return null
+        }
+
         val service = KavyaAccessibilityService.instance
         if (service == null) {
             Log.w(TAG, "Cannot capture screen: KavyaAccessibilityService not connected.")
