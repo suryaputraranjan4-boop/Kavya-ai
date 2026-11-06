@@ -18,7 +18,7 @@ class KavyaVoiceEngine(
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var activeSpeechJob: Job? = null
+    @Volatile private var activeSpeechJob: Job? = null
     @Volatile private var speechGeneration = 0L
     private var lastErrorSpeechTimestamp = 0L
 
