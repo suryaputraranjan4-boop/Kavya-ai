@@ -161,6 +161,7 @@ object VisionPipeline {
     fun reset() {
         cachedLatestFrame?.takeIf { !it.isRecycled }?.recycle()
         cachedLatestFrame = null
+        lastProcessTimestamp = 0L
         previousFrameHash = ""
         framesProcessedCount = 0
         _perceptionState.value = VisualPerceptionState(isPipelineActive = false)
