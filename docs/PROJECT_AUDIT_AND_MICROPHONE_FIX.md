@@ -27,7 +27,8 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 
 - Added one shared `EngineState.isListening` definition; it includes STARTING, ACTIVE, and SLEEPING.
 - Updated Home and Chat microphone controls to use the same state definition. No visual layout or styling changes were made.
-- Made service start requests reuse an existing service instance.
+- Made service start requests idempotent while still sending a start command after a rapid stop, so an instance that is tearing down cannot swallow the next ON request.
+- Guarded old service teardown so a superseded instance cannot overwrite the new instance's shared microphone state.
 - Made the service honor the saved OFF preference when started or recreated.
 - Rechecked the saved preference immediately before opening a recognition session.
 - Applied stop synchronously when already on the main thread and guarded instance cleanup.
