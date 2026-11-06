@@ -243,6 +243,7 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    @Synchronized
     private fun stopCapture() {
         if (isStopping) return
         isStopping = true
