@@ -68,7 +68,7 @@ class KavyaMicrophoneEngine : Service() {
             // Wake an existing sleeping session, but always send a service
             // start request as well. This closes the stop-then-immediate-start
             // race where the old instance could still be tearing down.
-            instance?.setAwake()
+            if (stateFlow.value == EngineState.MIC_SLEEPING) instance?.setAwake()
 
             val intent = Intent(appContext, KavyaMicrophoneEngine::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -422,7 +422,9 @@ class KavyaMicrophoneEngine : Service() {
             AppPreferences.setKavyaState(this, "SLEEP")
             partialFlow.value = ""
             stateFlow.value = EngineState.MIC_SLEEPING
-            restartRecognition()
+            // Wake-word gating is handled on recognition results. Keep the
+            // existing session alive instead of reopening the Android mic.
+            if (desired && !sessionRunning && !assistantSpeaking) schedule(120L)
         }
     }
 
@@ -432,7 +434,9 @@ class KavyaMicrophoneEngine : Service() {
             AppPreferences.setKavyaState(this, "ACTIVE")
             partialFlow.value = ""
             stateFlow.value = EngineState.MIC_ACTIVE
-            restartRecognition()
+            // A running recognizer already hears wake-word follow-up commands.
+            // Only start a new session if the platform has ended the old one.
+            if (desired && !sessionRunning && !assistantSpeaking) schedule(120L)
         }
     }
 
