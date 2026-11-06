@@ -364,7 +364,15 @@ object AppPreferences {
 
     /** Persist the result of an explicit provider connectivity test. */
     fun recordProviderConnectionTest(context: Context, providerId: String, result: Pair<Boolean, String>) {
-        if (result.first) {
+        val rateLimited = result.second.contains("429") ||
+            result.second.contains("rate limit", ignoreCase = true) ||
+            result.second.contains("quota", ignoreCase = true)
+        if (result.first && rateLimited) {
+            // The provider was reached and accepted the credentials, but cannot
+            // serve this test because the account/model is currently throttled.
+            setProviderStatus(context, providerId, "RATE_LIMITED")
+            setProviderLastError(context, providerId, result.second)
+        } else if (result.first) {
             setProviderStatus(context, providerId, "CONNECTED")
             setProviderLastSuccessTime(context, providerId, System.currentTimeMillis())
             setProviderLastError(context, providerId, null)
