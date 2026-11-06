@@ -450,14 +450,20 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshScreenContext() {
         val liveContext = com.example.services.KavyaAccessibilityService.instance?.getScreenContext()
         val perceptionSnapshot = com.example.visual.VisionPipeline.getUnifiedPerceptionSnapshot()
-        _screenContextText.value = if (!liveContext.isNullOrBlank() && !liveContext.contains("Root node is null")) {
-            if (perceptionSnapshot.isVisualCaptureActive) {
-                "$liveContext\n[Vision: Real-time screen capture feed active]"
-            } else {
-                liveContext
-            }
+        val usableAccessibilityContext = liveContext
+            ?.takeIf { it.isNotBlank() && !it.contains("Root node is null", ignoreCase = true) }
+        val visualStatus = if (perceptionSnapshot.visualFrameAvailable) {
+            "[Vision: A fresh screen frame is available for visual analysis.]"
         } else {
-            "Active Screen: Home / App Overview\nStatus: Screen Perception is active."
+            "[Vision: No fresh screen frame is currently available.]"
+        }
+        _screenContextText.value = when {
+            !usableAccessibilityContext.isNullOrBlank() ->
+                "$usableAccessibilityContext\n$visualStatus"
+            perceptionSnapshot.visualFrameAvailable ->
+                "Accessibility text is unavailable, but a fresh visual frame is available.\n$visualStatus"
+            else ->
+                "Screen context unavailable: no readable active-window content or fresh screen frame was detected."
         }
     }
 
