@@ -50,9 +50,15 @@ object RuntimeActivityTracker {
                     AppPreferences.setProviderLastSuccessTime(context, providerId, System.currentTimeMillis())
                     AppPreferences.setProviderStatus(context, providerId, ConnectionStatus.CONNECTED.name)
                     AppPreferences.setProviderLastError(context, providerId, null)
-                } else if (!errorCategory.isNullOrBlank()) {
-                    AppPreferences.setProviderLastError(context, providerId, errorCategory)
-                    if (errorCategory.contains("429") || errorCategory.contains("Rate limit", ignoreCase = true)) {
+                } else {
+                    // A failed request must never leave a previous CONNECTED status
+                    // visible just because the caller omitted an error string.
+                    val failureReason = errorCategory?.takeIf { it.isNotBlank() }
+                        ?: "The provider request failed without additional error details."
+                    AppPreferences.setProviderLastError(context, providerId, failureReason)
+                    if (failureReason.contains("429") ||
+                        failureReason.contains("Rate limit", ignoreCase = true) ||
+                        failureReason.contains("quota", ignoreCase = true)) {
                         AppPreferences.setProviderStatus(context, providerId, ConnectionStatus.RATE_LIMITED.name)
                     } else {
                         AppPreferences.setProviderStatus(context, providerId, ConnectionStatus.ERROR.name)
