@@ -44,6 +44,7 @@ object ScreenShareManager {
     private var lastFpsCalculationTime = 0L
     private var framesInLastSecond = 0
     private var currentFps = 0
+    private var lastRetainedFrameTime = 0L
 
     val isScreenSharingActive: Boolean
         get() = _state.value is ScreenShareState.Active
@@ -113,14 +114,17 @@ object ScreenShareManager {
         activeResolution = Pair(width, height)
         // Keep our own bitmap; ScreenCaptureService releases its frame after
         // VisionPipeline has copied it. Recycle the previous retained frame.
-        val retainedFrame = try {
-            bitmap.copy(Bitmap.Config.ARGB_8888, false)
-        } catch (e: Exception) {
-            Log.w(TAG, "Unable to retain latest frame: ${e.message}")
-            null
+        if (now - lastRetainedFrameTime >= 250L || latestFrameBitmap == null) {
+            val retainedFrame = try {
+                bitmap.copy(Bitmap.Config.ARGB_8888, false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to retain latest frame: ${e.message}")
+                null
+            }
+            latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
+            latestFrameBitmap = retainedFrame
+            lastRetainedFrameTime = now
         }
-        latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
-        latestFrameBitmap = retainedFrame
 
         framesInLastSecond++
         if (now - lastFpsCalculationTime >= 1000L) {
@@ -156,6 +160,7 @@ object ScreenShareManager {
         latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
         latestFrameBitmap = null
         activeResolution = null
+        lastRetainedFrameTime = 0L
         _state.value = ScreenShareState.Stopped
     }
 
@@ -176,6 +181,7 @@ object ScreenShareManager {
         latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
         latestFrameBitmap = null
         activeResolution = null
+        lastRetainedFrameTime = 0L
         _state.value = ScreenShareState.Stopped
     }
 }
