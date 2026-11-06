@@ -49,6 +49,7 @@ object VisionPipeline {
      * Ingests a new raw frame from the ScreenCaptureService VirtualDisplay.
      */
     @Synchronized
+    @Synchronized
     fun onNewFrame(bitmap: Bitmap) {
         val now = System.currentTimeMillis()
         if (now - lastProcessTimestamp < MIN_FRAME_INTERVAL_MS) {
@@ -173,6 +174,7 @@ object VisionPipeline {
         )
     }
 
+    @Synchronized
     @Synchronized
     fun reset() {
         cachedLatestFrame?.takeIf { !it.isRecycled }?.recycle()
