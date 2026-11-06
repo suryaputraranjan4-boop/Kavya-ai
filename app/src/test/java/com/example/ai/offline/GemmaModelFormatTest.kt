@@ -52,7 +52,7 @@ class GemmaModelFormatTest {
 
         val info = GemmaModelManager.inspectModel(ggufFile)
         assertEquals(GemmaModelFormat.GGUF, info.format)
-        assertFalse("GGUF format must not be marked supported without a native GGUF engine", info.isSupported)
+        assertFalse("A GGUF magic value with invalid header fields must be rejected", info.isSupported)
         assertTrue(info.validationMessage.contains("GGUF format detected"))
     }
 
@@ -95,7 +95,20 @@ class GemmaModelFormatTest {
     }
 
     @Test
-    fun testLiteRtFlatBufferDetection() {
+    fun testLiteRtLmContainerExtensionDetection() {
+        val modelFile = tempFolder.newFile("gemma.litertlm")
+        FileOutputStream(modelFile).use { fos ->
+            fos.write(ByteArray(2 * 1024 * 1024))
+        }
+
+        val info = GemmaModelManager.inspectModel(modelFile)
+        assertEquals(GemmaModelFormat.LITERT_LM, info.format)
+        assertTrue("A LiteRT-LM container should be routed to the LiteRT-LM runtime", info.isSupported)
+        assertTrue(info.validationMessage.contains("LiteRT-LM"))
+    }
+
+    @Test
+    fun testTfliteBinaryIsNotMisclassifiedAsLiteRtLm() {
         val tfliteFile = tempFolder.newFile("gemma.bin")
         FileOutputStream(tfliteFile).use { fos ->
             val data = ByteArray(2 * 1024 * 1024)
