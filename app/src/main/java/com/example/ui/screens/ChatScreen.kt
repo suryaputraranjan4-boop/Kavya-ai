@@ -51,8 +51,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
     var menuExpanded by remember { mutableStateOf(false) }
 
     val micEngineState by com.example.voice.KavyaMicrophoneEngine.engineState.collectAsState()
-    val isMicListening = micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ACTIVE ||
-            micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_SLEEPING
+    val isMicListening = micEngineState.isListening
 
     val currentChatTitle = allChats.find { it.id == currentChatId }?.title ?: "Conversation"
 
