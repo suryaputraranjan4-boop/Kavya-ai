@@ -200,7 +200,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             "tap ", "click ", "press ", "select ", "this button", "that button", "ye button", "is button",
             "isko dabao", "ispe tap", "yahan tap", "ye karo", "isko kholo", "idhar tap", "wahan tap",
             "jaake", "jake", "udhar", "waha", "us button", "yeh kar", "karke dikhao", "screen share",
-            "what is on my screen", "what do you see", "look at my screen", "screen pe kya", "ye dekho"
+            "what is on my screen", "what do you see", "look at my screen", "screen pe kya", "ye dekho",
+            "kya dikh raha", "kya dikh rha", "kya dekh rahe ho", "screen ko dekho", "screen par dekho"
         )
         return visualKeywords.any { lower.contains(it) }
     }
