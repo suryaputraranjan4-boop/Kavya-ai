@@ -32,7 +32,7 @@ class GeminiAudioPlayer(
     
     private val audioQueue: Queue<QueuedAudio> = LinkedList()
     private var isProcessingQueue = false
-    private var playbackGeneration = 0L
+    @Volatile private var playbackGeneration = 0L
     private var activeTempFile: File? = null
     private var fileCounter = 0
     private val instanceId = java.util.UUID.randomUUID().toString().take(8)
@@ -81,6 +81,7 @@ class GeminiAudioPlayer(
         isProcessingQueue = true
         val generation = playbackGeneration
 
+        var createdPlayer: MediaPlayer? = null
         try {
             fileCounter++
             val tempFile = File(context.cacheDir, "gemini_audio_${instanceId}_${fileCounter}.wav")
@@ -88,6 +89,7 @@ class GeminiAudioPlayer(
             FileOutputStream(tempFile).use { it.write(queuedItem.audioBytes) }
 
             val player = MediaPlayer()
+            createdPlayer = player
             mediaPlayer = player
             player.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -114,7 +116,7 @@ class GeminiAudioPlayer(
                                 this@GeminiAudioPlayer.isPlaying = true
                                 onSpeakingStateChanged?.invoke(true)
                             }
-                            queuedItem.text?.takeIf { it.isNotBlank() }?.let(onAudioChunkStarted ?: {})
+                            queuedItem.text?.takeIf { it.isNotBlank() }?.let { onAudioChunkStarted?.invoke(it) }
                         }
                     }
                 } catch (e: Exception) {
@@ -133,10 +135,11 @@ class GeminiAudioPlayer(
             player.prepareAsync()
         } catch (e: Exception) {
             Log.e(TAG, "Audio setup error: ${e.message}", e)
+            try { createdPlayer?.release() } catch (_: Exception) {}
             activeTempFile?.delete()
             activeTempFile = null
             mediaPlayer = null
-            queuedItem.onComplete?.invoke()
+            runCatching { queuedItem.onComplete?.invoke() }
             processNextInQueue()
         }
     }
@@ -180,7 +183,7 @@ class GeminiAudioPlayer(
         mediaPlayer = null
         if (activeTempFile === tempFile) activeTempFile = null
         tempFile.delete()
-        item.onComplete?.invoke()
+        runCatching { item.onComplete?.invoke() }
         processNextInQueue()
     }
 
