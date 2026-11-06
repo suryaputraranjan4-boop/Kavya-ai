@@ -177,17 +177,17 @@ class KavyaVoiceEngine(
     suspend fun speakSuspending(text: String, explicitSentiment: Sentiment? = null) {
         val clean = cleanText(text)
         if (clean.isBlank()) return
-        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
-            speak(clean, explicitSentiment, enqueue = false) {
-                if (continuation.isActive) {
-                    continuation.resume(Unit) {}
+        kotlinx.coroutines.withTimeoutOrNull(10_000L) {
+            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+                continuation.invokeOnCancellation {
+                    activeSpeechJob?.cancel()
+                    geminiPlayer?.stop()
+                    updateSpeakingState(false)
                 }
-            }
-            // Timeout safety fallback after 10s if network hangs
-            scope.launch {
-                delay(10000)
-                if (continuation.isActive) {
-                    continuation.resume(Unit) {}
+                speak(clean, explicitSentiment, enqueue = false) {
+                    if (continuation.isActive) {
+                        continuation.resume(Unit) {}
+                    }
                 }
             }
         }
