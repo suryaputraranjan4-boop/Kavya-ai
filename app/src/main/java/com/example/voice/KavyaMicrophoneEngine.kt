@@ -282,7 +282,10 @@ class KavyaMicrophoneEngine : Service() {
         }
     }
 
+    @android.annotation.SuppressLint("NewApi")
     private fun createBestRecognizer(): SpeechRecognizer {
+        // The API-31-only factory is called only after the guarded availability
+        // check above. Keep the fallback path valid on minSdk 24 devices.
         preferOfflineRecognition = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
         return if (preferOfflineRecognition) {
