@@ -56,7 +56,10 @@ class GeminiProvider : AIProvider {
         if (key.isBlank()) {
             return@withContext Pair(false, "Gemini API key is not configured. Please enter your API key.")
         }
-        return@withContext AppPreferences.validateGeminiApiKey(key)
+        return@withContext AppPreferences.validateGeminiApiKey(
+            key,
+            AppPreferences.getGeminiModel(context)
+        )
     }
 
     override suspend fun getModels(context: Context): List<ProviderModelInfo> {
