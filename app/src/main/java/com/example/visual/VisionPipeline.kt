@@ -48,6 +48,7 @@ object VisionPipeline {
     /**
      * Ingests a new raw frame from the ScreenCaptureService VirtualDisplay.
      */
+    @Synchronized
     fun onNewFrame(bitmap: Bitmap) {
         val now = System.currentTimeMillis()
         if (now - lastProcessTimestamp < MIN_FRAME_INTERVAL_MS) {
@@ -56,10 +57,16 @@ object VisionPipeline {
         }
         lastProcessTimestamp = now
 
-        cachedLatestFrame = bitmap
+        // Keep an owned snapshot: the capture/share consumer may recycle its bitmap.
+        val ownedFrame = try { bitmap.copy(Bitmap.Config.ARGB_8888, false) } catch (e: Exception) {
+            Log.w(TAG, "Unable to retain screen frame: ${e.message}")
+            return
+        }
+        cachedLatestFrame?.takeIf { !it.isRecycled }?.recycle()
+        cachedLatestFrame = ownedFrame
         framesProcessedCount++
 
-        val frameHash = computeFrameHash(bitmap)
+        val frameHash = computeFrameHash(ownedFrame)
         val hasChanged = frameHash != previousFrameHash
         previousFrameHash = frameHash
 
@@ -76,6 +83,17 @@ object VisionPipeline {
     }
 
     fun getLatestFrame(): Bitmap? = cachedLatestFrame
+
+    /** Returns an independent frame snapshot safe for asynchronous AI analysis. */
+    @Synchronized
+    fun getLatestFrameCopy(): Bitmap? {
+        val frame = cachedLatestFrame ?: return null
+        if (frame.isRecycled) return null
+        return try { frame.copy(Bitmap.Config.ARGB_8888, false) } catch (e: Exception) {
+            Log.w(TAG, "Unable to copy current screen frame: ${e.message}")
+            null
+        }
+    }
 
     /**
      * Compresses the latest captured frame for Gemini Vision multimodal analysis
@@ -132,7 +150,9 @@ object VisionPipeline {
         )
     }
 
+    @Synchronized
     fun reset() {
+        cachedLatestFrame?.takeIf { !it.isRecycled }?.recycle()
         cachedLatestFrame = null
         previousFrameHash = ""
         framesProcessedCount = 0
