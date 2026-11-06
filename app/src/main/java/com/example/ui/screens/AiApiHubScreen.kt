@@ -824,7 +824,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isOrTesting) {
                         ConnectionStatus.TESTING
-                    } else if (orTestResult?.first == true) {
+                    } else if (orTestResult?.first == true || (orTestResult == null && AppPreferences.getProviderStatus(context, "openrouter") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (orTestResult?.first == false) {
                         ConnectionStatus.ERROR
@@ -901,7 +901,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isHfTesting) {
                         ConnectionStatus.TESTING
-                    } else if (hfTestResult?.first == true) {
+                    } else if (hfTestResult?.first == true || (hfTestResult == null && AppPreferences.getProviderStatus(context, "huggingface") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (hfTestResult?.first == false) {
                         ConnectionStatus.ERROR
@@ -973,7 +973,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isGeminiTesting) {
                         ConnectionStatus.TESTING
-                    } else if (geminiTestResult?.first == true) {
+                    } else if (geminiTestResult?.first == true || (geminiTestResult == null && AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (geminiTestResult?.first == false) {
                         ConnectionStatus.ERROR
