@@ -99,7 +99,12 @@ class KavyaVoiceEngine(
         val effectiveSpeed = (baseSpeed * sentiment.speedMultiplier).coerceIn(0.80f, 1.25f)
 
         if (!enqueue) {
-            stop()
+            // Interrupt the previous response without publishing an intermediate
+            // "not speaking" state. The mic listener must remain paused while
+            // the replacement audio is being generated.
+            speechGeneration++
+            activeSpeechJob?.cancel()
+            geminiPlayer?.stop(notifySpeakingState = false)
         }
         val generation = speechGeneration
 
