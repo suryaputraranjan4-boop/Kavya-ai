@@ -109,7 +109,7 @@ object ScreenShareManager {
      * Invoked by ScreenCaptureService when a new frame is captured from the VirtualDisplay.
      */
     @Synchronized
-fun onFrameCaptured(bitmap: Bitmap, width: Int, height: Int) {
+    fun onFrameCaptured(bitmap: Bitmap, width: Int, height: Int) {
         // A late ImageReader callback must not reactivate a share after stop/error.
         if (_state.value is ScreenShareState.Stopped ||
             _state.value is ScreenShareState.Error ||
@@ -153,7 +153,7 @@ fun onFrameCaptured(bitmap: Bitmap, width: Int, height: Int) {
      * Stops screen capture session cleanly.
      */
     @Synchronized
-fun stopScreenShare(context: Context) {
+    fun stopScreenShare(context: Context) {
         Log.i(TAG, "Stopping screen sharing session...")
         // Stop the foreground service directly. Starting a new background service
         // just to deliver ACTION_STOP can be rejected by Android background-start
@@ -178,7 +178,7 @@ fun stopScreenShare(context: Context) {
      * Reports an internal error from the service.
      */
     @Synchronized
-fun reportServiceError(errorMessage: String) {
+    fun reportServiceError(errorMessage: String) {
         Log.e(TAG, "Screen share service error: $errorMessage")
         frameCounter.set(0)
         currentFps = 0
@@ -195,7 +195,7 @@ fun reportServiceError(errorMessage: String) {
      * Marks session stopped internally when projection stops.
      */
     @Synchronized
-fun onServiceStopped() {
+    fun onServiceStopped() {
         frameCounter.set(0)
         currentFps = 0
         framesInLastSecond = 0
