@@ -224,7 +224,15 @@ object AppPreferences {
     }
 
     fun getHuggingFaceModel(context: Context): String {
-        return getPrefs(context).getString(KEY_HUGGINGFACE_MODEL, "distilbert-base-uncased") ?: "distilbert-base-uncased"
+        val savedModel = getPrefs(context).getString(KEY_HUGGINGFACE_MODEL, null)?.trim()
+        // Migrate the old non-generative default: this preference is also used
+        // by the provider's text-generation path, so a masked-language model
+        // caused otherwise valid API keys to fail inference tests.
+        return if (savedModel.isNullOrBlank() || savedModel == "distilbert-base-uncased") {
+            "meta-llama/Llama-3.2-1B-Instruct"
+        } else {
+            savedModel
+        }
     }
 
     fun setHuggingFaceModel(context: Context, model: String) {
@@ -542,13 +550,13 @@ object AppPreferences {
     /**
      * Validates Hugging Face connection by sending an inference request to Hugging Face Inference API.
      */
-    suspend fun validateHuggingFaceConnection(apiKey: String, model: String = "distilbert-base-uncased"): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+    suspend fun validateHuggingFaceConnection(apiKey: String, model: String = "meta-llama/Llama-3.2-1B-Instruct"): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Pair(false, "Hugging Face connection failed. Please enter your API key.")
         }
-        val targetModel = model.ifBlank { "distilbert-base-uncased" }
+        val targetModel = model.ifBlank { "meta-llama/Llama-3.2-1B-Instruct" }
         try {
-            val url = "https://api-inference.huggingface.co/models/$targetModel"
+            val url = "https://router.huggingface.co/hf-inference/models/$targetModel"
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val requestBody = okhttp3.RequestBody.Companion.create(mediaType, "{\"inputs\": \"Hello world test\"}")
             val request = okhttp3.Request.Builder()
