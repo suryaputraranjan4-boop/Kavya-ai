@@ -62,7 +62,10 @@ class GeminiAudioPlayer(
         onComplete: (() -> Unit)? = null
     ) {
         if (!enqueue) {
-            stop()
+            // Replacing one response with another must not publish a false
+            // speaking-state edge; that briefly reopens the mic and can cause
+            // Android's audible recognizer-start cue on every assistant turn.
+            stop(notifySpeakingState = false)
         }
         audioQueue.offer(QueuedAudio(audioBytes, text, onComplete))
         if (!isProcessingQueue) {
@@ -145,7 +148,7 @@ class GeminiAudioPlayer(
     }
 
     @Synchronized
-    fun stop() {
+    fun stop(notifySpeakingState: Boolean = true) {
         // Invalidate callbacks from the previous player before releasing it.
         playbackGeneration++
         audioQueue.clear()
@@ -162,7 +165,7 @@ class GeminiAudioPlayer(
             Log.w(TAG, "Error stopping player: ${e.message}")
         } finally {
             try { player?.release() } catch (_: Exception) {}
-            cleanupAndNotify(null)
+            cleanupAndNotify(null, notifySpeakingState)
         }
     }
 
@@ -187,7 +190,10 @@ class GeminiAudioPlayer(
         processNextInQueue()
     }
 
-    private fun cleanupAndNotify(onComplete: (() -> Unit)?) {
+    private fun cleanupAndNotify(
+        onComplete: (() -> Unit)?,
+        notifySpeakingState: Boolean = true
+    ) {
         try {
             mediaPlayer?.release()
             mediaPlayer = null
@@ -198,8 +204,8 @@ class GeminiAudioPlayer(
         } finally {
             if (isPlaying && audioQueue.isEmpty()) {
                 isPlaying = false
-                mainHandler.post { 
-                    onSpeakingStateChanged?.invoke(false) 
+                mainHandler.post {
+                    if (notifySpeakingState) onSpeakingStateChanged?.invoke(false)
                     onComplete?.invoke()
                 }
             } else {
