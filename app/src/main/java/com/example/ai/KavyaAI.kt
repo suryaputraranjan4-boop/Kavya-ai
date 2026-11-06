@@ -222,6 +222,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
     }
 
     fun isApiKeyConfigured(): Boolean {
+        if (context != null &&
+            com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER"
+        ) {
+            return com.example.utils.AppPreferences.isOpenRouterEnabled(context) &&
+                com.example.utils.AppPreferences.getOpenRouterApiKey(context).isNotBlank()
+        }
         val key = if (context != null) {
             com.example.utils.AppPreferences.getEffectiveApiKey(context)
         } else {
@@ -609,7 +615,9 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
                 val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
 
-                if ((isExplicitOffline || !isApiKeyConfigured()) && gemmaProvider.isConfigured(context)) {
+                if ((isExplicitOffline ||
+                    (selectedProvider != "OPENROUTER" && !isApiKeyConfigured())) &&
+                    gemmaProvider.isConfigured(context)) {
                     val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
                     val gemmaResult = gemmaProvider.generate(prompt, sysPrompt, context)
                     if (gemmaResult.success && gemmaResult.text.isNotBlank()) {
@@ -1081,7 +1089,9 @@ class KavyaAI(private val context: android.content.Context? = null) {
             val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
             val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
 
-            if ((isExplicitOffline || !isApiKeyConfigured()) && gemmaProvider.isConfigured(context)) {
+            if ((isExplicitOffline ||
+                    (selectedProvider != "OPENROUTER" && !isApiKeyConfigured())) &&
+                    gemmaProvider.isConfigured(context)) {
                 val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
                 gemmaProvider.streamGenerate(prompt, sysPrompt, context).collect { chunk ->
                     emit(chunk)
