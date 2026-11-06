@@ -48,8 +48,10 @@ class QuotaManager {
     suspend fun acquireQuota(requestId: String, priority: RequestPriority): Boolean {
         return mutex.withLock {
             val now = System.currentTimeMillis()
-            // Clean up stale requests older than 20 seconds
+            // Clean up stale requests older than 20 seconds and keep the
+            // dashboard counter consistent with the active-request registry.
             activeRequestMap.entries.removeAll { now - it.value > 20000L }
+            activeRequests = activeRequestMap.size
 
             if (activeRequestMap.containsKey(requestId)) {
                 duplicateRequestsPrevented++
