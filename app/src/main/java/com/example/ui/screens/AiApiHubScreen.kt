@@ -81,7 +81,7 @@ fun AiApiHubScreen(navController: NavController) {
 
     // Hugging Face State
     var hfKeyInput by remember { mutableStateOf(AppPreferences.getHuggingFaceApiKey(context)) }
-    var hfModel by remember { mutableStateOf(AppPreferences.getHuggingFaceModel(context).ifBlank { "distilbert-base-uncased" }) }
+    var hfModel by remember { mutableStateOf(AppPreferences.getHuggingFaceModel(context).ifBlank { "meta-llama/Llama-3.2-1B-Instruct" }) }
     var hfEnabled by remember { mutableStateOf(AppPreferences.isHuggingFaceEnabled(context)) }
     var isHfKeyVisible by remember { mutableStateOf(false) }
     var isHfEditing by remember { mutableStateOf(false) }
@@ -949,7 +949,7 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.setHuggingFaceModel(context, it)
                     },
                     presetModels = availableHfModels,
-                    modelPlaceholder = "e.g. distilbert-base-uncased or cardiffnlp/twitter-roberta...",
+                    modelPlaceholder = "e.g. meta-llama/Llama-3.2-1B-Instruct",
                     isTesting = isHfTesting,
                     testResult = hfTestResult,
                     onTestConnection = {
