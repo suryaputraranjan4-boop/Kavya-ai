@@ -1317,7 +1317,19 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 // 4. Kavya Visual Action Engine execution check
-                if (cleanResponse.isBlank() &&
+                val needsFreshVisualTarget =
+                    com.example.services.ScreenShareManager.isScreenSharingActive &&
+                        isVisualInteractionIntent(prompt)
+                val visualAnalysisUnavailable =
+                    liveVisualAnalysis.isBlank() ||
+                        liveVisualAnalysis.startsWith("No fresh screenshot", ignoreCase = true) ||
+                        liveVisualAnalysis.startsWith("Visual analysis failed", ignoreCase = true) ||
+                        liveVisualAnalysis.startsWith("Visual analysis unavailable", ignoreCase = true) ||
+                        liveVisualAnalysis.startsWith("Visual frame captured, but cloud visual analysis is disabled", ignoreCase = true)
+
+                if (cleanResponse.isBlank() && needsFreshVisualTarget && visualAnalysisUnavailable) {
+                    cleanResponse = "I can't reliably identify the screen target yet. Keep Screen Share active and make sure Gemini vision is available, then try that instruction again."
+                } else if (cleanResponse.isBlank() &&
                     (isVisualInteractionIntent(prompt) ||
                         (com.example.services.ScreenShareManager.isScreenSharingActive && !isConversationalTurn))) {
                     val visualPrompt = if (liveVisualAnalysis.isNotBlank()) {
