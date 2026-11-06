@@ -190,7 +190,7 @@ class KavyaVoiceEngine(
     suspend fun speakSuspending(text: String, explicitSentiment: Sentiment? = null) {
         val clean = cleanText(text)
         if (clean.isBlank()) return
-        kotlinx.coroutines.withTimeoutOrNull(10_000L) {
+        kotlinx.coroutines.withTimeoutOrNull(90_000L) {
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
                 continuation.invokeOnCancellation {
                     stop()
