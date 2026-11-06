@@ -832,7 +832,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.CONFIGURED
                     },
                     apiKey = orKeyInput,
-                    onApiKeyChange = { orKeyInput = it },
+                    onApiKeyChange = { orKeyInput = it; orTestResult = null; AppPreferences.setProviderStatus(context, "openrouter", if (it.isBlank()) "NOT_CONFIGURED" else "CONFIGURED") },
                     isKeyVisible = isOrKeyVisible,
                     onToggleKeyVisibility = { isOrKeyVisible = !isOrKeyVisible },
                     isEditing = isOrEditing,
@@ -852,6 +852,7 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.clearOpenRouterApiKey(context)
                         isOrEditing = false
                         orTestResult = null
+                        AppPreferences.setProviderStatus(context, "openrouter", "NOT_CONFIGURED")
                     },
                     selectedModel = orModel,
                     onModelChange = {
@@ -866,6 +867,7 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isOrTesting = true
                             orTestResult = AppPreferences.validateOpenRouterConnection(orKeyInput, orModel)
+                            AppPreferences.recordProviderConnectionTest(context, "openrouter", orTestResult!!)
                             isOrTesting = false
                         }
                     }
@@ -909,7 +911,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.CONFIGURED
                     },
                     apiKey = hfKeyInput,
-                    onApiKeyChange = { hfKeyInput = it },
+                    onApiKeyChange = { hfKeyInput = it; hfTestResult = null; AppPreferences.setProviderStatus(context, "huggingface", if (it.isBlank()) "NOT_CONFIGURED" else "CONFIGURED") },
                     isKeyVisible = isHfKeyVisible,
                     onToggleKeyVisibility = { isHfKeyVisible = !isHfKeyVisible },
                     isEditing = isHfEditing,
@@ -929,6 +931,7 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.clearHuggingFaceApiKey(context)
                         isHfEditing = false
                         hfTestResult = null
+                        AppPreferences.setProviderStatus(context, "huggingface", "NOT_CONFIGURED")
                     },
                     selectedModel = hfModel,
                     onModelChange = {
@@ -943,6 +946,7 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isHfTesting = true
                             hfTestResult = AppPreferences.validateHuggingFaceConnection(hfKeyInput, hfModel)
+                            AppPreferences.recordProviderConnectionTest(context, "huggingface", hfTestResult!!)
                             isHfTesting = false
                         }
                     }
@@ -981,7 +985,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.CONFIGURED
                     },
                     apiKey = geminiKeyInput,
-                    onApiKeyChange = { geminiKeyInput = it },
+                    onApiKeyChange = { geminiKeyInput = it; geminiTestResult = null; AppPreferences.setProviderStatus(context, "gemini", if (it.isBlank() && effectiveGeminiKey.isBlank()) "NOT_CONFIGURED" else "CONFIGURED") },
                     isKeyVisible = isGeminiKeyVisible,
                     onToggleKeyVisibility = { isGeminiKeyVisible = !isGeminiKeyVisible },
                     isEditing = isGeminiEditing,
@@ -1004,6 +1008,7 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.clearCustomApiKey(context)
                         isGeminiEditing = false
                         geminiTestResult = null
+                        AppPreferences.setProviderStatus(context, "gemini", "NOT_CONFIGURED")
                     },
                     selectedModel = geminiModel,
                     onModelChange = {
@@ -1021,6 +1026,7 @@ fun AiApiHubScreen(navController: NavController) {
                                 if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey,
                                 geminiModel
                             )
+                            AppPreferences.recordProviderConnectionTest(context, "gemini", geminiTestResult!!)
                             isGeminiTesting = false
                         }
                     }
