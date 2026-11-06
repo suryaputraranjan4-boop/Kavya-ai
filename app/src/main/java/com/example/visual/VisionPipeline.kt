@@ -86,7 +86,6 @@ object VisionPipeline {
 
     /** Returns an independent frame snapshot safe for asynchronous AI analysis. */
     @Synchronized
-    @Synchronized
     fun getLatestFrameCopy(maxAgeMs: Long = 2500L): Bitmap? {
         val frame = cachedLatestFrame ?: return null
         if (frame.isRecycled) return null
