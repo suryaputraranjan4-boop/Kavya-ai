@@ -320,17 +320,16 @@ object AppPreferences {
     }
 
     fun getProviderStatus(context: Context, providerId: String): String {
-        val defaultStatus = if (providerId.equals("gemini", ignoreCase = true) && getEffectiveApiKey(context).isNotBlank()) {
-            "CONNECTED"
-        } else if (providerId.equals("public_apis", ignoreCase = true)) {
-            "CONNECTED"
-        } else if (providerId.equals("openrouter", ignoreCase = true) && getOpenRouterApiKey(context).isNotBlank()) {
-            "CONFIGURED"
-        } else if (providerId.equals("huggingface", ignoreCase = true) && getHuggingFaceApiKey(context).isNotBlank()) {
-            "CONFIGURED"
-        } else {
-            "NOT_CONFIGURED"
+        // A saved key only proves that credentials were entered. Mark a provider
+        // CONNECTED only after a real successful request has been recorded.
+        val hasCredentials = when (providerId.lowercase()) {
+            "gemini" -> getEffectiveApiKey(context).isNotBlank()
+            "openrouter" -> getOpenRouterApiKey(context).isNotBlank()
+            "huggingface" -> getHuggingFaceApiKey(context).isNotBlank()
+            "public_apis" -> isPublicApisEnabled(context)
+            else -> false
         }
+        val defaultStatus = if (hasCredentials) "CONFIGURED" else "NOT_CONFIGURED"
         return getPrefs(context).getString(PREFIX_PROVIDER_STATUS + providerId.lowercase(), defaultStatus) ?: defaultStatus
     }
 
@@ -419,39 +418,47 @@ object AppPreferences {
     /**
      * Validates API key against Gemini API with a lightweight prompt
      */
-    suspend fun validateGeminiApiKey(apiKey: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) {
-            return@withContext Pair(false, "API Key is empty.")
-        }
+    suspend fun validateGeminiApiKey(
+        apiKey: String,
+        model: String = com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext Pair(false, "Gemini API key is empty.")
+
+        val targetModel = model.trim().ifBlank { com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL }
+        val testRequest = GenerateContentRequest(
+            contents = listOf(Content(role = "user", parts = listOf(Part(text = "Reply with OK."))))
+        )
         try {
-            val testRequest = GenerateContentRequest(
-                contents = listOf(
-                    Content(
-                        role = "user",
-                        parts = listOf(Part(text = "Hi"))
-                    )
-                )
-            )
-            val response = RetrofitClient.service.generateContent(
-                model = "gemini-3.6-flash",
+            RetrofitClient.service.generateContent(
+                model = targetModel,
                 apiKey = apiKey.trim(),
                 request = testRequest
             )
-            val candidate = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-            if (!candidate.isNullOrBlank()) {
-                Pair(true, "API Key verified successfully!")
-            } else {
-                Pair(true, "API Key is valid and active.")
-            }
+            Pair(true, "Gemini connected successfully. Model: $targetModel")
         } catch (e: retrofit2.HttpException) {
-            when (e.code()) {
-                400 -> Pair(false, "Invalid API Key format or request rejected (400).")
-                403 -> Pair(false, "Permission denied. Please verify your Gemini API key (403).")
-                429 -> Pair(true, "Valid API Key (rate limited, but active).")
-                else -> Pair(false, "Verification error: HTTP ${e.code()}")
+            val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+            val detail = try {
+                if (body.isNullOrBlank()) null
+                else org.json.JSONObject(body).optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) { null }
+            val reason = when (e.code()) {
+                400 -> "The request or model is invalid (HTTP 400). ${detail.orEmpty()}"
+                401 -> "The API key was rejected (HTTP 401)."
+                403 -> "Access denied for this key or model (HTTP 403). ${detail.orEmpty()}"
+                404 -> "Model '$targetModel' was not found (HTTP 404). Check the model name."
+                429 -> "Gemini is reachable, but the key/model quota or rate limit was reached (HTTP 429)."
+                in 500..599 -> "Google Gemini service error (HTTP ${e.code()}). Try again later."
+                else -> "Gemini returned HTTP ${e.code()}. ${detail.orEmpty()}"
             }
+            Pair(e.code() == 429, reason)
+        } catch (e: java.net.UnknownHostException) {
+            Pair(false, "No network/DNS connection to Gemini. Check internet access.")
+        } catch (e: java.net.SocketTimeoutException) {
+            Pair(false, "Gemini connection timed out. Check the network and try again.")
+        } catch (e: java.io.IOException) {
+            Pair(false, "Network connection to Gemini failed: ${e.localizedMessage ?: "I/O error"}")
         } catch (e: Exception) {
-            Pair(false, "Connection failed: ${e.localizedMessage ?: "Please check your network and API key"}")
+            Pair(false, "Gemini verification failed: ${e.localizedMessage ?: e.javaClass.simpleName}")
         }
     }
 
@@ -501,8 +508,14 @@ object AppPreferences {
                 else -> parsedMsg ?: "HTTP ${e.code()}"
             }
             Pair(false, "OpenRouter connection failed: $reason")
+        } catch (e: java.net.UnknownHostException) {
+            Pair(false, "Cannot reach OpenRouter: DNS/network unavailable.")
+        } catch (e: java.net.SocketTimeoutException) {
+            Pair(false, "OpenRouter connection timed out. Check your network.")
+        } catch (e: java.io.IOException) {
+            Pair(false, "OpenRouter network error: ${e.localizedMessage ?: "I/O failure"}")
         } catch (e: Exception) {
-            Pair(false, "OpenRouter connection failed. Please check your API key and internet connection.")
+            Pair(false, "OpenRouter test failed: ${e.localizedMessage ?: e.javaClass.simpleName}")
         }
     }
 
