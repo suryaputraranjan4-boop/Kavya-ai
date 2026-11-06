@@ -204,8 +204,7 @@ class KavyaVoiceEngine(
                 throw e
             } catch (_: Exception) {
                 if (generation == speechGeneration) {
-                    geminiPlayer?.notifySpeaking(false)
-                    updateSpeakingState(false)
+                    notifyIdleIfPlaybackQueueEmpty()
                     onComplete?.invoke()
                 }
             }
