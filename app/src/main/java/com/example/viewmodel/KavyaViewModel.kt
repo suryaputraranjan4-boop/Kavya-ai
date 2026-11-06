@@ -201,7 +201,14 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             "isko dabao", "ispe tap", "yahan tap", "ye karo", "isko kholo", "idhar tap", "wahan tap",
             "jaake", "jake", "udhar", "waha", "us button", "yeh kar", "karke dikhao", "screen share",
             "what is on my screen", "what do you see", "look at my screen", "screen pe kya", "ye dekho",
-            "kya dikh raha", "kya dikh rha", "kya dekh rahe ho", "screen ko dekho", "screen par dekho"
+            "kya dikh raha", "kya dikh rha", "kya dekh rahe ho", "screen ko dekho", "screen par dekho",
+            "do this", "do that", "go there", "move there", "press here", "click here", "tap here",
+            "this one", "that one", "the one here", "the one there", "ye wala", "yeh wala",
+            "wo wala", "woh wala", "yahan", "yahaan", "yaha", "wahan", "wahaan", "udhar",
+            "idhar", "is taraf", "us taraf", "isko", "is ko", "usko", "ispe", "is par",
+            "us par", "uspe", "iske upar", "uske upar", "ja ke", "jaakar", "wahan ja",
+            "udhar ja", "idhar ja", "phir ye", "phir isko", "ye kar do", "yeh kar do",
+            "kar ke dikhao", "karke dikhao", "yeh karo", "ye karo", "waha jaake", "yaha jaake"
         )
         return visualKeywords.any { lower.contains(it) }
     }
@@ -1237,17 +1244,23 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 // Analyze a fresh shared-screen frame before planning visual actions. The
                 // accessibility tree alone often omits icons, canvas content and game controls.
                 var liveVisualAnalysis = ""
-                if (_isScreenSharing.value && isVisualInteractionIntent(prompt)) {
-                    val frameSnapshot = com.example.visual.VisionPipeline.getLatestFrameCopy()
+                if (com.example.services.ScreenShareManager.isScreenSharingActive &&
+                    (isVisualInteractionIntent(prompt) || !isConversationalTurn)) {
+                    val frameSnapshot = com.example.visual.VisionPipeline.getLatestFrameCopy(maxAgeMs = 2500L)
                     if (frameSnapshot != null) {
                         try {
-                            liveVisualAnalysis = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                                KavyaAI(getApplication()).analyzeVisualUI(
-                                    frameSnapshot,
-                                    "Inspect the current phone screenshot for this user request: $prompt. " +
-                                        "Describe visible app, screen state, readable labels, relevant buttons/icons, dialogs and the next safe UI target. " +
-                                        "Do not claim to have tapped anything and do not guess unreadable text."
-                                )
+                            liveVisualAnalysis = if (aiClient.isOfflineMode()) {
+                                "Visual frame captured, but cloud visual analysis is disabled while Offline Mode is active. Use the available on-device accessibility information only."
+                            } else {
+                                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                    KavyaAI(getApplication()).analyzeVisualUI(
+                                        frameSnapshot,
+                                        "Inspect the current phone screenshot for this user request: $prompt. " +
+                                            "Describe the visible app, screen state, readable labels, relevant buttons/icons, dialogs and the next safe UI target. " +
+                                            "Relate spatial phrases such as 'this', 'that', 'here', 'there', 'ye', 'isko', 'udhar' to visible controls. " +
+                                            "Do not claim to have tapped anything and do not guess unreadable text."
+                                    )
+                                }
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Live screen understanding failed: ${e.message}")
@@ -1260,7 +1273,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 // 4. Kavya Visual Action Engine execution check
-                if (!isFastChat && cleanResponse.isBlank() && isVisualInteractionIntent(prompt)) {
+                if (!isFastChat && cleanResponse.isBlank() &&
+                    (isVisualInteractionIntent(prompt) ||
+                        (com.example.services.ScreenShareManager.isScreenSharingActive && !isConversationalTurn))) {
                     val visualPrompt = if (liveVisualAnalysis.isNotBlank()) {
                         "$prompt\n\nCURRENT SCREEN VISUAL ANALYSIS (fresh frame):\n$liveVisualAnalysis"
                     } else prompt
