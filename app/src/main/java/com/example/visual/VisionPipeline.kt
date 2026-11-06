@@ -106,31 +106,46 @@ object VisionPipeline {
      * only when semantic visual reasoning is genuinely required.
      */
     fun getCompressedJpegFrame(maxDimension: Int = 720, quality: Int = 75): ByteArray? {
-        val frame = cachedLatestFrame ?: return null
+        // Compress an owned copy so a concurrent capture/reset cannot recycle the
+        // bitmap while JPEG encoding is reading its pixels.
+        val frame = getLatestFrameCopy() ?: return null
+        var scaledBitmap: Bitmap? = null
         return try {
             val width = frame.width
             val height = frame.height
-            val scale = if (width > maxDimension || height > maxDimension) {
-                val max = maxOf(width, height)
-                maxDimension.toFloat() / max
+            val safeMaxDimension = maxDimension.coerceAtLeast(1)
+            val scale = if (width > safeMaxDimension || height > safeMaxDimension) {
+                safeMaxDimension.toFloat() / maxOf(width, height)
             } else 1.0f
 
-            val scaledBitmap = if (scale < 1.0f) {
-                Bitmap.createScaledBitmap(frame, (width * scale).toInt(), (height * scale).toInt(), true)
+            val outputBitmap = if (scale < 1.0f) {
+                Bitmap.createScaledBitmap(
+                    frame,
+                    (width * scale).toInt().coerceAtLeast(1),
+                    (height * scale).toInt().coerceAtLeast(1),
+                    true
+                ).also { scaledBitmap = it }
             } else {
                 frame
             }
 
-            try {
-                val stream = ByteArrayOutputStream()
-                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+            val stream = ByteArrayOutputStream()
+            if (!outputBitmap.compress(
+                    Bitmap.CompressFormat.JPEG,
+                    quality.coerceIn(1, 100),
+                    stream
+                )
+            ) {
+                null
+            } else {
                 stream.toByteArray()
-            } finally {
-                if (scaledBitmap !== frame && !scaledBitmap.isRecycled) scaledBitmap.recycle()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error compressing visual frame: ${e.message}")
             null
+        } finally {
+            scaledBitmap?.takeIf { !it.isRecycled }?.recycle()
+            if (!frame.isRecycled) frame.recycle()
         }
     }
 
@@ -138,6 +153,7 @@ object VisionPipeline {
      * Produces a unified perception snapshot combining live Accessibility hierarchy
      * and live visual capture state.
      */
+    @Synchronized
     fun getUnifiedPerceptionSnapshot(): UnifiedScreenPerception {
         val a11y = KavyaAccessibilityService.instance
         val freshScreen = FreshScreenRecognizer.inspectFreshScreenNow()
