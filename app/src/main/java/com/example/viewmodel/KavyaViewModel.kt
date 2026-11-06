@@ -196,7 +196,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             "br start", "cs ranked", "free fire", "freefire", "start button", "game start",
             "tap on", "click on", "dabaao", "dabao", "button दबाओ", "click करो", "tap करो",
             "screen पर", "screen par", "dhundo", "ढूंढो",
-            "scroll down", "scroll up", "swipe up", "swipe down", "swipe left", "swipe right"
+            "scroll down", "scroll up", "swipe up", "swipe down", "swipe left", "swipe right",
+            "tap ", "click ", "press ", "select ", "this button", "that button", "ye button", "is button",
+            "isko dabao", "ispe tap", "yahan tap", "ye karo", "isko kholo", "idhar tap", "wahan tap",
+            "what is on my screen", "what do you see", "look at my screen", "screen pe kya", "ye dekho"
         )
         return visualKeywords.any { lower.contains(it) }
     }
@@ -1229,9 +1232,37 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                // Analyze a fresh shared-screen frame before planning visual actions. The
+                // accessibility tree alone often omits icons, canvas content and game controls.
+                var liveVisualAnalysis = ""
+                if (_isScreenSharing.value && isVisualInteractionIntent(prompt)) {
+                    val frameSnapshot = com.example.visual.VisionPipeline.getLatestFrameCopy()
+                    if (frameSnapshot != null) {
+                        try {
+                            liveVisualAnalysis = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                KavyaAI(getApplication()).analyzeVisualUI(
+                                    frameSnapshot,
+                                    "Inspect the current phone screenshot for this user request: $prompt. " +
+                                        "Describe visible app, screen state, readable labels, relevant buttons/icons, dialogs and the next safe UI target. " +
+                                        "Do not claim to have tapped anything and do not guess unreadable text."
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Live screen understanding failed: ${e.message}")
+                        } finally {
+                            if (!frameSnapshot.isRecycled) frameSnapshot.recycle()
+                        }
+                    } else {
+                        liveVisualAnalysis = "No fresh screenshot frame is available yet; rely on accessibility data and ask for a new frame if needed."
+                    }
+                }
+
                 // 4. Kavya Visual Action Engine execution check
                 if (!isFastChat && cleanResponse.isBlank() && isVisualInteractionIntent(prompt)) {
-                    val visualOutcome = androidAgent.executeVisualGoal(prompt) { milestoneText ->
+                    val visualPrompt = if (liveVisualAnalysis.isNotBlank()) {
+                        "$prompt\\n\\nCURRENT SCREEN VISUAL ANALYSIS (fresh frame):\\n$liveVisualAnalysis"
+                    } else prompt
+                    val visualOutcome = androidAgent.executeVisualGoal(visualPrompt) { milestoneText ->
                         _agentActionStatus.value = milestoneText
                         _latestKavyaCaption.value = milestoneText
                         if (_autoSpeak.value) {
@@ -1252,7 +1283,17 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         .filter { !it.isLoading && !it.isError && it.id != (userMsgEntity?.id ?: "") && it.id != loadingMsgId }
                         .map { MessageEntity(it.id, chatId, it.text, it.isUser, 0) }
                     
-                    val screenContext = if (!isFastChat) screenInspector.getScreenContextString() else ""
+                    val accessibilityContext = if (!isFastChat) screenInspector.getScreenContextString() else ""
+                    val screenContext = buildString {
+                        append(accessibilityContext)
+                        if (liveVisualAnalysis.isNotBlank()) {
+                            append("\\n\\nLIVE SCREEN VISUAL ANALYSIS:\\n")
+                            append(liveVisualAnalysis)
+                        }
+                        if (_isScreenSharing.value && liveVisualAnalysis.isBlank()) {
+                            append("\\n\\nScreen sharing is enabled, but no fresh visual analysis was available for this turn. Do not pretend to see screen contents.")
+                        }
+                    }
                     
                     // Retrieve only top relevant memories (semantic & keyword scored)
                     val relevantMemories = if (!isFastChat) memoryEngine.retrieveRelevantMemories(prompt, contextEngine.activeTargetAppName) else emptyList()
