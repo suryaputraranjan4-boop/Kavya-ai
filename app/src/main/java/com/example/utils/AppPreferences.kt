@@ -617,16 +617,32 @@ object AppPreferences {
     fun getCustomApis(context: Context): List<CustomApiConfig> {
         val raw = getPrefs(context).getString(KEY_CUSTOM_APIS_JSON, "[]") ?: "[]"
         val list = mutableListOf<CustomApiConfig>()
+        var migratedLegacyKeys = false
         try {
             val jsonArray = org.json.JSONArray(raw)
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
+                val id = obj.optString("id").ifBlank { java.util.UUID.randomUUID().toString() }
+                val secretName = "custom_api_key_$id"
+                val secureKey = com.example.security.SecureStorage.getSecret(context, secretName)
+                val legacyKey = obj.optString("apiKey")
+                val apiKey = secureKey.ifBlank { legacyKey }
+
+                // Migrate old plaintext credentials into the Android Keystore-backed vault.
+                if (secureKey.isBlank() && legacyKey.isNotBlank()) {
+                    com.example.security.SecureStorage.saveSecret(context, secretName, legacyKey)
+                    migratedLegacyKeys = true
+                }
+                if (obj.has("apiKey") || obj.optString("id").isBlank()) {
+                    migratedLegacyKeys = true
+                }
+
                 list.add(
                     CustomApiConfig(
-                        id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+                        id = id,
                         name = obj.optString("name", "Custom API"),
                         endpointUrl = obj.optString("endpointUrl", ""),
-                        apiKey = obj.optString("apiKey", ""),
+                        apiKey = apiKey,
                         model = obj.optString("model", ""),
                         isEnabled = obj.optBoolean("isEnabled", true),
                         dateAdded = obj.optLong("dateAdded", System.currentTimeMillis())
@@ -635,6 +651,10 @@ object AppPreferences {
             }
         } catch (e: Exception) {
             android.util.Log.e("AppPreferences", "Error reading custom APIs", e)
+        }
+        if (migratedLegacyKeys) {
+            // Re-write metadata without any plaintext API key field after migration.
+            persistCustomApis(context, list)
         }
         return list
     }
@@ -653,6 +673,7 @@ object AppPreferences {
     fun deleteCustomApi(context: Context, id: String) {
         val current = getCustomApis(context).filterNot { it.id == id }
         persistCustomApis(context, current)
+        com.example.security.SecureStorage.clearSecret(context, "custom_api_key_$id")
     }
 
     fun setCustomApiEnabled(context: Context, id: String, enabled: Boolean) {
@@ -665,11 +686,16 @@ object AppPreferences {
     private fun persistCustomApis(context: Context, list: List<CustomApiConfig>) {
         val jsonArray = org.json.JSONArray()
         for (api in list) {
+            com.example.security.SecureStorage.saveSecret(
+                context,
+                "custom_api_key_${api.id}",
+                api.apiKey
+            )
             val obj = org.json.JSONObject().apply {
                 put("id", api.id)
                 put("name", api.name)
                 put("endpointUrl", api.endpointUrl)
-                put("apiKey", api.apiKey)
+                // API keys live only in SecureStorage, never in this JSON metadata.
                 put("model", api.model)
                 put("isEnabled", api.isEnabled)
                 put("dateAdded", api.dateAdded)
