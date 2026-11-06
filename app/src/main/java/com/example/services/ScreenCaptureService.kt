@@ -248,18 +248,36 @@ class ScreenCaptureService : Service() {
         if (isStopping) return
         isStopping = true
         Log.i(TAG, "Cleaning up screen capture service resources...")
+        // Release each resource independently: one failing close must not
+        // prevent the remaining MediaProjection resources from being released.
+        val display = virtualDisplay
+        virtualDisplay = null
         try {
-            virtualDisplay?.release()
-            virtualDisplay = null
-
-            imageReader?.close()
-            imageReader = null
-
-            mediaProjection?.unregisterCallback(projectionCallback)
-            mediaProjection?.stop()
-            mediaProjection = null
+            display?.release()
         } catch (e: Exception) {
-            Log.w(TAG, "Error cleaning projection: ${e.message}")
+            Log.w(TAG, "Error releasing VirtualDisplay: ${e.message}")
+        }
+
+        val reader = imageReader
+        imageReader = null
+        try {
+            reader?.setOnImageAvailableListener(null, null)
+            reader?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing ImageReader: ${e.message}")
+        }
+
+        val projection = mediaProjection
+        mediaProjection = null
+        try {
+            projection?.unregisterCallback(projectionCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error unregistering MediaProjection callback: ${e.message}")
+        }
+        try {
+            projection?.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping MediaProjection: ${e.message}")
         }
 
         val serviceError = pendingServiceError
