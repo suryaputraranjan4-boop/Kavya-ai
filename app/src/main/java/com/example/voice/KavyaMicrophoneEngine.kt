@@ -61,21 +61,33 @@ class KavyaMicrophoneEngine : Service() {
         }
 
         fun startService(context: Context) {
-            AppPreferences.setMicEnabled(context, true)
-            AppPreferences.setKavyaState(context, "ACTIVE")
-            val intent = Intent(context, KavyaMicrophoneEngine::class.java)
+            val appContext = context.applicationContext
+            AppPreferences.setMicEnabled(appContext, true)
+            AppPreferences.setKavyaState(appContext, "ACTIVE")
+
+            // Reuse the single running service instead of repeatedly starting
+            // additional start commands while the UI is still rendering MIC_STARTING.
+            val current = instance
+            if (current != null) {
+                current.setAwake()
+                current.startEngine()
+                return
+            }
+
+            val intent = Intent(appContext, KavyaMicrophoneEngine::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
+                appContext.startForegroundService(intent)
             } else {
-                context.startService(intent)
+                appContext.startService(intent)
             }
         }
 
         fun stopService(context: Context) {
-            AppPreferences.setMicEnabled(context, false)
-            AppPreferences.setKavyaState(context, "OFF")
+            val appContext = context.applicationContext
+            AppPreferences.setMicEnabled(appContext, false)
+            AppPreferences.setKavyaState(appContext, "OFF")
             instance?.stopEngine()
-            context.stopService(Intent(context, KavyaMicrophoneEngine::class.java))
+            appContext.stopService(Intent(appContext, KavyaMicrophoneEngine::class.java))
         }
 
         fun sleep(context: Context) {
@@ -98,7 +110,11 @@ class KavyaMicrophoneEngine : Service() {
         MIC_STARTING,
         MIC_ACTIVE,
         MIC_SLEEPING,
-        MIC_ERROR
+        MIC_ERROR;
+
+        /** True for every state in which the user has an active mic session request. */
+        val isListening: Boolean
+            get() = this == MIC_STARTING || this == MIC_ACTIVE || this == MIC_SLEEPING
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -137,6 +153,18 @@ class KavyaMicrophoneEngine : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // START_STICKY may recreate this service with a null intent. Never
+        // restart microphone capture after the user explicitly turned it off.
+        if (!AppPreferences.isMicEnabled(this)) {
+            Log.i(TAG, "Ignoring service start because microphone is disabled in preferences")
+            stateFlow.value = EngineState.MIC_OFF
+            partialFlow.value = ""
+            amplitudeFlow.value = 0f
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         try {
             createChannel()
             val notification = buildNotification()
@@ -160,6 +188,16 @@ class KavyaMicrophoneEngine : Service() {
 
     private fun startEngine() {
         handler.post {
+            if (!AppPreferences.isMicEnabled(this@KavyaMicrophoneEngine)) {
+                desired = false
+                cancelRetry()
+                cancelRecognizer()
+                stateFlow.value = EngineState.MIC_OFF
+                partialFlow.value = ""
+                amplitudeFlow.value = 0f
+                return@post
+            }
+
             if (!hasAudioPermission()) {
                 stateFlow.value = EngineState.MIC_ERROR
                 Log.e(TAG, "RECORD_AUDIO permission is missing")
@@ -391,13 +429,21 @@ class KavyaMicrophoneEngine : Service() {
     }
 
     private fun stopEngine() {
-        handler.post {
+        val stopNow = Runnable {
             desired = false
             cancelRetry()
             cancelRecognizer()
             stateFlow.value = EngineState.MIC_OFF
             partialFlow.value = ""
             amplitudeFlow.value = 0f
+        }
+
+        // Apply the OFF state synchronously when called from service callbacks
+        // on the main thread, so a fast re-tap cannot race a queued stop.
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            stopNow.run()
+        } else {
+            handler.post(stopNow)
         }
     }
 
@@ -494,7 +540,7 @@ class KavyaMicrophoneEngine : Service() {
 
     override fun onDestroy() {
         stopEngine()
-        instance = null
+        if (instance === this) instance = null
         super.onDestroy()
     }
 
