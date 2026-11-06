@@ -238,6 +238,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // Pause/resume the recognizer from the actual audio queue lifecycle.
+        // Per-sentence completion callbacks are not queue completion: the next
+        // streamed sentence may already be queued and still playing.
+        geminiPlayer.onPlaybackStateChanged = { isSpeaking ->
+            voiceEngine.onAudioPlaybackStateChanged(isSpeaking)
+        }
         voiceEngine.onSpeakingStateChanged = { isSpeaking ->
             com.example.voice.KavyaMicrophoneEngine.onKavyaSpeakingChanged(isSpeaking)
         }
