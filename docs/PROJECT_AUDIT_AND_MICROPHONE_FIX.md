@@ -68,9 +68,10 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 ## Build and validation
 
 - Source-level changes are committed to this branch for review.
-- The GitHub Actions APK workflow runs unit tests and the debug APK build for pull requests: `gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace`.
-- The latest observed CI run was still in progress and was triggered before the newest runtime-fix commits; a successful run for the final branch head is still required.
-- No APK is claimed as built or device-tested until CI completes successfully; physical-device testing is still required.
+- Pull-request source validation uses `.github/workflows/android-tests.yml` and runs `gradle :app:testDebugUnitTest :app:lintDebug --stacktrace` only. It does not assemble or upload an APK.
+- APK creation is isolated in `.github/workflows/build-apk.yml` and is manual-dispatch only. Do not dispatch it unless the user explicitly asks for an APK.
+- The source-check workflow has been added for the current PR head; its final result must be checked before calling the branch CI-verified.
+- Physical-device testing is still required for microphone, audio routing, foreground-service lifecycle, and MediaProjection behavior.
 - Before release, run `gradle :app:testDebugUnitTest` and `gradle :app:assembleDebug`, then verify repeated ON/OFF taps, app relaunch, service recreation, permission denial/regrant, wake phrase, speech playback interruption, and screen navigation on a physical Android device.
 
 ## Next implementation priorities
