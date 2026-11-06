@@ -42,7 +42,10 @@ class ScreenshotManager(private val context: Context) {
             val metrics = DisplayMetrics()
             @Suppress("DEPRECATION")
             windowManager?.defaultDisplay?.getRealMetrics(metrics)
-            Pair(metrics.widthPixels.coerceAtLeast(1080), metrics.heightPixels.coerceAtLeast(1920))
+            Pair(
+                metrics.widthPixels.takeIf { it > 0 } ?: 1080,
+                metrics.heightPixels.takeIf { it > 0 } ?: 1920
+            )
         }
     }
 
@@ -71,9 +74,14 @@ class ScreenshotManager(private val context: Context) {
         return try {
             val bitmap = service.captureScreenBitmap()
             if (bitmap != null) {
-                // If it's a hardware bitmap, copy to software config for resizing/compression
+                // If it's a hardware bitmap, copy to software config for resizing/compression.
+                // The captured source is owned by this method and can be released after copying.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
-                    bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    try {
+                        bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    } finally {
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
                 } else {
                     bitmap
                 }
