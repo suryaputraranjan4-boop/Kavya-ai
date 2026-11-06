@@ -33,6 +33,13 @@ class KavyaVoiceEngine(
         updateSpeakingState(speaking)
     }
 
+    private fun notifyIdleIfPlaybackQueueEmpty() {
+        if (geminiPlayer?.hasPendingPlayback() != true) {
+            geminiPlayer?.notifySpeaking(false)
+            updateSpeakingState(false)
+        }
+    }
+
     private fun updateSpeakingState(speaking: Boolean) {
         if (isSpeaking != speaking) {
             isSpeaking = speaking
@@ -95,8 +102,7 @@ class KavyaVoiceEngine(
                 lastErrorSpeechTimestamp = now
                 speakCleanFallback(enqueue, onComplete)
             } else {
-                geminiPlayer?.notifySpeaking(false)
-                updateSpeakingState(false)
+                notifyIdleIfPlaybackQueueEmpty()
                 onComplete?.invoke()
             }
             return
@@ -167,8 +173,7 @@ class KavyaVoiceEngine(
                 Log.w(TAG, "Gemini voice synthesis unavailable. Gracefully terminating voice turn without robotic TTS fallback.")
                 withContext(Dispatchers.Main) {
                     geminiPlayer?.notifyCaption(cleanText)
-                    geminiPlayer?.notifySpeaking(false)
-                    updateSpeakingState(false)
+                    notifyIdleIfPlaybackQueueEmpty()
                     onComplete?.invoke()
                 }
             }
