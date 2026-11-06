@@ -6,6 +6,9 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Random
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class GemmaModelFormatTest {
 
@@ -43,26 +46,46 @@ class GemmaModelFormatTest {
             data[1] = 'G'.toByte()
             data[2] = 'U'.toByte()
             data[3] = 'F'.toByte()
+            // Version/tensor/metadata fields remain zero, so magic alone is rejected.
             fos.write(data)
         }
 
         val info = GemmaModelManager.inspectModel(ggufFile)
         assertEquals(GemmaModelFormat.GGUF, info.format)
-        assertFalse("GGUF format must not be marked supported without a native GGUF engine", info.isSupported)
+        assertFalse("A GGUF magic value with invalid header fields must be rejected", info.isSupported)
         assertTrue(info.validationMessage.contains("GGUF format detected"))
+    }
+
+
+    @Test
+    fun testValidGgufHeaderIsSupported() {
+        val ggufFile = tempFolder.newFile("valid.gguf")
+        FileOutputStream(ggufFile).use { fos ->
+            val data = ByteArray(2 * 1024 * 1024)
+            data[0] = 'G'.code.toByte()
+            data[1] = 'G'.code.toByte()
+            data[2] = 'U'.code.toByte()
+            data[3] = 'F'.code.toByte()
+            data[4] = 3
+            data[8] = 1
+            data[16] = 1
+            fos.write(data)
+        }
+
+        val info = GemmaModelManager.inspectModel(ggufFile)
+        assertEquals(GemmaModelFormat.GGUF, info.format)
+        assertTrue("A valid GGUF header should be supported by the bundled llama.cpp runtime", info.isSupported)
     }
 
     @Test
     fun testMediaPipeTaskBundleDetection() {
         val taskFile = tempFolder.newFile("gemma.task")
-        FileOutputStream(taskFile).use { fos ->
-            val data = ByteArray(2 * 1024 * 1024)
-            // Write ZIP magic header: 0x50 0x4B 0x03 0x04 ('P' 'K' 0x03 0x04)
-            data[0] = 'P'.toByte()
-            data[1] = 'K'.toByte()
-            data[2] = 0x03.toByte()
-            data[3] = 0x04.toByte()
-            fos.write(data)
+        ZipOutputStream(FileOutputStream(taskFile)).use { zip ->
+            zip.putNextEntry(ZipEntry("model.bin"))
+            val payload = ByteArray(2 * 1024 * 1024)
+            Random(42).nextBytes(payload)
+            zip.write(payload)
+            zip.closeEntry()
         }
 
         val info = GemmaModelManager.inspectModel(taskFile)
@@ -72,11 +95,23 @@ class GemmaModelFormatTest {
     }
 
     @Test
-    fun testLiteRtFlatBufferDetection() {
+    fun testLiteRtLmContainerExtensionDetection() {
+        val modelFile = tempFolder.newFile("gemma.litertlm")
+        FileOutputStream(modelFile).use { fos ->
+            fos.write(ByteArray(2 * 1024 * 1024))
+        }
+
+        val info = GemmaModelManager.inspectModel(modelFile)
+        assertEquals(GemmaModelFormat.LITERT_LM, info.format)
+        assertTrue("A LiteRT-LM container should be routed to the LiteRT-LM runtime", info.isSupported)
+        assertTrue(info.validationMessage.contains("LiteRT-LM"))
+    }
+
+    @Test
+    fun testTfliteBinaryIsNotMisclassifiedAsLiteRtLm() {
         val tfliteFile = tempFolder.newFile("gemma.bin")
         FileOutputStream(tfliteFile).use { fos ->
             val data = ByteArray(2 * 1024 * 1024)
-            // Write TFL3 magic header at offset 4: 'T' 'F' 'L' '3'
             data[4] = 'T'.toByte()
             data[5] = 'F'.toByte()
             data[6] = 'L'.toByte()
@@ -85,9 +120,8 @@ class GemmaModelFormatTest {
         }
 
         val info = GemmaModelManager.inspectModel(tfliteFile)
-        assertEquals(GemmaModelFormat.LITERT_LM, info.format)
-        assertTrue("LiteRT FlatBuffer binary must be marked supported", info.isSupported)
-        assertTrue(info.validationMessage.contains("LiteRT-LM"))
+        assertEquals(GemmaModelFormat.UNKNOWN, info.format)
+        assertFalse("A .tflite binary must not be mislabeled as a LiteRT-LM container", info.isSupported)
     }
 
     @Test
@@ -106,6 +140,6 @@ class GemmaModelFormatTest {
         val info = GemmaModelManager.inspectModel(unknownFile)
         assertEquals(GemmaModelFormat.UNKNOWN, info.format)
         assertFalse("Arbitrary unknown binary header must be rejected", info.isSupported)
-        assertTrue(info.validationMessage.contains("Unsupported or unknown"))
+        assertTrue(info.validationMessage.contains("Unsupported local model format"))
     }
 }

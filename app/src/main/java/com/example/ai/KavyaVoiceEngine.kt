@@ -18,7 +18,8 @@ class KavyaVoiceEngine(
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var activeSpeechJob: Job? = null
+    @Volatile private var activeSpeechJob: Job? = null
+    @Volatile private var speechGeneration = 0L
     private var lastErrorSpeechTimestamp = 0L
 
     @Volatile
@@ -26,6 +27,18 @@ class KavyaVoiceEngine(
         private set
 
     var onSpeakingStateChanged: ((Boolean) -> Unit)? = null
+
+    /** Receives the audio player's authoritative queue-level state, not per-chunk completion. */
+    fun onAudioPlaybackStateChanged(speaking: Boolean) {
+        updateSpeakingState(speaking)
+    }
+
+    private fun notifyIdleIfPlaybackQueueEmpty() {
+        if (geminiPlayer?.hasPendingPlayback() != true) {
+            geminiPlayer?.notifySpeaking(false)
+            updateSpeakingState(false)
+        }
+    }
 
     private fun updateSpeakingState(speaking: Boolean) {
         if (isSpeaking != speaking) {
@@ -71,7 +84,7 @@ class KavyaVoiceEngine(
     ) {
         val cleanText = cleanText(text)
         if (cleanText.isBlank()) {
-            updateSpeakingState(false)
+            if (!enqueue) stop()
             onComplete?.invoke()
             return
         }
@@ -79,12 +92,17 @@ class KavyaVoiceEngine(
         // Suppress raw technical errors from ever being spoken aloud
         if (isTechnicalErrorString(cleanText)) {
             Log.w(TAG, "Suppressed technical error string from voice output: $cleanText")
-            updateSpeakingState(false)
+            if (!enqueue) {
+                speechGeneration++
+                activeSpeechJob?.cancel()
+                geminiPlayer?.stop(notifySpeakingState = false)
+            }
             val now = System.currentTimeMillis()
             if (now - lastErrorSpeechTimestamp > ERROR_THROTTLE_WINDOW_MS) {
                 lastErrorSpeechTimestamp = now
                 speakCleanFallback(enqueue, onComplete)
             } else {
+                notifyIdleIfPlaybackQueueEmpty()
                 onComplete?.invoke()
             }
             return
@@ -98,8 +116,14 @@ class KavyaVoiceEngine(
         val effectiveSpeed = (baseSpeed * sentiment.speedMultiplier).coerceIn(0.80f, 1.25f)
 
         if (!enqueue) {
-            stop()
+            // Interrupt the previous response without publishing an intermediate
+            // "not speaking" state. The mic listener must remain paused while
+            // the replacement audio is being generated.
+            speechGeneration++
+            activeSpeechJob?.cancel()
+            geminiPlayer?.stop(notifySpeakingState = false)
         }
+        val generation = speechGeneration
 
         updateSpeakingState(true)
 
@@ -120,74 +144,86 @@ class KavyaVoiceEngine(
                         effectiveSpeed
                     )
 
+                    if (generation != speechGeneration || !isActive) return@launch
+
                     if (audioBytes != null && audioBytes.isNotEmpty()) {
                         Log.d(TAG, "GEMINI_VOICE_PLAYBACK_STARTED: ${audioBytes.size} bytes")
                         geminiPlayer.playAudioBytes(audioBytes, text = cleanText, enqueue = enqueue) {
+                            // Do not publish IDLE here: this callback fires after every
+                            // queued sentence, even when the next sentence is about to play.
+                            // GeminiAudioPlayer reports IDLE only after its whole queue drains.
                             Log.d(TAG, "VOICE_PLAYBACK_COMPLETED")
-                            updateSpeakingState(false)
                             onComplete?.invoke()
                         }
                         geminiSuccess = true
                     } else {
                         Log.w(TAG, "Gemini voice returned empty audio.")
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "Gemini Voice generation failed: ${e.message}")
                 }
             }
+
+            if (generation != speechGeneration || !isActive) return@launch
 
             if (!geminiSuccess) {
                 // If Gemini voice generation fails, NEVER use Android TTS and NEVER trigger recursive speech requests
                 Log.w(TAG, "Gemini voice synthesis unavailable. Gracefully terminating voice turn without robotic TTS fallback.")
                 withContext(Dispatchers.Main) {
                     geminiPlayer?.notifyCaption(cleanText)
-                    updateSpeakingState(false)
+                    notifyIdleIfPlaybackQueueEmpty()
                     onComplete?.invoke()
                 }
             }
         }
-        if (!enqueue) {
-            activeSpeechJob = job
-        }
+        activeSpeechJob = job
     }
 
     private fun speakCleanFallback(enqueue: Boolean, onComplete: (() -> Unit)?) {
         val naturalFallback = "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
+        updateSpeakingState(true)
         val selectedVoice = com.example.utils.AppPreferences.getGeminiVoice(context)
         val effectiveAI = kavyaAI ?: KavyaAI(context)
-        scope.launch(Dispatchers.IO) {
+        val generation = speechGeneration
+        val job = scope.launch(Dispatchers.IO) {
             try {
                 val audio = effectiveAI.generateSpeechAudio(naturalFallback, selectedVoice, "Calm and relaxed", 1.0f, 1.0f)
+                if (generation != speechGeneration || !isActive) return@launch
                 if (audio != null && audio.isNotEmpty() && geminiPlayer != null) {
                     geminiPlayer.playAudioBytes(audio, text = naturalFallback, enqueue = enqueue) {
-                        updateSpeakingState(false)
+                        // Queue-level speaking state is delivered by GeminiAudioPlayer.
                         onComplete?.invoke()
                     }
                 } else {
-                    updateSpeakingState(false)
+                    notifyIdleIfPlaybackQueueEmpty()
                     onComplete?.invoke()
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {
-                updateSpeakingState(false)
-                onComplete?.invoke()
+                if (generation == speechGeneration) {
+                    notifyIdleIfPlaybackQueueEmpty()
+                    onComplete?.invoke()
+                }
             }
         }
+        activeSpeechJob = job
     }
 
     suspend fun speakSuspending(text: String, explicitSentiment: Sentiment? = null) {
         val clean = cleanText(text)
         if (clean.isBlank()) return
-        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
-            speak(clean, explicitSentiment, enqueue = false) {
-                if (continuation.isActive) {
-                    continuation.resume(Unit) {}
+        kotlinx.coroutines.withTimeoutOrNull(90_000L) {
+            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+                continuation.invokeOnCancellation {
+                    stop()
                 }
-            }
-            // Timeout safety fallback after 10s if network hangs
-            scope.launch {
-                delay(10000)
-                if (continuation.isActive) {
-                    continuation.resume(Unit) {}
+                speak(clean, explicitSentiment, enqueue = false) {
+                    if (continuation.isActive) {
+                        continuation.resume(Unit) {}
+                    }
                 }
             }
         }
@@ -198,6 +234,7 @@ class KavyaVoiceEngine(
     }
 
     fun stop() {
+        speechGeneration++
         activeSpeechJob?.cancel()
         geminiPlayer?.stop()
         updateSpeakingState(false)

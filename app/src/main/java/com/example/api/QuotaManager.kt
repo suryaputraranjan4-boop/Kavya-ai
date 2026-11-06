@@ -36,8 +36,12 @@ class QuotaManager {
     
     private val minuteWindowStart = MutableStateFlow(System.currentTimeMillis())
     private val hourWindowStart = MutableStateFlow(System.currentTimeMillis())
+    private var dayWindowStart = System.currentTimeMillis() / 86_400_000L
 
-    private val activeRequestMap = mutableMapOf<String, Long>()
+    // Active requests are released by each caller's finally block. Do not expire
+    // them by wall-clock age: valid streams can run longer than 20 seconds, and
+    // expiring one can let an old release remove a newer request with the same ID.
+    private val activeRequestMap = mutableSetOf<String>()
 
     companion object {
         const val MAX_REQUESTS_PER_MINUTE = 120
@@ -48,10 +52,9 @@ class QuotaManager {
     suspend fun acquireQuota(requestId: String, priority: RequestPriority): Boolean {
         return mutex.withLock {
             val now = System.currentTimeMillis()
-            // Clean up stale requests older than 20 seconds
-            activeRequestMap.entries.removeAll { now - it.value > 20000L }
+            activeRequests = activeRequestMap.size
 
-            if (activeRequestMap.containsKey(requestId)) {
+            if (activeRequestMap.contains(requestId)) {
                 duplicateRequestsPrevented++
                 return@withLock false // Prevent duplicate in-flight requests
             }
@@ -65,9 +68,10 @@ class QuotaManager {
                 requestsInLastHour = 0
             }
             
-            // Just simple daily reset hack for dashboard
-            val todayDate = now / (1000 * 60 * 60 * 24)
-            if (minuteWindowStart.value / (1000 * 60 * 60 * 24) != todayDate) {
+            // Reset the daily counter independently from the minute window.
+            val today = now / 86_400_000L
+            if (dayWindowStart != today) {
+                dayWindowStart = today
                 requestsToday = 0
             }
 
@@ -91,7 +95,7 @@ class QuotaManager {
             if (priority == RequestPriority.P3_PROACTIVE_CONVERSATION) {
                 proactiveRequestsCount++
             }
-            activeRequestMap[requestId] = now
+            activeRequestMap.add(requestId)
             true
         }
     }

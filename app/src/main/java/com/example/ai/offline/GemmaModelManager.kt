@@ -52,6 +52,7 @@ object GemmaModelManager {
     private const val TAG = "KavyaGemmaModelManager"
     private const val PREF_NAME = "kavya_offline_model_prefs"
     private const val KEY_SAVED_MODEL_PATH = "key_saved_offline_model_path"
+    private const val MIN_MODEL_SIZE_BYTES = 1024L * 1024L
 
     private val mutex = Mutex()
     private val _status = MutableStateFlow(GemmaModelStatus.NOT_INSTALLED)
@@ -90,11 +91,22 @@ object GemmaModelManager {
         }
 
         val size = file.length()
-        val header = ByteArray(16)
+        if (size < MIN_MODEL_SIZE_BYTES) {
+            return GemmaModelInfo(
+                file = file,
+                sizeBytes = size,
+                format = GemmaModelFormat.UNKNOWN,
+                isSupported = false,
+                validationMessage = "Model file is too small to be a valid model (minimum 1 MiB)."
+            )
+        }
+
+        // GGUF needs 24 bytes: magic, version, tensor count and metadata count.
+        val header = ByteArray(24)
         try {
             FileInputStream(file).use { fis ->
-                val read = fis.read(header, 0, 16)
-                if (read < 16) {
+                val read = fis.read(header, 0, header.size)
+                if (read < header.size) {
                     return GemmaModelInfo(
                         file = file,
                         sizeBytes = size,
@@ -114,14 +126,37 @@ object GemmaModelManager {
             )
         }
 
-        // 1. Check GGUF magic bytes: "GGUF" (0x47 0x47 0x55 0x46)
+        // 1. Validate the GGUF header before advertising it as loadable.
+        // GGUF layout: magic[4], version[u32], tensor_count[u64], metadata_count[u64].
         if (header[0] == 'G'.toByte() && header[1] == 'G'.toByte() && header[2] == 'U'.toByte() && header[3] == 'F'.toByte()) {
+            fun readUInt32LE(offset: Int): Long =
+                (header[offset].toLong() and 0xffL) or
+                    ((header[offset + 1].toLong() and 0xffL) shl 8) or
+                    ((header[offset + 2].toLong() and 0xffL) shl 16) or
+                    ((header[offset + 3].toLong() and 0xffL) shl 24)
+
+            fun readUInt64LE(offset: Int): ULong {
+                var value = 0uL
+                for (index in 0 until 8) {
+                    value = value or ((header[offset + index].toULong() and 0xffuL) shl (index * 8))
+                }
+                return value
+            }
+
+            val version = readUInt32LE(4)
+            val tensorCount = readUInt64LE(8)
+            val metadataCount = readUInt64LE(16)
+            val validHeader = version in 2L..3L && tensorCount > 0uL && metadataCount > 0uL
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.GGUF,
-                isSupported = true,
-                validationMessage = "GGUF detected. llama.cpp native runtime is available for offline inference.",
+                isSupported = validHeader,
+                validationMessage = if (validHeader) {
+                    "GGUF v$version header detected. llama.cpp native runtime is available for offline inference."
+                } else {
+                    "GGUF format detected, but its version, tensor count, or metadata header is invalid."
+                },
                 quantization = "GGUF Quantized"
             )
         }

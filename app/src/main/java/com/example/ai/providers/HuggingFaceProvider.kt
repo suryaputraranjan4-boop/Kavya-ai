@@ -75,7 +75,7 @@ class HuggingFaceProvider : AIProvider {
     companion object {
         private const val TAG = "KavyaHFProvider"
         const val PROVIDER_ID = "huggingface"
-        private const val API_BASE = "https://api-inference.huggingface.co/models"
+        private const val API_BASE = "https://router.huggingface.co/hf-inference/models"
         private const val HUB_API_BASE = "https://huggingface.co/api"
 
         // Default specialized verified models per task

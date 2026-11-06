@@ -44,6 +44,7 @@ object ScreenShareManager {
     private var lastFpsCalculationTime = 0L
     private var framesInLastSecond = 0
     private var currentFps = 0
+    private var lastRetainedFrameTime = 0L
 
     val isScreenSharingActive: Boolean
         get() = _state.value is ScreenShareState.Active
@@ -107,11 +108,30 @@ object ScreenShareManager {
     /**
      * Invoked by ScreenCaptureService when a new frame is captured from the VirtualDisplay.
      */
+    @Synchronized
     fun onFrameCaptured(bitmap: Bitmap, width: Int, height: Int) {
+        // A late ImageReader callback must not reactivate a share after stop/error.
+        if (_state.value is ScreenShareState.Stopped ||
+            _state.value is ScreenShareState.Error ||
+            _state.value is ScreenShareState.PermissionDenied ||
+            _state.value is ScreenShareState.Idle) return
+
         val now = System.currentTimeMillis()
         val totalFrames = frameCounter.incrementAndGet()
         activeResolution = Pair(width, height)
-        latestFrameBitmap = bitmap
+        // Keep our own bitmap; ScreenCaptureService releases its frame after
+        // VisionPipeline has copied it. Recycle the previous retained frame.
+        if (now - lastRetainedFrameTime >= 250L || latestFrameBitmap == null) {
+            val retainedFrame = try {
+                bitmap.copy(Bitmap.Config.ARGB_8888, false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to retain latest frame: ${e.message}")
+                null
+            }
+            latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
+            latestFrameBitmap = retainedFrame
+            lastRetainedFrameTime = now
+        }
 
         framesInLastSecond++
         if (now - lastFpsCalculationTime >= 1000L) {
@@ -132,37 +152,59 @@ object ScreenShareManager {
     /**
      * Stops screen capture session cleanly.
      */
+    @Synchronized
     fun stopScreenShare(context: Context) {
         Log.i(TAG, "Stopping screen sharing session...")
-        val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
-            action = ScreenCaptureService.ACTION_STOP
-        }
+        // Stop the foreground service directly. Starting a new background service
+        // just to deliver ACTION_STOP can be rejected by Android background-start
+        // limits, leaving capture running after the UI has cleared its state.
         try {
-            context.startService(serviceIntent)
+            context.stopService(Intent(context, ScreenCaptureService::class.java))
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to send stop intent to ScreenCaptureService: ${e.message}")
+            Log.w(TAG, "Failed to stop ScreenCaptureService: ${e.message}")
         }
         frameCounter.set(0)
         currentFps = 0
+        framesInLastSecond = 0
+        lastFpsCalculationTime = 0L
+        latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
         latestFrameBitmap = null
+        activeResolution = null
+        lastRetainedFrameTime = 0L
         _state.value = ScreenShareState.Stopped
     }
 
     /**
      * Reports an internal error from the service.
      */
+    @Synchronized
+    @Synchronized
     fun reportServiceError(errorMessage: String) {
         Log.e(TAG, "Screen share service error: $errorMessage")
+        frameCounter.set(0)
+        currentFps = 0
+        framesInLastSecond = 0
+        lastFpsCalculationTime = 0L
+        latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
+        latestFrameBitmap = null
+        activeResolution = null
+        lastRetainedFrameTime = 0L
         _state.value = ScreenShareState.Error(errorMessage)
     }
 
     /**
      * Marks session stopped internally when projection stops.
      */
+    @Synchronized
     fun onServiceStopped() {
         frameCounter.set(0)
         currentFps = 0
+        framesInLastSecond = 0
+        lastFpsCalculationTime = 0L
+        latestFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
         latestFrameBitmap = null
+        activeResolution = null
+        lastRetainedFrameTime = 0L
         _state.value = ScreenShareState.Stopped
     }
 }

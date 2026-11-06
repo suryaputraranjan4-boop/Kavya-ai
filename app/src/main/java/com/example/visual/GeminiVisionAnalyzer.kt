@@ -46,6 +46,18 @@ class GeminiVisionAnalyzer(private val context: Context) {
         currentApp: String,
         hierarchySummary: String
     ): Pair<ScreenUnderstanding, VisualAction?> = withContext(Dispatchers.IO) {
+        if (AppPreferences.isOfflineFallbackEnabled(context) ||
+            AppPreferences.getAiProvider(context) == "GEMMA_OFFLINE") {
+            return@withContext Pair(
+                ScreenUnderstanding(
+                    description = "Cloud visual analysis is disabled in Offline Mode; only on-device accessibility information is available.",
+                    targetFound = false,
+                    confidence = 0f
+                ),
+                null
+            )
+        }
+
         val key = getApiKey()
         if (key.isBlank()) {
             Log.w(TAG, "Gemini API key is not configured for visual analysis.")

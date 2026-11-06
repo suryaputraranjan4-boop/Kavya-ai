@@ -52,6 +52,8 @@ class ScreenCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    @Volatile private var isStopping = false
+    @Volatile private var pendingServiceError: String? = null
 
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
@@ -92,7 +94,7 @@ class ScreenCaptureService : Service() {
 
             if (resultCode == 0 || resultData == null) {
                 Log.e(TAG, "Invalid screen capture permission data received.")
-                ScreenShareManager.reportServiceError("Invalid screen capture permission token.")
+                pendingServiceError = "Invalid screen capture permission token."
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -145,10 +147,11 @@ class ScreenCaptureService : Service() {
     }
 
     private fun startCapture(resultCode: Int, resultData: Intent) {
+        isStopping = false
         try {
             val projection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
             if (projection == null) {
-                ScreenShareManager.reportServiceError("Unable to initialize MediaProjection token.")
+                pendingServiceError = "Unable to initialize MediaProjection token."
                 stopSelf()
                 return
             }
@@ -174,34 +177,7 @@ class ScreenCaptureService : Service() {
             imageReader = reader
 
             reader.setOnImageAvailableListener({ imageReaderInstance ->
-                val image = imageReaderInstance.acquireLatestImage() ?: return@setOnImageAvailableListener
-                try {
-                    val planes = image.planes
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * targetWidth
-
-                    val rawBitmap = Bitmap.createBitmap(
-                        targetWidth + rowPadding / pixelStride,
-                        targetHeight,
-                        Bitmap.Config.ARGB_8888
-                    )
-                    rawBitmap.copyPixelsFromBuffer(buffer)
-
-                    val cleanBitmap = if (rowPadding == 0) {
-                        rawBitmap
-                    } else {
-                        Bitmap.createBitmap(rawBitmap, 0, 0, targetWidth, targetHeight)
-                    }
-
-                    ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
-                    VisionPipeline.onNewFrame(cleanBitmap)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
-                } finally {
-                    image.close()
-                }
+                processCapturedImage(imageReaderInstance, targetWidth, targetHeight)
             }, backgroundHandler)
 
             virtualDisplay = projection.createVirtualDisplay(
@@ -218,28 +194,114 @@ class ScreenCaptureService : Service() {
             Log.i(TAG, "VirtualDisplay created successfully (${targetWidth}x${targetHeight} @ ${densityDpi}dpi). Screen capture active.")
         } catch (e: Exception) {
             Log.e(TAG, "Fatal failure starting virtual screen capture", e)
-            ScreenShareManager.reportServiceError("Capture failed: ${e.message}")
+            pendingServiceError = "Capture failed: ${e.message ?: e.javaClass.simpleName}"
             stopSelf()
         }
     }
 
-    private fun stopCapture() {
-        Log.i(TAG, "Cleaning up screen capture service resources...")
-        try {
-            virtualDisplay?.release()
-            virtualDisplay = null
-
-            imageReader?.close()
-            imageReader = null
-
-            mediaProjection?.unregisterCallback(projectionCallback)
-            mediaProjection?.stop()
-            mediaProjection = null
+    /**
+     * Serializes frame processing with stopCapture so reset/teardown cannot race
+     * an in-flight callback and leave a stale frame cached after screen sharing stops.
+     */
+    @Synchronized
+    private fun processCapturedImage(
+        imageReaderInstance: ImageReader,
+        targetWidth: Int,
+        targetHeight: Int
+    ) {
+        if (isStopping || imageReader !== imageReaderInstance) return
+        val image = try {
+            imageReaderInstance.acquireLatestImage()
         } catch (e: Exception) {
-            Log.w(TAG, "Error cleaning projection: ${e.message}")
+            Log.w(TAG, "Unable to acquire screen frame: ${e.message}")
+            return
+        } ?: return
+
+        var rawBitmap: Bitmap? = null
+        try {
+            val planes = image.planes
+            val buffer = planes[0].buffer
+            val pixelStride = planes[0].pixelStride
+            val rowStride = planes[0].rowStride
+            val rowPadding = rowStride - pixelStride * targetWidth
+
+            rawBitmap = Bitmap.createBitmap(
+                targetWidth + rowPadding / pixelStride,
+                targetHeight,
+                Bitmap.Config.ARGB_8888
+            )
+            rawBitmap.copyPixelsFromBuffer(buffer)
+
+            val cleanBitmap = if (rowPadding == 0) {
+                rawBitmap
+            } else {
+                try {
+                    Bitmap.createBitmap(rawBitmap, 0, 0, targetWidth, targetHeight)
+                } finally {
+                    rawBitmap.takeIf { !it.isRecycled }?.recycle()
+                }
+            }
+
+            try {
+                if (!isStopping) {
+                    VisionPipeline.onNewFrame(cleanBitmap)
+                    ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
+                }
+            } finally {
+                if (!cleanBitmap.isRecycled) cleanBitmap.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
+        } finally {
+            rawBitmap?.takeIf { !it.isRecycled }?.recycle()
+            image.close()
+        }
+    }
+
+    @Synchronized
+    private fun stopCapture() {
+        if (isStopping) return
+        isStopping = true
+        Log.i(TAG, "Cleaning up screen capture service resources...")
+        // Release each resource independently: one failing close must not
+        // prevent the remaining MediaProjection resources from being released.
+        val display = virtualDisplay
+        virtualDisplay = null
+        try {
+            display?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing VirtualDisplay: ${e.message}")
         }
 
-        ScreenShareManager.onServiceStopped()
+        val reader = imageReader
+        imageReader = null
+        try {
+            reader?.setOnImageAvailableListener(null, null)
+            reader?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing ImageReader: ${e.message}")
+        }
+
+        val projection = mediaProjection
+        mediaProjection = null
+        try {
+            projection?.unregisterCallback(projectionCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error unregistering MediaProjection callback: ${e.message}")
+        }
+        try {
+            projection?.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping MediaProjection: ${e.message}")
+        }
+
+        val serviceError = pendingServiceError
+        pendingServiceError = null
+        if (serviceError != null) {
+            ScreenShareManager.reportServiceError(serviceError)
+        } else {
+            ScreenShareManager.onServiceStopped()
+        }
         VisionPipeline.reset()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {

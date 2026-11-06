@@ -224,7 +224,15 @@ object AppPreferences {
     }
 
     fun getHuggingFaceModel(context: Context): String {
-        return getPrefs(context).getString(KEY_HUGGINGFACE_MODEL, "distilbert-base-uncased") ?: "distilbert-base-uncased"
+        val savedModel = getPrefs(context).getString(KEY_HUGGINGFACE_MODEL, null)?.trim()
+        // Migrate the old non-generative default: this preference is also used
+        // by the provider's text-generation path, so a masked-language model
+        // caused otherwise valid API keys to fail inference tests.
+        return if (savedModel.isNullOrBlank() || savedModel == "distilbert-base-uncased") {
+            "meta-llama/Llama-3.2-1B-Instruct"
+        } else {
+            savedModel
+        }
     }
 
     fun setHuggingFaceModel(context: Context, model: String) {
@@ -320,17 +328,16 @@ object AppPreferences {
     }
 
     fun getProviderStatus(context: Context, providerId: String): String {
-        val defaultStatus = if (providerId.equals("gemini", ignoreCase = true) && getEffectiveApiKey(context).isNotBlank()) {
-            "CONNECTED"
-        } else if (providerId.equals("public_apis", ignoreCase = true)) {
-            "CONNECTED"
-        } else if (providerId.equals("openrouter", ignoreCase = true) && getOpenRouterApiKey(context).isNotBlank()) {
-            "CONFIGURED"
-        } else if (providerId.equals("huggingface", ignoreCase = true) && getHuggingFaceApiKey(context).isNotBlank()) {
-            "CONFIGURED"
-        } else {
-            "NOT_CONFIGURED"
+        // A saved key only proves that credentials were entered. Mark a provider
+        // CONNECTED only after a real successful request has been recorded.
+        val hasCredentials = when (providerId.lowercase()) {
+            "gemini" -> getEffectiveApiKey(context).isNotBlank()
+            "openrouter" -> getOpenRouterApiKey(context).isNotBlank()
+            "huggingface" -> getHuggingFaceApiKey(context).isNotBlank()
+            "public_apis" -> isPublicApisEnabled(context)
+            else -> false
         }
+        val defaultStatus = if (hasCredentials) "CONFIGURED" else "NOT_CONFIGURED"
         return getPrefs(context).getString(PREFIX_PROVIDER_STATUS + providerId.lowercase(), defaultStatus) ?: defaultStatus
     }
 
@@ -361,6 +368,26 @@ object AppPreferences {
 
     fun setProviderLastError(context: Context, providerId: String, error: String?) {
         getPrefs(context).edit().putString(PREFIX_PROVIDER_LAST_ERROR + providerId.lowercase(), error).apply()
+    }
+
+    /** Persist the result of an explicit provider connectivity test. */
+    fun recordProviderConnectionTest(context: Context, providerId: String, result: Pair<Boolean, String>) {
+        val rateLimited = result.second.contains("429") ||
+            result.second.contains("rate limit", ignoreCase = true) ||
+            result.second.contains("quota", ignoreCase = true)
+        if (rateLimited) {
+            // A 429 still proves the endpoint was reached; it is a quota/rate
+            // condition, not a generic credential or network failure.
+            setProviderStatus(context, providerId, "RATE_LIMITED")
+            setProviderLastError(context, providerId, result.second)
+        } else if (result.first) {
+            setProviderStatus(context, providerId, "CONNECTED")
+            setProviderLastSuccessTime(context, providerId, System.currentTimeMillis())
+            setProviderLastError(context, providerId, null)
+        } else {
+            setProviderStatus(context, providerId, "ERROR")
+            setProviderLastError(context, providerId, result.second)
+        }
     }
 
     fun isBuiltInApiKeyAvailable(): Boolean {
@@ -419,39 +446,61 @@ object AppPreferences {
     /**
      * Validates API key against Gemini API with a lightweight prompt
      */
-    suspend fun validateGeminiApiKey(apiKey: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) {
-            return@withContext Pair(false, "API Key is empty.")
-        }
+    suspend fun validateGeminiApiKey(
+        apiKey: String,
+        model: String = com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext Pair(false, "Gemini API key is empty.")
+
+        val targetModel = model.trim().ifBlank { com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL }
+        val testRequest = GenerateContentRequest(
+            contents = listOf(Content(role = "user", parts = listOf(Part(text = "Reply with OK."))))
+        )
         try {
-            val testRequest = GenerateContentRequest(
-                contents = listOf(
-                    Content(
-                        role = "user",
-                        parts = listOf(Part(text = "Hi"))
-                    )
-                )
-            )
             val response = RetrofitClient.service.generateContent(
-                model = "gemini-3.6-flash",
+                model = targetModel,
                 apiKey = apiKey.trim(),
                 request = testRequest
             )
-            val candidate = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-            if (!candidate.isNullOrBlank()) {
-                Pair(true, "API Key verified successfully!")
+            val reply = response.candidates
+                ?.firstOrNull()
+                ?.content
+                ?.parts
+                ?.firstOrNull()
+                ?.text
+                ?.trim()
+            if (reply.isNullOrBlank()) {
+                Pair(
+                    false,
+                    "Gemini endpoint reached, but model '$targetModel' returned no text completion. Check model availability, permissions, and response filters."
+                )
             } else {
-                Pair(true, "API Key is valid and active.")
+                Pair(true, "Gemini connected successfully. Model: $targetModel")
             }
         } catch (e: retrofit2.HttpException) {
-            when (e.code()) {
-                400 -> Pair(false, "Invalid API Key format or request rejected (400).")
-                403 -> Pair(false, "Permission denied. Please verify your Gemini API key (403).")
-                429 -> Pair(true, "Valid API Key (rate limited, but active).")
-                else -> Pair(false, "Verification error: HTTP ${e.code()}")
+            val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+            val detail = try {
+                if (body.isNullOrBlank()) null
+                else org.json.JSONObject(body).optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) { null }
+            val reason = when (e.code()) {
+                400 -> "The request or model is invalid (HTTP 400). ${detail.orEmpty()}"
+                401 -> "The API key was rejected (HTTP 401)."
+                403 -> "Access denied for this key or model (HTTP 403). ${detail.orEmpty()}"
+                404 -> "Model '$targetModel' was not found (HTTP 404). Check the model name."
+                429 -> "Gemini is reachable, but the key/model quota or rate limit was reached (HTTP 429)."
+                in 500..599 -> "Google Gemini service error (HTTP ${e.code()}). Try again later."
+                else -> "Gemini returned HTTP ${e.code()}. ${detail.orEmpty()}"
             }
+            Pair(false, reason)
+        } catch (e: java.net.UnknownHostException) {
+            Pair(false, "No network/DNS connection to Gemini. Check internet access.")
+        } catch (e: java.net.SocketTimeoutException) {
+            Pair(false, "Gemini connection timed out. Check the network and try again.")
+        } catch (e: java.io.IOException) {
+            Pair(false, "Network connection to Gemini failed: ${e.localizedMessage ?: "I/O error"}")
         } catch (e: Exception) {
-            Pair(false, "Connection failed: ${e.localizedMessage ?: "Please check your network and API key"}")
+            Pair(false, "Gemini verification failed: ${e.localizedMessage ?: e.javaClass.simpleName}")
         }
     }
 
@@ -479,11 +528,11 @@ object AppPreferences {
             if (response.error != null) {
                 return@withContext Pair(false, "OpenRouter connection failed: ${response.error.message ?: "Authentication error"}")
             }
-            val reply = response.choices?.firstOrNull()?.message?.content
+            val reply = response.choices?.firstOrNull()?.message?.content?.trim()
             if (!reply.isNullOrBlank()) {
-                Pair(true, "OpenRouter connected successfully.")
+                Pair(true, "OpenRouter connected successfully. Model: ${model.ifBlank { "openrouter/free" }}")
             } else {
-                Pair(true, "OpenRouter connected successfully.")
+                Pair(false, "OpenRouter endpoint responded, but the selected model returned no completion. Check model availability or access permissions.")
             }
         } catch (e: retrofit2.HttpException) {
             val errorBody = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
@@ -501,21 +550,27 @@ object AppPreferences {
                 else -> parsedMsg ?: "HTTP ${e.code()}"
             }
             Pair(false, "OpenRouter connection failed: $reason")
+        } catch (e: java.net.UnknownHostException) {
+            Pair(false, "Cannot reach OpenRouter: DNS/network unavailable.")
+        } catch (e: java.net.SocketTimeoutException) {
+            Pair(false, "OpenRouter connection timed out. Check your network.")
+        } catch (e: java.io.IOException) {
+            Pair(false, "OpenRouter network error: ${e.localizedMessage ?: "I/O failure"}")
         } catch (e: Exception) {
-            Pair(false, "OpenRouter connection failed. Please check your API key and internet connection.")
+            Pair(false, "OpenRouter test failed: ${e.localizedMessage ?: e.javaClass.simpleName}")
         }
     }
 
     /**
      * Validates Hugging Face connection by sending an inference request to Hugging Face Inference API.
      */
-    suspend fun validateHuggingFaceConnection(apiKey: String, model: String = "distilbert-base-uncased"): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+    suspend fun validateHuggingFaceConnection(apiKey: String, model: String = "meta-llama/Llama-3.2-1B-Instruct"): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Pair(false, "Hugging Face connection failed. Please enter your API key.")
         }
-        val targetModel = model.ifBlank { "distilbert-base-uncased" }
+        val targetModel = model.ifBlank { "meta-llama/Llama-3.2-1B-Instruct" }
         try {
-            val url = "https://api-inference.huggingface.co/models/$targetModel"
+            val url = "https://router.huggingface.co/hf-inference/models/$targetModel"
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val requestBody = okhttp3.RequestBody.Companion.create(mediaType, "{\"inputs\": \"Hello world test\"}")
             val request = okhttp3.Request.Builder()
@@ -524,17 +579,23 @@ object AppPreferences {
                 .post(requestBody)
                 .build()
 
-            val response = RetrofitClient.okHttpClient.newCall(request).execute()
-            val code = response.code
-            response.close()
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                val code = response.code
+                val detail = response.body?.string()
+                    ?.replace(Regex("\\s+"), " ")
+                    ?.take(400)
+                    .orEmpty()
 
-            when (code) {
-                200 -> Pair(true, "Hugging Face connected successfully ($targetModel).")
-                503 -> Pair(true, "Hugging Face connected ($targetModel is loading).")
-                401 -> Pair(false, "Invalid Hugging Face API key (401).")
-                404 -> Pair(false, "Model '$targetModel' not found on Hugging Face (404).")
-                429 -> Pair(true, "Hugging Face connected (Rate limited, but active).")
-                else -> Pair(false, "Hugging Face returned status $code.")
+                when (code) {
+                    200 -> Pair(true, "Hugging Face connected successfully ($targetModel).")
+                    503 -> Pair(false, "Hugging Face accepted the request, but model '$targetModel' is still loading (HTTP 503). The provider is reachable; retry the connection test shortly.")
+                    401 -> Pair(false, "Invalid or expired Hugging Face API key (HTTP 401).")
+                    403 -> Pair(false, "Hugging Face denied access to this model or account (HTTP 403). $detail")
+                    404 -> Pair(false, "Model '$targetModel' was not found or is unavailable (HTTP 404).")
+                    429 -> Pair(false, "Hugging Face is reachable, but the request is rate-limited (HTTP 429). Retry later.")
+                    in 500..599 -> Pair(false, "Hugging Face service error (HTTP $code). $detail")
+                    else -> Pair(false, "Hugging Face returned HTTP $code. $detail")
+                }
             }
         } catch (e: Exception) {
             Pair(false, "Hugging Face connection failed: ${e.message ?: "Network error"}")
@@ -570,16 +631,32 @@ object AppPreferences {
     fun getCustomApis(context: Context): List<CustomApiConfig> {
         val raw = getPrefs(context).getString(KEY_CUSTOM_APIS_JSON, "[]") ?: "[]"
         val list = mutableListOf<CustomApiConfig>()
+        var migratedLegacyKeys = false
         try {
             val jsonArray = org.json.JSONArray(raw)
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
+                val id = obj.optString("id").ifBlank { java.util.UUID.randomUUID().toString() }
+                val secretName = "custom_api_key_$id"
+                val secureKey = com.example.security.SecureStorage.getSecret(context, secretName)
+                val legacyKey = obj.optString("apiKey")
+                val apiKey = secureKey.ifBlank { legacyKey }
+
+                // Migrate old plaintext credentials into the Android Keystore-backed vault.
+                if (secureKey.isBlank() && legacyKey.isNotBlank()) {
+                    com.example.security.SecureStorage.saveSecret(context, secretName, legacyKey)
+                    migratedLegacyKeys = true
+                }
+                if (obj.has("apiKey") || obj.optString("id").isBlank()) {
+                    migratedLegacyKeys = true
+                }
+
                 list.add(
                     CustomApiConfig(
-                        id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+                        id = id,
                         name = obj.optString("name", "Custom API"),
                         endpointUrl = obj.optString("endpointUrl", ""),
-                        apiKey = obj.optString("apiKey", ""),
+                        apiKey = apiKey,
                         model = obj.optString("model", ""),
                         isEnabled = obj.optBoolean("isEnabled", true),
                         dateAdded = obj.optLong("dateAdded", System.currentTimeMillis())
@@ -588,6 +665,10 @@ object AppPreferences {
             }
         } catch (e: Exception) {
             android.util.Log.e("AppPreferences", "Error reading custom APIs", e)
+        }
+        if (migratedLegacyKeys) {
+            // Re-write metadata without any plaintext API key field after migration.
+            persistCustomApis(context, list)
         }
         return list
     }
@@ -606,6 +687,7 @@ object AppPreferences {
     fun deleteCustomApi(context: Context, id: String) {
         val current = getCustomApis(context).filterNot { it.id == id }
         persistCustomApis(context, current)
+        com.example.security.SecureStorage.clearSecret(context, "custom_api_key_$id")
     }
 
     fun setCustomApiEnabled(context: Context, id: String, enabled: Boolean) {
@@ -618,11 +700,16 @@ object AppPreferences {
     private fun persistCustomApis(context: Context, list: List<CustomApiConfig>) {
         val jsonArray = org.json.JSONArray()
         for (api in list) {
+            com.example.security.SecureStorage.saveSecret(
+                context,
+                "custom_api_key_${api.id}",
+                api.apiKey
+            )
             val obj = org.json.JSONObject().apply {
                 put("id", api.id)
                 put("name", api.name)
                 put("endpointUrl", api.endpointUrl)
-                put("apiKey", api.apiKey)
+                // API keys live only in SecureStorage, never in this JSON metadata.
                 put("model", api.model)
                 put("isEnabled", api.isEnabled)
                 put("dateAdded", api.dateAdded)

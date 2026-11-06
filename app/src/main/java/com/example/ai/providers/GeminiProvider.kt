@@ -29,9 +29,10 @@ class GeminiProvider : AIProvider {
         const val PROVIDER_ID = "gemini"
 
         val VERIFIED_MODELS = listOf(
-            ProviderModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Latest low-latency high-throughput Google Gemini model", true),
-            ProviderModelInfo("gemini-1.5-flash", "Gemini 1.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision"), 1048576, "Stable multimodal 1M context model", true),
-            ProviderModelInfo("gemini-1.5-pro", "Gemini 1.5 Pro", ProviderType.GEMINI, listOf("reasoning", "coding", "analysis"), 2097152, "State of the art reasoning model", false)
+            ProviderModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Fast multimodal chat and agent model", true),
+            ProviderModelInfo("gemini-2.5-pro", "Gemini 2.5 Pro", ProviderType.GEMINI, listOf("reasoning", "coding", "analysis", "vision"), 1048576, "Advanced reasoning and multimodal model", false),
+            ProviderModelInfo("gemini-2.0-flash", "Gemini 2.0 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Fast multimodal fallback model", true),
+            ProviderModelInfo("gemini-1.5-flash", "Gemini 1.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision"), 1048576, "Legacy multimodal fallback model", true)
         )
     }
 
@@ -56,7 +57,10 @@ class GeminiProvider : AIProvider {
         if (key.isBlank()) {
             return@withContext Pair(false, "Gemini API key is not configured. Please enter your API key.")
         }
-        return@withContext AppPreferences.validateGeminiApiKey(key)
+        return@withContext AppPreferences.validateGeminiApiKey(
+            key,
+            AppPreferences.getGeminiModel(context)
+        )
     }
 
     override suspend fun getModels(context: Context): List<ProviderModelInfo> {
@@ -79,10 +83,13 @@ class GeminiProvider : AIProvider {
             )
         }
 
-        val models = listOf(
-            "gemini-2.5-flash",
-            "gemini-1.5-flash"
-        )
+        // Respect the model selected in AI Provider settings first.
+        // Only fall back to compatible chat models if that model is unavailable.
+        val selectedModel = AppPreferences.getGeminiModel(context).trim()
+            .ifBlank { GeminiModelRegistry.DEFAULT_AGENT_MODEL }
+        val models = (listOf(selectedModel) + GeminiModelRegistry.CHAT_MODEL_TIERS)
+            .filter { it.isNotBlank() }
+            .distinct()
 
         val contents = listOf(Content(role = "user", parts = listOf(Part(text = prompt))))
         val request = GenerateContentRequest(
@@ -119,8 +126,9 @@ class GeminiProvider : AIProvider {
                 val errBody = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
                 lastError = handleError(code, errBody)
                 Log.w(TAG, "Gemini $model HTTP $code: $lastError")
-                if (code == 401 || code == 403) {
-                    // Authentication failure shouldn't blindly retry subsequent models
+                if (code == 400 || code == 401 || code == 403 || code == 429) {
+                    // Invalid requests, auth failures and quota throttling are not
+                    // model-specific fallbacks; retrying other models only wastes calls.
                     break
                 }
             } catch (e: Exception) {
@@ -155,7 +163,11 @@ class GeminiProvider : AIProvider {
             return@flow
         }
 
-        val targetModel = modelOverride?.ifBlank { null } ?: "gemini-2.5-flash"
+        val targetModel = modelOverride
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: AppPreferences.getGeminiModel(context).trim()
+                .ifBlank { GeminiModelRegistry.DEFAULT_AGENT_MODEL }
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$targetModel:streamGenerateContent?key=$apiKey&alt=sse"
 
         val contentsArray = JSONArray().apply {
@@ -185,40 +197,46 @@ class GeminiProvider : AIProvider {
             .build()
 
         try {
-            val response = RetrofitClient.okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                val err = handleError(response.code, response.body?.string())
-                response.close()
-                emit(err)
-                return@flow
-            }
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val err = handleError(response.code, response.body?.string())
+                    emit(err)
+                    return@flow
+                }
 
-            val stream = response.body?.byteStream()
-            if (stream != null) {
+                val stream = response.body?.byteStream()
+                if (stream == null) {
+                    emit("Gemini returned an empty streaming response.")
+                    return@flow
+                }
+
                 BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
-                        val l = line?.trim() ?: continue
-                        if (l.startsWith("data:")) {
-                            val data = l.removePrefix("data:").trim()
-                            if (data.isBlank()) continue
-                            try {
-                                val json = JSONObject(data)
-                                val candidates = json.optJSONArray("candidates")
-                                val first = candidates?.optJSONObject(0)
-                                val content = first?.optJSONObject("content")
-                                val parts = content?.optJSONArray("parts")
-                                val text = parts?.optJSONObject(0)?.optString("text", "") ?: ""
-                                if (text.isNotEmpty()) {
-                                    emit(text)
+                        val currentLine = line?.trim().orEmpty()
+                        if (!currentLine.startsWith("data:")) continue
+                        val data = currentLine.removePrefix("data:").trim()
+                        if (data.isBlank() || data == "[DONE]") continue
+                        try {
+                            val json = JSONObject(data)
+                            val parts = json.optJSONArray("candidates")
+                                ?.optJSONObject(0)
+                                ?.optJSONObject("content")
+                                ?.optJSONArray("parts")
+                            if (parts != null) {
+                                for (index in 0 until parts.length()) {
+                                    val chunk = parts.optJSONObject(index)?.optString("text").orEmpty()
+                                    if (chunk.isNotBlank()) emit(chunk)
                                 }
-                            } catch (ignored: Exception) {}
+                            }
+                        } catch (parseError: Exception) {
+                            Log.w(TAG, "Ignoring malformed Gemini stream event: ${parseError.message}")
                         }
                     }
                 }
             }
-            response.close()
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             emit(handleError(-1, e.localizedMessage))
         }
     }.flowOn(Dispatchers.IO)

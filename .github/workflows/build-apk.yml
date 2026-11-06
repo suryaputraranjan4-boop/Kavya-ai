@@ -1,9 +1,8 @@
 name: Build Kavya APK
 
+# APK creation is manual-only. Do not build or upload an APK on PR/push events.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -31,7 +30,7 @@ jobs:
       - name: Install Android SDK packages
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "cmake;3.31.6" "ndk;27.2.12479018"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
@@ -53,14 +52,28 @@ jobs:
       - name: Create build environment file
         run: cp .env.example .env
 
-      # No artificial model-size validation is applied by this build.
+      # Keep test results visible, but do not prevent a valid APK from being uploaded.
+      - name: Run unit tests
+        id: unit_tests
+        continue-on-error: true
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Build debug APK
+        id: build_apk
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Upload APK
+        if: steps.build_apk.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
           name: kavya-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
+
+      # Preserve a failing workflow conclusion if tests fail, after the APK upload.
+      - name: Report unit-test failure
+        if: always() && steps.unit_tests.outcome == 'failure'
+        run: |
+          echo "Unit tests failed. APK build/upload was attempted separately; inspect the test report."
+          exit 1

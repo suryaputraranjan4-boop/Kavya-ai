@@ -81,7 +81,7 @@ fun AiApiHubScreen(navController: NavController) {
 
     // Hugging Face State
     var hfKeyInput by remember { mutableStateOf(AppPreferences.getHuggingFaceApiKey(context)) }
-    var hfModel by remember { mutableStateOf(AppPreferences.getHuggingFaceModel(context).ifBlank { "distilbert-base-uncased" }) }
+    var hfModel by remember { mutableStateOf(AppPreferences.getHuggingFaceModel(context).ifBlank { "meta-llama/Llama-3.2-1B-Instruct" }) }
     var hfEnabled by remember { mutableStateOf(AppPreferences.isHuggingFaceEnabled(context)) }
     var isHfKeyVisible by remember { mutableStateOf(false) }
     var isHfEditing by remember { mutableStateOf(false) }
@@ -824,7 +824,10 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isOrTesting) {
                         ConnectionStatus.TESTING
-                    } else if (orTestResult?.first == true) {
+                    } else if (orTestResult?.second?.let { it.contains("429") || it.contains("rate limit", ignoreCase = true) || it.contains("quota", ignoreCase = true) } == true ||
+                        AppPreferences.getProviderStatus(context, "openrouter") == ConnectionStatus.RATE_LIMITED.name) {
+                        ConnectionStatus.RATE_LIMITED
+                    } else if (orTestResult?.first == true || (orTestResult == null && AppPreferences.getProviderStatus(context, "openrouter") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (orTestResult?.first == false) {
                         ConnectionStatus.ERROR
@@ -832,7 +835,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.CONFIGURED
                     },
                     apiKey = orKeyInput,
-                    onApiKeyChange = { orKeyInput = it },
+                    onApiKeyChange = { orKeyInput = it; orTestResult = null; AppPreferences.setProviderStatus(context, "openrouter", if (it.isBlank()) "NOT_CONFIGURED" else "CONFIGURED") },
                     isKeyVisible = isOrKeyVisible,
                     onToggleKeyVisibility = { isOrKeyVisible = !isOrKeyVisible },
                     isEditing = isOrEditing,
@@ -843,6 +846,7 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isOrTesting = true
                             orTestResult = AppPreferences.validateOpenRouterConnection(orKeyInput, orModel)
+                            AppPreferences.recordProviderConnectionTest(context, "openrouter", orTestResult!!)
                             isOrTesting = false
                         }
                     },
@@ -851,10 +855,13 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.clearOpenRouterApiKey(context)
                         isOrEditing = false
                         orTestResult = null
+                        AppPreferences.setProviderStatus(context, "openrouter", "NOT_CONFIGURED")
                     },
                     selectedModel = orModel,
                     onModelChange = {
                         orModel = it
+                        orTestResult = null
+                        AppPreferences.setProviderStatus(context, "openrouter", if (orKeyInput.isBlank()) "NOT_CONFIGURED" else "CONFIGURED")
                         AppPreferences.setOpenRouterModel(context, it)
                     },
                     presetModels = availableOrModels,
@@ -865,6 +872,7 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isOrTesting = true
                             orTestResult = AppPreferences.validateOpenRouterConnection(orKeyInput, orModel)
+                            AppPreferences.recordProviderConnectionTest(context, "openrouter", orTestResult!!)
                             isOrTesting = false
                         }
                     }
@@ -900,7 +908,10 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isHfTesting) {
                         ConnectionStatus.TESTING
-                    } else if (hfTestResult?.first == true) {
+                    } else if (hfTestResult?.second?.let { it.contains("429") || it.contains("rate limit", ignoreCase = true) || it.contains("quota", ignoreCase = true) } == true ||
+                        AppPreferences.getProviderStatus(context, "huggingface") == ConnectionStatus.RATE_LIMITED.name) {
+                        ConnectionStatus.RATE_LIMITED
+                    } else if (hfTestResult?.first == true || (hfTestResult == null && AppPreferences.getProviderStatus(context, "huggingface") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (hfTestResult?.first == false) {
                         ConnectionStatus.ERROR
@@ -908,7 +919,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.CONFIGURED
                     },
                     apiKey = hfKeyInput,
-                    onApiKeyChange = { hfKeyInput = it },
+                    onApiKeyChange = { hfKeyInput = it; hfTestResult = null; AppPreferences.setProviderStatus(context, "huggingface", if (it.isBlank()) "NOT_CONFIGURED" else "CONFIGURED") },
                     isKeyVisible = isHfKeyVisible,
                     onToggleKeyVisibility = { isHfKeyVisible = !isHfKeyVisible },
                     isEditing = isHfEditing,
@@ -919,6 +930,7 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isHfTesting = true
                             hfTestResult = AppPreferences.validateHuggingFaceConnection(hfKeyInput, hfModel)
+                            AppPreferences.recordProviderConnectionTest(context, "huggingface", hfTestResult!!)
                             isHfTesting = false
                         }
                     },
@@ -927,20 +939,24 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.clearHuggingFaceApiKey(context)
                         isHfEditing = false
                         hfTestResult = null
+                        AppPreferences.setProviderStatus(context, "huggingface", "NOT_CONFIGURED")
                     },
                     selectedModel = hfModel,
                     onModelChange = {
                         hfModel = it
+                        hfTestResult = null
+                        AppPreferences.setProviderStatus(context, "huggingface", if (hfKeyInput.isBlank()) "NOT_CONFIGURED" else "CONFIGURED")
                         AppPreferences.setHuggingFaceModel(context, it)
                     },
                     presetModels = availableHfModels,
-                    modelPlaceholder = "e.g. distilbert-base-uncased or cardiffnlp/twitter-roberta...",
+                    modelPlaceholder = "e.g. meta-llama/Llama-3.2-1B-Instruct",
                     isTesting = isHfTesting,
                     testResult = hfTestResult,
                     onTestConnection = {
                         coroutineScope.launch {
                             isHfTesting = true
                             hfTestResult = AppPreferences.validateHuggingFaceConnection(hfKeyInput, hfModel)
+                            AppPreferences.recordProviderConnectionTest(context, "huggingface", hfTestResult!!)
                             isHfTesting = false
                         }
                     }
@@ -971,7 +987,10 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isGeminiTesting) {
                         ConnectionStatus.TESTING
-                    } else if (geminiTestResult?.first == true) {
+                    } else if (geminiTestResult?.second?.let { it.contains("429") || it.contains("rate limit", ignoreCase = true) || it.contains("quota", ignoreCase = true) } == true ||
+                        AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.RATE_LIMITED.name) {
+                        ConnectionStatus.RATE_LIMITED
+                    } else if (geminiTestResult?.first == true || (geminiTestResult == null && AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.CONNECTED.name)) {
                         ConnectionStatus.CONNECTED
                     } else if (geminiTestResult?.first == false) {
                         ConnectionStatus.ERROR
@@ -979,7 +998,7 @@ fun AiApiHubScreen(navController: NavController) {
                         ConnectionStatus.CONFIGURED
                     },
                     apiKey = geminiKeyInput,
-                    onApiKeyChange = { geminiKeyInput = it },
+                    onApiKeyChange = { geminiKeyInput = it; geminiTestResult = null; AppPreferences.setProviderStatus(context, "gemini", if (it.isBlank() && effectiveGeminiKey.isBlank()) "NOT_CONFIGURED" else "CONFIGURED") },
                     isKeyVisible = isGeminiKeyVisible,
                     onToggleKeyVisibility = { isGeminiKeyVisible = !isGeminiKeyVisible },
                     isEditing = isGeminiEditing,
@@ -990,8 +1009,10 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isGeminiTesting = true
                             geminiTestResult = AppPreferences.validateGeminiApiKey(
-                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey
+                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey,
+                                geminiModel
                             )
+                            AppPreferences.recordProviderConnectionTest(context, "gemini", geminiTestResult!!)
                             isGeminiTesting = false
                         }
                     },
@@ -1000,10 +1021,13 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.clearCustomApiKey(context)
                         isGeminiEditing = false
                         geminiTestResult = null
+                        AppPreferences.setProviderStatus(context, "gemini", "NOT_CONFIGURED")
                     },
                     selectedModel = geminiModel,
                     onModelChange = {
                         geminiModel = it
+                        geminiTestResult = null
+                        AppPreferences.setProviderStatus(context, "gemini", if (effectiveGeminiKey.isBlank()) "NOT_CONFIGURED" else "CONFIGURED")
                         AppPreferences.setGeminiModel(context, it)
                     },
                     presetModels = geminiPresetModels,
@@ -1014,8 +1038,10 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isGeminiTesting = true
                             geminiTestResult = AppPreferences.validateGeminiApiKey(
-                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey
+                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey,
+                                geminiModel
                             )
+                            AppPreferences.recordProviderConnectionTest(context, "gemini", geminiTestResult!!)
                             isGeminiTesting = false
                         }
                     }

@@ -50,9 +50,15 @@ object RuntimeActivityTracker {
                     AppPreferences.setProviderLastSuccessTime(context, providerId, System.currentTimeMillis())
                     AppPreferences.setProviderStatus(context, providerId, ConnectionStatus.CONNECTED.name)
                     AppPreferences.setProviderLastError(context, providerId, null)
-                } else if (!errorCategory.isNullOrBlank()) {
-                    AppPreferences.setProviderLastError(context, providerId, errorCategory)
-                    if (errorCategory.contains("429") || errorCategory.contains("Rate limit", ignoreCase = true)) {
+                } else {
+                    // A failed request must never leave a previous CONNECTED status
+                    // visible just because the caller omitted an error string.
+                    val failureReason = errorCategory?.takeIf { it.isNotBlank() }
+                        ?: "The provider request failed without additional error details."
+                    AppPreferences.setProviderLastError(context, providerId, failureReason)
+                    if (failureReason.contains("429") ||
+                        failureReason.contains("Rate limit", ignoreCase = true) ||
+                        failureReason.contains("quota", ignoreCase = true)) {
                         AppPreferences.setProviderStatus(context, providerId, ConnectionStatus.RATE_LIMITED.name)
                     } else {
                         AppPreferences.setProviderStatus(context, providerId, ConnectionStatus.ERROR.name)
@@ -71,10 +77,12 @@ object RuntimeActivityTracker {
         val orKey = AppPreferences.getOpenRouterApiKey(context)
         val hfKey = AppPreferences.getHuggingFaceApiKey(context)
 
-        val geminiConnected = AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.CONNECTED.name || geminiKey.isNotBlank()
-        val orConnected = AppPreferences.getProviderStatus(context, "openrouter") == ConnectionStatus.CONNECTED.name && orKey.isNotBlank()
-        val hfConnected = AppPreferences.getProviderStatus(context, "huggingface") == ConnectionStatus.CONNECTED.name && hfKey.isNotBlank()
-        val publicApisConnected = AppPreferences.isPublicApisEnabled(context)
+        // Count only providers that have passed a real request, not merely saved keys.
+        val geminiConnected = AppPreferences.getProviderStatus(context, "gemini") in listOf(ConnectionStatus.CONNECTED.name, ConnectionStatus.RATE_LIMITED.name) && geminiKey.isNotBlank()
+        val orConnected = AppPreferences.getProviderStatus(context, "openrouter") in listOf(ConnectionStatus.CONNECTED.name, ConnectionStatus.RATE_LIMITED.name) && orKey.isNotBlank()
+        val hfConnected = AppPreferences.getProviderStatus(context, "huggingface") in listOf(ConnectionStatus.CONNECTED.name, ConnectionStatus.RATE_LIMITED.name) && hfKey.isNotBlank()
+        val publicApisConnected = AppPreferences.isPublicApisEnabled(context) &&
+            AppPreferences.getProviderStatus(context, "public_apis") == ConnectionStatus.CONNECTED.name
 
         var connectedCount = 0
         if (geminiConnected) connectedCount++

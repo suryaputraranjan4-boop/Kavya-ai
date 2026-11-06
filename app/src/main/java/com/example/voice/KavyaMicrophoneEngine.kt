@@ -61,21 +61,29 @@ class KavyaMicrophoneEngine : Service() {
         }
 
         fun startService(context: Context) {
-            AppPreferences.setMicEnabled(context, true)
-            AppPreferences.setKavyaState(context, "ACTIVE")
-            val intent = Intent(context, KavyaMicrophoneEngine::class.java)
+            val appContext = context.applicationContext
+            AppPreferences.setMicEnabled(appContext, true)
+            AppPreferences.setKavyaState(appContext, "ACTIVE")
+
+            // Wake an existing sleeping session, but always send a service
+            // start request as well. This closes the stop-then-immediate-start
+            // race where the old instance could still be tearing down.
+            if (stateFlow.value == EngineState.MIC_SLEEPING) instance?.setAwake()
+
+            val intent = Intent(appContext, KavyaMicrophoneEngine::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
+                appContext.startForegroundService(intent)
             } else {
-                context.startService(intent)
+                appContext.startService(intent)
             }
         }
 
         fun stopService(context: Context) {
-            AppPreferences.setMicEnabled(context, false)
-            AppPreferences.setKavyaState(context, "OFF")
+            val appContext = context.applicationContext
+            AppPreferences.setMicEnabled(appContext, false)
+            AppPreferences.setKavyaState(appContext, "OFF")
             instance?.stopEngine()
-            context.stopService(Intent(context, KavyaMicrophoneEngine::class.java))
+            appContext.stopService(Intent(appContext, KavyaMicrophoneEngine::class.java))
         }
 
         fun sleep(context: Context) {
@@ -98,7 +106,11 @@ class KavyaMicrophoneEngine : Service() {
         MIC_STARTING,
         MIC_ACTIVE,
         MIC_SLEEPING,
-        MIC_ERROR
+        MIC_ERROR;
+
+        /** True for every state in which the user has an active mic session request. */
+        val isListening: Boolean
+            get() = this == MIC_STARTING || this == MIC_ACTIVE || this == MIC_SLEEPING
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -107,6 +119,8 @@ class KavyaMicrophoneEngine : Service() {
     private var desired = false
     private var sleeping = true
     private var assistantSpeaking = false
+    private val segmentedSessionRequested = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    private var preferOfflineRecognition = false
     private var retryMs = INITIAL_RETRY_MS
     private var retryTask: Runnable? = null
 
@@ -137,6 +151,18 @@ class KavyaMicrophoneEngine : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // START_STICKY may recreate this service with a null intent. Never
+        // restart microphone capture after the user explicitly turned it off.
+        if (!AppPreferences.isMicEnabled(this)) {
+            Log.i(TAG, "Ignoring service start because microphone is disabled in preferences")
+            stateFlow.value = EngineState.MIC_OFF
+            partialFlow.value = ""
+            amplitudeFlow.value = 0f
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         try {
             createChannel()
             val notification = buildNotification()
@@ -160,6 +186,16 @@ class KavyaMicrophoneEngine : Service() {
 
     private fun startEngine() {
         handler.post {
+            if (!AppPreferences.isMicEnabled(this@KavyaMicrophoneEngine)) {
+                desired = false
+                cancelRetry()
+                cancelRecognizer()
+                stateFlow.value = EngineState.MIC_OFF
+                partialFlow.value = ""
+                amplitudeFlow.value = 0f
+                return@post
+            }
+
             if (!hasAudioPermission()) {
                 stateFlow.value = EngineState.MIC_ERROR
                 Log.e(TAG, "RECORD_AUDIO permission is missing")
@@ -192,9 +228,10 @@ class KavyaMicrophoneEngine : Service() {
                 return
             }
 
-            recognizer?.destroy()
-            recognizer = createBestRecognizer().also {
-                it.setRecognitionListener(listener)
+            // Reuse the recognizer between segments; destroying it for every utterance
+            // repeatedly tears down and reopens the platform microphone pipeline.
+            if (recognizer == null) {
+                recognizer = createBestRecognizer().also { it.setRecognitionListener(listener) }
             }
 
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -202,15 +239,35 @@ class KavyaMicrophoneEngine : Service() {
                     RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                 )
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
+                val recognitionLanguage = when (AppPreferences.getLanguage(this@KavyaMicrophoneEngine).lowercase(Locale.ROOT)) {
+                    "hi", "hindi", "hi-in" -> "hi-IN"
+                    "en", "english", "en-in" -> "en-IN"
+                    else -> "en-IN"
+                }
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, recognitionLanguage)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, recognitionLanguage)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                // Keep a recognition session open through normal pauses instead of
+                // tearing down the mic after every short phrase. SpeechRecognizer is
+                // still session-based, so these are best-effort hints to its service.
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 60_000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 60_000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1_000L)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
 
-                // Open.Jarvis-style local-first preference where Android supports it.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Request offline recognition only when an on-device recognizer
+                // actually exists; otherwise this hint can disable the network fallback.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && preferOfflineRecognition) {
                     putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                }
+                // API 33+ recognizers may keep one session alive and emit completed
+                // speech segments instead of closing/reopening the microphone per phrase.
+                if (segmentedSessionRequested) {
+                    putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS)
+                    // Keep the long silence window configured above. Overriding it
+                    // here with 1.8 seconds forced frequent session endings and
+                    // audible microphone reactivation cues after each response.
                 }
             }
 
@@ -225,11 +282,13 @@ class KavyaMicrophoneEngine : Service() {
         }
     }
 
+    @android.annotation.SuppressLint("NewApi")
     private fun createBestRecognizer(): SpeechRecognizer {
-        return if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        // The API-31-only factory is called only after the guarded availability
+        // check above. Keep the fallback path valid on minSdk 24 devices.
+        preferOfflineRecognition = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
-        ) {
+        return if (preferOfflineRecognition) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
         } else {
             SpeechRecognizer.createSpeechRecognizer(this)
@@ -253,7 +312,20 @@ class KavyaMicrophoneEngine : Service() {
         override fun onBufferReceived(buffer: ByteArray?) = Unit
 
         override fun onEndOfSpeech() {
+            if (!segmentedSessionRequested) sessionRunning = false
+        }
+
+        override fun onSegmentResults(segmentResults: Bundle) {
+            val text = segmentResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()?.trim().orEmpty()
+            partialFlow.value = ""
+            // Ignore speech captured while Kavya is talking to avoid feedback loops.
+            if (text.isNotBlank() && !assistantSpeaking) handleRecognizedText(text)
+        }
+
+        override fun onEndOfSegmentedSession() {
             sessionRunning = false
+            if (desired && !assistantSpeaking) schedule(NO_MATCH_RETRY_MS)
         }
 
         override fun onError(error: Int) {
@@ -271,7 +343,13 @@ class KavyaMicrophoneEngine : Service() {
                     Log.e(TAG, "Microphone permission was revoked")
                 }
 
-                else -> scheduleRetry()
+                else -> {
+                    // Network/server/client failures can leave a SpeechRecognizer
+                    // instance unusable. Recreate it before retrying; keep the
+                    // recognizer for ordinary no-match and busy conditions above.
+                    cancelRecognizer()
+                    scheduleRetry()
+                }
             }
         }
 
@@ -285,12 +363,20 @@ class KavyaMicrophoneEngine : Service() {
                 ?.trim()
                 .orEmpty()
 
-            if (text.isNotBlank()) handleRecognizedText(text)
+            // Never interpret Kavya's own spoken reply as a user command.
+            if (text.isNotBlank() && !assistantSpeaking) handleRecognizedText(text)
 
             if (desired && !assistantSpeaking) schedule(NO_MATCH_RETRY_MS)
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
+            // Partial callbacks can contain Kavya's own TTS audio. Do not let
+            // assistant speech update the transcript or trigger voice stop words.
+            if (assistantSpeaking) {
+                partialFlow.value = ""
+                return
+            }
+
             val text = partialResults
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull()
@@ -358,7 +444,9 @@ class KavyaMicrophoneEngine : Service() {
             AppPreferences.setKavyaState(this, "SLEEP")
             partialFlow.value = ""
             stateFlow.value = EngineState.MIC_SLEEPING
-            restartRecognition()
+            // Wake-word gating is handled on recognition results. Keep the
+            // existing session alive instead of reopening the Android mic.
+            if (desired && !sessionRunning && !assistantSpeaking) schedule(120L)
         }
     }
 
@@ -368,7 +456,9 @@ class KavyaMicrophoneEngine : Service() {
             AppPreferences.setKavyaState(this, "ACTIVE")
             partialFlow.value = ""
             stateFlow.value = EngineState.MIC_ACTIVE
-            restartRecognition()
+            // A running recognizer already hears wake-word follow-up commands.
+            // Only start a new session if the platform has ended the old one.
+            if (desired && !sessionRunning && !assistantSpeaking) schedule(120L)
         }
     }
 
@@ -376,10 +466,14 @@ class KavyaMicrophoneEngine : Service() {
         handler.post {
             assistantSpeaking = isSpeaking
             if (isSpeaking) {
+                // Keep the current recognition session alive during playback.
+                // Results are ignored while Kavya is speaking, preventing echo from
+                // being dispatched as a user command. Stopping and recreating the
+                // recognizer here caused an audible system mic-start cue every turn.
                 cancelRetry()
-                cancelRecognizer()
+                partialFlow.value = ""
                 amplitudeFlow.value = 0f
-            } else if (desired) {
+            } else if (desired && !sessionRunning) {
                 schedule(250L)
             }
         }
@@ -391,13 +485,21 @@ class KavyaMicrophoneEngine : Service() {
     }
 
     private fun stopEngine() {
-        handler.post {
+        val stopNow = Runnable {
             desired = false
             cancelRetry()
             cancelRecognizer()
             stateFlow.value = EngineState.MIC_OFF
             partialFlow.value = ""
             amplitudeFlow.value = 0f
+        }
+
+        // Apply the OFF state synchronously when called from service callbacks
+        // on the main thread, so a fast re-tap cannot race a queued stop.
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            stopNow.run()
+        } else {
+            handler.post(stopNow)
         }
     }
 
@@ -493,8 +595,16 @@ class KavyaMicrophoneEngine : Service() {
             .build()
 
     override fun onDestroy() {
-        stopEngine()
-        instance = null
+        if (instance === this) {
+            stopEngine()
+            instance = null
+        } else {
+            // A superseded service instance must not publish MIC_OFF over a
+            // newer instance that has already started.
+            desired = false
+            cancelRetry()
+            cancelRecognizer()
+        }
         super.onDestroy()
     }
 

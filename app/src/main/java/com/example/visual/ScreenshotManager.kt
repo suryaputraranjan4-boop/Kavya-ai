@@ -42,7 +42,10 @@ class ScreenshotManager(private val context: Context) {
             val metrics = DisplayMetrics()
             @Suppress("DEPRECATION")
             windowManager?.defaultDisplay?.getRealMetrics(metrics)
-            Pair(metrics.widthPixels.coerceAtLeast(1080), metrics.heightPixels.coerceAtLeast(1920))
+            Pair(
+                metrics.widthPixels.takeIf { it > 0 } ?: 1080,
+                metrics.heightPixels.takeIf { it > 0 } ?: 1920
+            )
         }
     }
 
@@ -51,6 +54,17 @@ class ScreenshotManager(private val context: Context) {
      * Respects Android privacy and security constraints.
      */
     suspend fun captureScreen(): Bitmap? {
+        // When the user has explicitly enabled screen sharing, use the same fresh
+        // MediaProjection frame that the assistant is already analyzing. This keeps
+        // perception and touch-coordinate planning aligned on games/canvas screens
+        // where the Accessibility screenshot API may return null or incomplete data.
+        if (com.example.services.ScreenShareManager.isScreenSharingActive) {
+            val sharedFrame = com.example.visual.VisionPipeline.getLatestFrameCopy(maxAgeMs = 2500L)
+            if (sharedFrame != null) return sharedFrame
+            Log.w(TAG, "Screen sharing is active, but no fresh MediaProjection frame is available.")
+            return null
+        }
+
         val service = KavyaAccessibilityService.instance
         if (service == null) {
             Log.w(TAG, "Cannot capture screen: KavyaAccessibilityService not connected.")
@@ -60,9 +74,14 @@ class ScreenshotManager(private val context: Context) {
         return try {
             val bitmap = service.captureScreenBitmap()
             if (bitmap != null) {
-                // If it's a hardware bitmap, copy to software config for resizing/compression
+                // If it's a hardware bitmap, copy to software config for resizing/compression.
+                // The captured source is owned by this method and can be released after copying.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
-                    bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    try {
+                        bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    } finally {
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
                 } else {
                     bitmap
                 }
@@ -81,7 +100,8 @@ class ScreenshotManager(private val context: Context) {
      * Enforces privacy by discarding/recycling bitmaps when diagnostic logging is disabled.
      */
     fun encodeToOptimizedBase64(bitmap: Bitmap, retainBitmap: Boolean = false): Pair<String, Bitmap?> {
-        var scaledBitmap: Bitmap = bitmap
+        var encodedBitmap = bitmap
+        var retainedBitmap: Bitmap? = null
         try {
             val width = bitmap.width
             val height = bitmap.height
@@ -90,28 +110,32 @@ class ScreenshotManager(private val context: Context) {
             if (maxDim > MAX_IMAGE_DIMENSION) {
                 val scale = MAX_IMAGE_DIMENSION.toFloat() / maxDim
                 val matrix = Matrix().apply { postScale(scale, scale) }
-                scaledBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height, matrix, true)
+                encodedBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height, matrix, true)
             }
 
             val baos = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, baos)
+            if (!encodedBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, baos)) {
+                Log.w(TAG, "Screenshot JPEG compression returned false.")
+                return Pair("", null)
+            }
             val base64String = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
 
-            val finalRetainedBitmap = if (retainBitmap || AppPreferences.isScreenAwarenessEnabled(context)) {
-                scaledBitmap
-            } else {
-                // Enforce immediate privacy discard
-                if (scaledBitmap != bitmap) {
-                    scaledBitmap.recycle()
-                }
-                bitmap.recycle()
-                null
+            // Ownership is explicit: callers receive the retained output bitmap,
+            // while the input and any unretained scaled copy are always released.
+            if (retainBitmap || AppPreferences.isScreenAwarenessEnabled(context)) {
+                retainedBitmap = encodedBitmap
             }
-
-            return Pair(base64String, finalRetainedBitmap)
+            return Pair(base64String, retainedBitmap)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to encode screenshot: ${e.message}", e)
             return Pair("", null)
+        } finally {
+            if (retainedBitmap !== bitmap && !bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+            if (retainedBitmap !== encodedBitmap && encodedBitmap !== bitmap && !encodedBitmap.isRecycled) {
+                encodedBitmap.recycle()
+            }
         }
     }
 }

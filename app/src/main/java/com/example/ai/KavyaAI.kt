@@ -25,6 +25,7 @@ import retrofit2.http.Query
 import retrofit2.http.Header
 import retrofit2.http.Headers
 import java.io.IOException
+import java.security.MessageDigest
 
 @Serializable
 data class GenerateContentRequest(
@@ -195,7 +196,38 @@ object RetrofitClient {
 }
 
 class KavyaAI(private val context: android.content.Context? = null) {
+    private fun buildQuotaRequestId(
+        prompt: String,
+        history: List<MessageEntity>,
+        screenContext: String?,
+        memoryContext: String,
+        isProactiveMode: Boolean
+    ): String {
+        val material = buildString {
+            append(prompt).append('\u0000')
+            history.takeLast(12).forEach { message ->
+                append(if (message.isUser) "user" else "assistant")
+                    .append('\u0000')
+                    .append(message.text)
+                    .append('\u0000')
+            }
+            append(screenContext.orEmpty()).append('\u0000')
+            append(memoryContext).append('\u0000')
+            append(isProactiveMode).append('\u0000')
+            append(context?.let { com.example.utils.AppPreferences.getAiProvider(it) } ?: "GEMINI")
+        }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(material.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
     fun isApiKeyConfigured(): Boolean {
+        if (context != null &&
+            com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER"
+        ) {
+            return com.example.utils.AppPreferences.isOpenRouterEnabled(context) &&
+                com.example.utils.AppPreferences.getOpenRouterApiKey(context).isNotBlank()
+        }
         val key = if (context != null) {
             com.example.utils.AppPreferences.getEffectiveApiKey(context)
         } else {
@@ -219,22 +251,36 @@ class KavyaAI(private val context: android.content.Context? = null) {
             Log.w(TAG, "Model $model temporarily throttled (cooldown for ${cooldownDurationMs}ms)")
         }
 
-        fun getAvailableModels(): List<String> {
+        fun getAvailableModels(preferredModel: String? = null): List<String> {
             val now = System.currentTimeMillis()
             val available = MODEL_TIERS.filter { (modelCooldowns[it] ?: 0L) <= now }
-            return if (available.isNotEmpty()) available else MODEL_TIERS
+            val preferred = preferredModel
+                ?.trim()
+                ?.takeIf { it.isNotBlank() && (modelCooldowns[it] ?: 0L) <= now }
+            val ordered = (listOfNotNull(preferred) + available).distinct()
+            return ordered.ifEmpty { MODEL_TIERS }
         }
     }
 
     suspend fun analyzeVisualUI(bitmap: android.graphics.Bitmap, prompt: String): String {
-        try {
-            val key = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
-            if (key.isBlank()) return "Error: Gemini API key missing."
-            
+        val key = if (context != null) {
+            val secureKey = com.example.security.SecureStorage.getSecret(context, "gemini_api_key")
+            secureKey.ifBlank { com.example.utils.AppPreferences.getEffectiveApiKey(context) }
+        } else {
+            BuildConfig.GEMINI_API_KEY
+        }
+        if (key.isBlank()) return "Visual analysis unavailable: add a Gemini API key in provider settings."
+
+        return try {
             val byteArrayOutputStream = java.io.ByteArrayOutputStream()
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)
-            val base64Image = android.util.Base64.encodeToString(byteArrayOutputStream.toByteArray(), android.util.Base64.NO_WRAP)
-            
+            if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)) {
+                return "Visual analysis unavailable: screenshot could not be encoded."
+            }
+            val base64Image = android.util.Base64.encodeToString(
+                byteArrayOutputStream.toByteArray(),
+                android.util.Base64.NO_WRAP
+            )
+
             val request = GenerateContentRequest(
                 contents = listOf(
                     Content(
@@ -247,18 +293,46 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 ),
                 generationConfig = GenerationConfig(temperature = 0.2f)
             )
-            
-            val activeModel = getAvailableModels().firstOrNull() ?: MODEL_TIERS.first()
-            val response = RetrofitClient.service.generateContent(
-                model = activeModel,
-                apiKey = key,
-                request = request
-            )
-            
-            return response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: "No visual result found."
+
+            val configuredModel = context?.let {
+                com.example.utils.AppPreferences.getGeminiModel(it)
+            }.orEmpty().trim()
+            // A saved chat/TTS model may not support image input. Try it first,
+            // then fall back only to known multimodal chat models.
+            val candidateModels = (listOf(configuredModel) + listOf(
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            )).filter { it.isNotBlank() }.distinct()
+
+            var lastFailure: String? = null
+            for (model in candidateModels) {
+                try {
+                    val response = RetrofitClient.service.generateContent(
+                        model = model,
+                        apiKey = key,
+                        request = request
+                    )
+                    val resultText = response.candidates
+                        ?.firstOrNull()
+                        ?.content
+                        ?.parts
+                        ?.firstOrNull()
+                        ?.text
+                        ?.trim()
+                    if (!resultText.isNullOrBlank()) return resultText
+                    lastFailure = "Model $model returned no visual description."
+                } catch (e: retrofit2.HttpException) {
+                    lastFailure = "Model $model returned HTTP ${e.code()}: ${e.response()?.errorBody()?.string().orEmpty()}"
+                    if (e.code() == 401 || e.code() == 403) break
+                } catch (e: Exception) {
+                    lastFailure = "Model $model failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
+                }
+            }
+            "Visual analysis failed after model fallback: ${lastFailure ?: "No compatible Gemini vision model responded."}"
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Gemini visual analysis failed", e)
-            return "Visual parsing failed: ${e.message}"
+            "Visual analysis failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
         }
     }
 
@@ -270,9 +344,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
         prompt: String,
         systemInstruction: String? = null
     ): String? = withContext(Dispatchers.IO) {
-        val ctx = context ?: return@withContext null
+        val ctx = context ?: return@withContext "OpenRouter is unavailable: application context is missing."
         val openRouterKey = com.example.utils.AppPreferences.getOpenRouterApiKey(ctx)
-        if (openRouterKey.isBlank() || !com.example.utils.AppPreferences.isOpenRouterEnabled(ctx)) return@withContext null
+        if (openRouterKey.isBlank()) return@withContext "OpenRouter API key is missing. Add a key in provider settings."
+        if (!com.example.utils.AppPreferences.isOpenRouterEnabled(ctx)) {
+            return@withContext "OpenRouter is disabled in provider settings."
+        }
 
         val modelId = com.example.utils.AppPreferences.getOpenRouterModel(ctx).ifBlank { "openrouter/free" }
         val messages = mutableListOf<OpenRouterMessage>()
@@ -455,7 +532,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
     ): String? = withContext(Dispatchers.IO) {
         val ctx = context ?: return@withContext null
         val openRouterKey = com.example.utils.AppPreferences.getOpenRouterApiKey(ctx)
-        if (openRouterKey.isBlank()) return@withContext null
+        if (openRouterKey.isBlank() || !com.example.utils.AppPreferences.isOpenRouterEnabled(ctx)) return@withContext null
 
         val modelId = com.example.utils.AppPreferences.getOpenRouterModel(ctx).ifBlank { "openrouter/free" }
         val systemInstructionText = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
@@ -483,9 +560,34 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 request = OpenRouterRequest(model = modelId, messages = orMessages)
             )
             response.choices?.firstOrNull()?.message?.content?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: "OpenRouter responded, but returned no message for model '$modelId'."
+        } catch (e: HttpException) {
+            val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+            val detail = try {
+                if (body.isNullOrBlank()) null
+                else org.json.JSONObject(body).optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) { null }
+            val reason = when (e.code()) {
+                401 -> "API key rejected (HTTP 401)."
+                402 -> "Account credit or payment required (HTTP 402)."
+                403 -> "Access denied for this model/key (HTTP 403)."
+                404 -> "Model '$modelId' was not found (HTTP 404)."
+                429 -> "Rate limit reached (HTTP 429)."
+                in 500..599 -> "OpenRouter server error (HTTP ${e.code()})."
+                else -> "HTTP ${e.code()}."
+            }
+            Log.w(TAG, "OpenRouter direct call failed: $reason ${detail.orEmpty()}")
+            "OpenRouter connection failed: $reason ${detail.orEmpty()}"
+        } catch (e: java.net.UnknownHostException) {
+            "Cannot reach OpenRouter: DNS/network unavailable."
+        } catch (e: java.net.SocketTimeoutException) {
+            "OpenRouter connection timed out. Check your internet connection."
+        } catch (e: IOException) {
+            "OpenRouter network error: ${e.localizedMessage ?: "I/O failure"}"
         } catch (e: Exception) {
-            Log.w(TAG, "OpenRouter direct call failed: ${e.message}")
-            null
+            Log.w(TAG, "OpenRouter direct call failed: ${e.message}", e)
+            "OpenRouter request failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
         }
     }
 
@@ -496,7 +598,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         memoryContext: String = "",
         isProactiveMode: Boolean = false
     ): String = withContext(Dispatchers.IO) {
-        val requestId = (prompt.hashCode() * 31 + history.size).toString()
+        val requestId = buildQuotaRequestId(prompt, history, screenContext, memoryContext, isProactiveMode)
         val priority = if (isProactiveMode) com.example.api.RequestPriority.P3_PROACTIVE_CONVERSATION else com.example.api.RequestPriority.P0_ACTIVE_USER_REQUEST
         
         if (!com.example.api.QuotaManager.instance.acquireQuota(requestId, priority)) {
@@ -506,13 +608,16 @@ class KavyaAI(private val context: android.content.Context? = null) {
         }
         
         var lastError: Exception? = null
+        var lastErrorMessage: String? = null
         try {
             if (context != null) {
                 val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
                 val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
                 val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
 
-                if ((isExplicitOffline || !isApiKeyConfigured()) && gemmaProvider.isConfigured(context)) {
+                if ((isExplicitOffline ||
+                    (selectedProvider != "OPENROUTER" && !isApiKeyConfigured())) &&
+                    gemmaProvider.isConfigured(context)) {
                     val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
                     val gemmaResult = gemmaProvider.generate(prompt, sysPrompt, context)
                     if (gemmaResult.success && gemmaResult.text.isNotBlank()) {
@@ -521,6 +626,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         return@withContext gemmaResult.error ?: "Offline Gemma 4 E4B model failed to generate response."
                     }
                 }
+            }
+
+            if (context != null && com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER") {
+                val openRouterResponse = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
+                return@withContext openRouterResponse
+                    ?: "OpenRouter could not generate a response. Check its API key and model settings."
             }
 
             val apiKey = if (context != null) {
@@ -593,7 +704,9 @@ class KavyaAI(private val context: android.content.Context? = null) {
         )
 
         // Try supported model tiers with exponential backoff for 429 rate limit errors
-        val candidateModels = getAvailableModels()
+        val candidateModels = getAvailableModels(
+            context?.let { com.example.utils.AppPreferences.getGeminiModel(it) }
+        )
         for (model in candidateModels) {
             var attempt = 0
             val maxRetries = 1
@@ -643,6 +756,19 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         if (code == 429) rateLimitErrorsCount++
                     }
                     val errorBodyString = e.response()?.errorBody()?.string()
+                    val apiDetail = try {
+                        if (errorBodyString.isNullOrBlank()) null
+                        else org.json.JSONObject(errorBodyString).optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+                    } catch (_: Exception) { null }
+                    lastErrorMessage = when (code) {
+                        400 -> "Gemini rejected the request/model '$model' (HTTP 400). ${apiDetail.orEmpty()}"
+                        401 -> "Gemini API key was rejected (HTTP 401)."
+                        403 -> "Gemini access denied for this key/model (HTTP 403). ${apiDetail.orEmpty()}"
+                        404 -> "Gemini model '$model' was not found (HTTP 404)."
+                        429 -> "Gemini quota or rate limit reached (HTTP 429)."
+                        in 500..599 -> "Google Gemini server error (HTTP $code)."
+                        else -> "Gemini returned HTTP $code. ${apiDetail.orEmpty()}"
+                    }
                     Log.e(TAG, "Gemini API HttpException $code from model $model on attempt $attempt: ${e.message()} - Body: $errorBodyString")
                     
                     if (code == 429 || code == 503 || code == 500) {
@@ -663,6 +789,11 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     }
                 } catch (e: IOException) {
                     lastError = e
+                    lastErrorMessage = when (e) {
+                        is java.net.UnknownHostException -> "DNS/network unavailable while reaching Google Gemini."
+                        is java.net.SocketTimeoutException -> "Gemini request timed out. Check internet connectivity."
+                        else -> "Gemini network I/O error: ${e.localizedMessage ?: "unknown I/O error"}"
+                    }
                     com.example.api.QuotaManager.instance.apply {
                         lastErrorType = "IOException"
                         lastErrorTime = System.currentTimeMillis()
@@ -677,6 +808,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     }
                 } catch (e: Exception) {
                     lastError = e
+                    lastErrorMessage = "Gemini request failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
                     com.example.api.QuotaManager.instance.apply {
                         lastErrorType = "Exception"
                         lastErrorTime = System.currentTimeMillis()
@@ -691,7 +823,14 @@ class KavyaAI(private val context: android.content.Context? = null) {
         } finally {
             com.example.api.QuotaManager.instance.releaseQuota(requestId)
         }
-        return@withContext "AI model is currently unavailable."
+        return@withContext lastErrorMessage
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "Gemini connection/request error: $it" }
+            ?: if (lastError == null) {
+                "Gemini returned an empty response from all supported models. Check model access and API settings."
+            } else {
+                "Gemini request failed: ${lastError.localizedMessage ?: lastError.javaClass.simpleName}"
+            }
     }
 
     suspend fun generateSpeechAudio(
@@ -936,7 +1075,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         memoryContext: String = "",
         isProactiveMode: Boolean = true
     ): kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.flow {
-        val requestId = (prompt.hashCode() * 31 + history.size).toString()
+        val requestId = buildQuotaRequestId(prompt, history, screenContext, memoryContext, isProactiveMode)
         val priority = if (isProactiveMode) com.example.api.RequestPriority.P3_PROACTIVE_CONVERSATION else com.example.api.RequestPriority.P0_ACTIVE_USER_REQUEST
         
         if (!com.example.api.QuotaManager.instance.acquireQuota(requestId, priority)) {
@@ -944,12 +1083,15 @@ class KavyaAI(private val context: android.content.Context? = null) {
             return@flow
         }
         
+        try {
         if (context != null) {
             val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
             val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
             val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
 
-            if ((isExplicitOffline || !isApiKeyConfigured()) && gemmaProvider.isConfigured(context)) {
+            if ((isExplicitOffline ||
+                    (selectedProvider != "OPENROUTER" && !isApiKeyConfigured())) &&
+                    gemmaProvider.isConfigured(context)) {
                 val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
                 gemmaProvider.streamGenerate(prompt, sysPrompt, context).collect { chunk ->
                     emit(chunk)
@@ -960,8 +1102,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
         val isUsingOpenRouter = context != null && com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER"
         if (isUsingOpenRouter) {
-            val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode)
-            emit(responseText)
+            // Avoid nested chat(): it would acquire the same request quota key
+            // and be rejected by the duplicate-request guard.
+            val responseText = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
+            emit(responseText ?: "OpenRouter could not generate a response. Check its API key and model settings.")
             return@flow
         }
 
@@ -1005,67 +1149,94 @@ class KavyaAI(private val context: android.content.Context? = null) {
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .build()
 
-        val candidateModels = getAvailableModels()
+        val candidateModels = getAvailableModels(
+            context?.let { com.example.utils.AppPreferences.getGeminiModel(it) }
+        )
         var hasEmittedTokens = false
+        var stopTryingModels = false
+        var lastStreamError: String? = null
 
-        try {
-            for (model in candidateModels) {
-                if (hasEmittedTokens) break
-                val request = okhttp3.Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$apiKey")
-                    .post(okhttp3.RequestBody.create("application/json".toMediaType(), requestJson))
-                    .build()
+        for (model in candidateModels) {
+            if (hasEmittedTokens || stopTryingModels) break
+            val request = okhttp3.Request.Builder()
+                .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$apiKey")
+                .post(okhttp3.RequestBody.create("application/json".toMediaType(), requestJson))
+                .build()
 
-                try {
-                    val response = okHttpClient.newCall(request).execute()
-                    response.use { res ->
-                        if (!res.isSuccessful) {
-                            val code = res.code
-                            if (code == 429 || code == 503 || code == 500) {
-                                markModelThrottled(model)
-                                Log.w(TAG, "Stream HTTP $code on $model, attempting next tier...")
-                            } else {
-                                Log.w(TAG, "Stream HTTP $code on $model, attempting next tier...")
-                            }
-                            return@use
+            try {
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val code = response.code
+                        val errorBody = response.body?.string().orEmpty()
+                        val detail = try {
+                            org.json.JSONObject(errorBody).optJSONObject("error")
+                                ?.optString("message")?.takeIf { it.isNotBlank() }
+                        } catch (_: Exception) { null }
+                        lastStreamError = when (code) {
+                            400 -> "Gemini rejected the request (HTTP 400). ${detail.orEmpty()}"
+                            401 -> "Gemini API key was rejected (HTTP 401)."
+                            403 -> "Gemini access denied for this key or model (HTTP 403). ${detail.orEmpty()}"
+                            404 -> "Gemini model '$model' was not found (HTTP 404)."
+                            429 -> "Gemini quota or rate limit reached (HTTP 429)."
+                            in 500..599 -> "Gemini service error (HTTP $code)."
+                            else -> "Gemini returned HTTP $code. ${detail.orEmpty()}"
                         }
-
-                        res.body?.source()?.let { source ->
-                            while (!source.exhausted()) {
-                                val line = source.readUtf8LineStrict()
-                                if (line.startsWith("data: ")) {
-                                    val dataJson = line.substring(6)
-                                    if (dataJson.isNotBlank()) {
-                                        try {
-                                            val chunk = json.decodeFromString(GenerateContentResponse.serializer(), dataJson)
-                                            val textChunk = chunk.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: ""
-                                            if (textChunk.isNotEmpty()) {
-                                                hasEmittedTokens = true
-                                                emit(textChunk)
-                                            }
-                                        } catch (e: Exception) {
-                                            // parse error on chunk
+                        if (code == 429 || code == 503 || code == 500) {
+                            markModelThrottled(model)
+                        }
+                        if (code == 400 || code == 401 || code == 403) {
+                            stopTryingModels = true
+                        }
+                        Log.w(TAG, "Stream HTTP $code on $model: $lastStreamError")
+                    } else {
+                        val source = response.body?.source()
+                        if (source == null) {
+                            lastStreamError = "Gemini returned an empty streaming response."
+                        } else {
+                            while (true) {
+                                val line = source.readUtf8Line() ?: break
+                                if (!line.startsWith("data:")) continue
+                                val dataJson = line.removePrefix("data:").trim()
+                                if (dataJson.isBlank() || dataJson == "[DONE]") continue
+                                try {
+                                    val chunk = json.decodeFromString(
+                                        GenerateContentResponse.serializer(),
+                                        dataJson
+                                    )
+                                    val parts = chunk.candidates?.firstOrNull()?.content?.parts.orEmpty()
+                                    for (part in parts) {
+                                        val textChunk = part.text.orEmpty()
+                                        if (textChunk.isNotEmpty()) {
+                                            hasEmittedTokens = true
+                                            emit(textChunk)
                                         }
                                     }
+                                } catch (parseError: Exception) {
+                                    Log.w(TAG, "Ignoring malformed Gemini stream event: ${parseError.message}")
                                 }
+                            }
+                            if (!hasEmittedTokens && lastStreamError == null) {
+                                lastStreamError = "Gemini returned no text for model '$model'."
                             }
                         }
                     }
-
-                    if (hasEmittedTokens) {
-                        break
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Stream error on $model: ${e.message}")
                 }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                lastStreamError = when (e) {
+                    is java.net.UnknownHostException -> "DNS/network unavailable while reaching Gemini."
+                    is java.net.SocketTimeoutException -> "Gemini streaming request timed out."
+                    is java.io.IOException -> "Gemini streaming network error: ${e.localizedMessage ?: "I/O error"}"
+                    else -> "Gemini streaming failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
+                }
+                Log.w(TAG, "Stream error on $model: ${e.message}")
             }
+        }
 
-            if (!hasEmittedTokens) {
-                // Fallback to local intelligent assistant response
-                val localAnswer = LocalAssistantEngine.handleFastQuery(prompt) 
-                    ?: LocalAssistantEngine.getHighTrafficFallbackResponse(prompt)
-                emit(localAnswer)
-            }
+        if (!hasEmittedTokens) {
+            emit(lastStreamError?.let { "Gemini streaming failed: $it" }
+                ?: "Gemini returned an empty response from all available models.")
+        }
         } finally {
             com.example.api.QuotaManager.instance.releaseQuota(requestId)
         }
