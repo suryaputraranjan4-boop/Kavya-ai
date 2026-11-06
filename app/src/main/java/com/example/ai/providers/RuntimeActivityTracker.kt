@@ -71,10 +71,12 @@ object RuntimeActivityTracker {
         val orKey = AppPreferences.getOpenRouterApiKey(context)
         val hfKey = AppPreferences.getHuggingFaceApiKey(context)
 
-        val geminiConnected = AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.CONNECTED.name || geminiKey.isNotBlank()
+        // Count only providers that have passed a real request, not merely saved keys.
+        val geminiConnected = AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.CONNECTED.name && geminiKey.isNotBlank()
         val orConnected = AppPreferences.getProviderStatus(context, "openrouter") == ConnectionStatus.CONNECTED.name && orKey.isNotBlank()
         val hfConnected = AppPreferences.getProviderStatus(context, "huggingface") == ConnectionStatus.CONNECTED.name && hfKey.isNotBlank()
-        val publicApisConnected = AppPreferences.isPublicApisEnabled(context)
+        val publicApisConnected = AppPreferences.isPublicApisEnabled(context) &&
+            AppPreferences.getProviderStatus(context, "public_apis") == ConnectionStatus.CONNECTED.name
 
         var connectedCount = 0
         if (geminiConnected) connectedCount++
