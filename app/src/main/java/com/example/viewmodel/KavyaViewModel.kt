@@ -199,6 +199,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             "scroll down", "scroll up", "swipe up", "swipe down", "swipe left", "swipe right",
             "tap ", "click ", "press ", "select ", "this button", "that button", "ye button", "is button",
             "isko dabao", "ispe tap", "yahan tap", "ye karo", "isko kholo", "idhar tap", "wahan tap",
+            "jaake", "jake", "udhar", "waha", "us button", "yeh kar", "karke dikhao", "screen share",
             "what is on my screen", "what do you see", "look at my screen", "screen pe kya", "ye dekho"
         )
         return visualKeywords.any { lower.contains(it) }
@@ -1260,7 +1261,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 // 4. Kavya Visual Action Engine execution check
                 if (!isFastChat && cleanResponse.isBlank() && isVisualInteractionIntent(prompt)) {
                     val visualPrompt = if (liveVisualAnalysis.isNotBlank()) {
-                        "$prompt\\n\\nCURRENT SCREEN VISUAL ANALYSIS (fresh frame):\\n$liveVisualAnalysis"
+                        "$prompt\n\nCURRENT SCREEN VISUAL ANALYSIS (fresh frame):\n$liveVisualAnalysis"
                     } else prompt
                     val visualOutcome = androidAgent.executeVisualGoal(visualPrompt) { milestoneText ->
                         _agentActionStatus.value = milestoneText
@@ -1287,11 +1288,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     val screenContext = buildString {
                         append(accessibilityContext)
                         if (liveVisualAnalysis.isNotBlank()) {
-                            append("\\n\\nLIVE SCREEN VISUAL ANALYSIS:\\n")
+                            append("\n\nLIVE SCREEN VISUAL ANALYSIS:\n")
                             append(liveVisualAnalysis)
                         }
                         if (_isScreenSharing.value && liveVisualAnalysis.isBlank()) {
-                            append("\\n\\nScreen sharing is enabled, but no fresh visual analysis was available for this turn. Do not pretend to see screen contents.")
+                            append("\n\nScreen sharing is enabled, but no fresh visual analysis was available for this turn. Do not pretend to see screen contents.")
                         }
                     }
                     
