@@ -55,21 +55,40 @@ fun ScreenShareSheet(
     val voiceState by viewModel.voiceState.collectAsState()
     val scrollState = rememberScrollState()
 
-    // Android Official Screen Capture Consent Launcher (MediaProjection)
-    val mediaProjectionManager = remember {
-        context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
-    }
+    // A requested screen-analysis action is deferred until the user grants
+    // Android's MediaProjection consent and the first frame becomes available.
+    var pendingScreenPrompt by remember { mutableStateOf<String?>(null) }
 
     val screenCaptureConsentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         viewModel.onScreenShareConsentResult(context, result.resultCode, result.data)
+        val prompt = pendingScreenPrompt
+        pendingScreenPrompt = null
+        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null && prompt != null) {
+            viewModel.analyzeScreenWithKavya(prompt)
+            onDismiss()
+            onNavigateToChat()
+        }
     }
 
-    fun startScreenShareWithConsent() {
+    fun startScreenShareWithConsent(): Boolean {
         val captureIntent = viewModel.startScreenShareConsent(context)
         if (captureIntent != null) {
             screenCaptureConsentLauncher.launch(captureIntent)
+            return true
+        }
+        return false
+    }
+
+    fun analyzeWithScreenConsent(prompt: String) {
+        if (isSharing) {
+            viewModel.analyzeScreenWithKavya(prompt)
+            onDismiss()
+            onNavigateToChat()
+        } else {
+            pendingScreenPrompt = prompt
+            if (!startScreenShareWithConsent()) pendingScreenPrompt = null
         }
     }
 
@@ -238,9 +257,7 @@ fun ScreenShareSheet(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
-                        viewModel.analyzeScreenWithKavya("What's on my screen right now? Please guide me.")
-                        onDismiss()
-                        onNavigateToChat()
+                        analyzeWithScreenConsent("What's on my screen right now? Please guide me.")
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -257,9 +274,7 @@ fun ScreenShareSheet(
 
                 OutlinedButton(
                     onClick = {
-                        viewModel.analyzeScreenWithKavya("Read aloud all visible text on the screen.")
-                        onDismiss()
-                        onNavigateToChat()
+                        analyzeWithScreenConsent("Read aloud all visible text on the screen.")
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -276,9 +291,7 @@ fun ScreenShareSheet(
 
                 OutlinedButton(
                     onClick = {
-                        viewModel.analyzeScreenWithKavya("What clickable buttons or action items are available on this screen?")
-                        onDismiss()
-                        onNavigateToChat()
+                        analyzeWithScreenConsent("What clickable buttons or action items are available on this screen?")
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
