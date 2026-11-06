@@ -479,15 +479,17 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     it is com.example.services.ScreenShareManager.ScreenShareState.Active
                 }
                 // Wait for the first owned frame, not just the service's start signal.
-                while (true) {
+                var frameReady = false
+                while (!frameReady) {
                     val frame = com.example.visual.VisionPipeline.getLatestFrameCopy(maxAgeMs = 2500L)
                     if (frame != null) {
                         if (!frame.isRecycled) frame.recycle()
-                        return@withTimeoutOrNull true
+                        frameReady = true
+                    } else {
+                        kotlinx.coroutines.delay(100L)
                     }
-                    kotlinx.coroutines.delay(100L)
                 }
-                false
+                frameReady
             } ?: false
 
             if (!screenShareReady) {
