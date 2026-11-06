@@ -119,6 +119,7 @@ class KavyaMicrophoneEngine : Service() {
     private var desired = false
     private var sleeping = true
     private var assistantSpeaking = false
+    private val segmentedSessionRequested = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
     private var retryMs = INITIAL_RETRY_MS
     private var retryTask: Runnable? = null
 
@@ -226,9 +227,10 @@ class KavyaMicrophoneEngine : Service() {
                 return
             }
 
-            recognizer?.destroy()
-            recognizer = createBestRecognizer().also {
-                it.setRecognitionListener(listener)
+            // Reuse the recognizer between segments; destroying it for every utterance
+            // repeatedly tears down and reopens the platform microphone pipeline.
+            if (recognizer == null) {
+                recognizer = createBestRecognizer().also { it.setRecognitionListener(listener) }
             }
 
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -251,6 +253,12 @@ class KavyaMicrophoneEngine : Service() {
                 // Open.Jarvis-style local-first preference where Android supports it.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                }
+                // API 33+ recognizers may keep one session alive and emit completed
+                // speech segments instead of closing/reopening the microphone per phrase.
+                if (segmentedSessionRequested) {
+                    putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
                 }
             }
 
@@ -293,7 +301,20 @@ class KavyaMicrophoneEngine : Service() {
         override fun onBufferReceived(buffer: ByteArray?) = Unit
 
         override fun onEndOfSpeech() {
+            if (!segmentedSessionRequested) sessionRunning = false
+        }
+
+        override fun onSegmentResults(segmentResults: Bundle) {
+            val text = segmentResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()?.trim().orEmpty()
+            partialFlow.value = ""
+            // Ignore speech captured while Kavya is talking to avoid feedback loops.
+            if (text.isNotBlank() && !assistantSpeaking) handleRecognizedText(text)
+        }
+
+        override fun onEndOfSegmentedSession() {
             sessionRunning = false
+            if (desired && !assistantSpeaking) schedule(NO_MATCH_RETRY_MS)
         }
 
         override fun onError(error: Int) {
