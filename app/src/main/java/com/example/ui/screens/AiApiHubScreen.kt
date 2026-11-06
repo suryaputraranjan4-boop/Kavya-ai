@@ -857,6 +857,8 @@ fun AiApiHubScreen(navController: NavController) {
                     selectedModel = orModel,
                     onModelChange = {
                         orModel = it
+                        orTestResult = null
+                        AppPreferences.setProviderStatus(context, "openrouter", if (orKeyInput.isBlank()) "NOT_CONFIGURED" else "CONFIGURED")
                         AppPreferences.setOpenRouterModel(context, it)
                     },
                     presetModels = availableOrModels,
@@ -936,6 +938,8 @@ fun AiApiHubScreen(navController: NavController) {
                     selectedModel = hfModel,
                     onModelChange = {
                         hfModel = it
+                        hfTestResult = null
+                        AppPreferences.setProviderStatus(context, "huggingface", if (hfKeyInput.isBlank()) "NOT_CONFIGURED" else "CONFIGURED")
                         AppPreferences.setHuggingFaceModel(context, it)
                     },
                     presetModels = availableHfModels,
@@ -1013,6 +1017,8 @@ fun AiApiHubScreen(navController: NavController) {
                     selectedModel = geminiModel,
                     onModelChange = {
                         geminiModel = it
+                        geminiTestResult = null
+                        AppPreferences.setProviderStatus(context, "gemini", if (effectiveGeminiKey.isBlank()) "NOT_CONFIGURED" else "CONFIGURED")
                         AppPreferences.setGeminiModel(context, it)
                     },
                     presetModels = geminiPresetModels,
