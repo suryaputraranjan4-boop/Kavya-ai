@@ -86,6 +86,7 @@ object VisionPipeline {
 
     /** Returns an independent frame snapshot safe for asynchronous AI analysis. */
     @Synchronized
+    @Synchronized
     fun getLatestFrameCopy(maxAgeMs: Long = 2500L): Bitmap? {
         val frame = cachedLatestFrame ?: return null
         if (frame.isRecycled) return null
@@ -142,7 +143,8 @@ object VisionPipeline {
         val a11y = KavyaAccessibilityService.instance
         val freshScreen = FreshScreenRecognizer.inspectFreshScreenNow()
         val fingerprint = ScreenFingerprint.createFrom(freshScreen)
-        val hasVisualFrame = cachedLatestFrame != null
+        val hasVisualFrame = cachedLatestFrame?.isRecycled == false &&
+            System.currentTimeMillis() - _perceptionState.value.timestamp <= 2500L
 
         return UnifiedScreenPerception(
             packageName = freshScreen.foregroundPackage,
