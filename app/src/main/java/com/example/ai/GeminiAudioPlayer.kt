@@ -42,6 +42,10 @@ class GeminiAudioPlayer(
 
     fun isSpeaking(): Boolean = isPlaying
 
+    /** True while the current item is playing or any queued item is being prepared. */
+    @Synchronized
+    fun hasPendingPlayback(): Boolean = isProcessingQueue || audioQueue.isNotEmpty() || isPlaying
+
     fun notifySpeaking(speaking: Boolean) {
         mainHandler.post {
             this.isPlaying = speaking
