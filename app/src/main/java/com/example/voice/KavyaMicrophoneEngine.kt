@@ -65,14 +65,10 @@ class KavyaMicrophoneEngine : Service() {
             AppPreferences.setMicEnabled(appContext, true)
             AppPreferences.setKavyaState(appContext, "ACTIVE")
 
-            // Reuse the single running service instead of repeatedly starting
-            // additional start commands while the UI is still rendering MIC_STARTING.
-            val current = instance
-            if (current != null) {
-                current.setAwake()
-                current.startEngine()
-                return
-            }
+            // Wake an existing sleeping session, but always send a service
+            // start request as well. This closes the stop-then-immediate-start
+            // race where the old instance could still be tearing down.
+            instance?.setAwake()
 
             val intent = Intent(appContext, KavyaMicrophoneEngine::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
