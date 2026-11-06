@@ -1244,8 +1244,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 // Analyze a fresh shared-screen frame before planning visual actions. The
                 // accessibility tree alone often omits icons, canvas content and game controls.
                 var liveVisualAnalysis = ""
-                if (com.example.services.ScreenShareManager.isScreenSharingActive &&
-                    (isVisualInteractionIntent(prompt) || !isConversationalTurn)) {
+                if (com.example.services.ScreenShareManager.isScreenSharingActive) {
                     val frameSnapshot = com.example.visual.VisionPipeline.getLatestFrameCopy(maxAgeMs = 2500L)
                     if (frameSnapshot != null) {
                         try {
