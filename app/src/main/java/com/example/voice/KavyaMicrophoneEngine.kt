@@ -120,6 +120,7 @@ class KavyaMicrophoneEngine : Service() {
     private var sleeping = true
     private var assistantSpeaking = false
     private val segmentedSessionRequested = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    private var preferOfflineRecognition = false
     private var retryMs = INITIAL_RETRY_MS
     private var retryTask: Runnable? = null
 
@@ -238,8 +239,13 @@ class KavyaMicrophoneEngine : Service() {
                     RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                 )
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
+                val recognitionLanguage = when (AppPreferences.getLanguage(this@KavyaMicrophoneEngine).lowercase(Locale.ROOT)) {
+                    "hi", "hindi", "hi-in" -> "hi-IN"
+                    "en", "english", "en-in" -> "en-IN"
+                    else -> "en-IN"
+                }
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, recognitionLanguage)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, recognitionLanguage)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
                 // Keep a recognition session open through normal pauses instead of
@@ -250,8 +256,9 @@ class KavyaMicrophoneEngine : Service() {
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1_000L)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
 
-                // Open.Jarvis-style local-first preference where Android supports it.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Request offline recognition only when an on-device recognizer
+                // actually exists; otherwise this hint can disable the network fallback.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && preferOfflineRecognition) {
                     putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                 }
                 // API 33+ recognizers may keep one session alive and emit completed
@@ -276,10 +283,9 @@ class KavyaMicrophoneEngine : Service() {
     }
 
     private fun createBestRecognizer(): SpeechRecognizer {
-        return if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        preferOfflineRecognition = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
-        ) {
+        return if (preferOfflineRecognition) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
         } else {
             SpeechRecognizer.createSpeechRecognizer(this)
