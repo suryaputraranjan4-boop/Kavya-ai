@@ -52,6 +52,7 @@ class ScreenCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    @Volatile private var isStopping = false
 
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
@@ -145,6 +146,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun startCapture(resultCode: Int, resultData: Intent) {
+        isStopping = false
         try {
             val projection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
             if (projection == null) {
@@ -175,6 +177,7 @@ class ScreenCaptureService : Service() {
 
             reader.setOnImageAvailableListener({ imageReaderInstance ->
                 val image = imageReaderInstance.acquireLatestImage() ?: return@setOnImageAvailableListener
+                var rawBitmap: Bitmap? = null
                 try {
                     val planes = image.planes
                     val buffer = planes[0].buffer
@@ -182,7 +185,7 @@ class ScreenCaptureService : Service() {
                     val rowStride = planes[0].rowStride
                     val rowPadding = rowStride - pixelStride * targetWidth
 
-                    val rawBitmap = Bitmap.createBitmap(
+                    rawBitmap = Bitmap.createBitmap(
                         targetWidth + rowPadding / pixelStride,
                         targetHeight,
                         Bitmap.Config.ARGB_8888
@@ -197,7 +200,7 @@ class ScreenCaptureService : Service() {
                         } finally {
                             // The cropped bitmap owns its pixels; release the padded
                             // intermediate immediately instead of leaking one per frame.
-                            rawBitmap.recycle()
+                            rawBitmap.takeIf { !it.isRecycled }?.recycle()
                         }
                     }
 
@@ -214,6 +217,8 @@ class ScreenCaptureService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
                 } finally {
+                    // Also release the raw allocation if buffer copy/cropping failed.
+                    rawBitmap?.takeIf { !it.isRecycled }?.recycle()
                     image.close()
                 }
             }, backgroundHandler)
@@ -238,6 +243,8 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stopCapture() {
+        if (isStopping) return
+        isStopping = true
         Log.i(TAG, "Cleaning up screen capture service resources...")
         try {
             virtualDisplay?.release()
