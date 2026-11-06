@@ -28,6 +28,11 @@ class KavyaVoiceEngine(
 
     var onSpeakingStateChanged: ((Boolean) -> Unit)? = null
 
+    /** Receives the audio player's authoritative queue-level state, not per-chunk completion. */
+    fun onAudioPlaybackStateChanged(speaking: Boolean) {
+        updateSpeakingState(speaking)
+    }
+
     private fun updateSpeakingState(speaking: Boolean) {
         if (isSpeaking != speaking) {
             isSpeaking = speaking
@@ -138,8 +143,10 @@ class KavyaVoiceEngine(
                     if (audioBytes != null && audioBytes.isNotEmpty()) {
                         Log.d(TAG, "GEMINI_VOICE_PLAYBACK_STARTED: ${audioBytes.size} bytes")
                         geminiPlayer.playAudioBytes(audioBytes, text = cleanText, enqueue = enqueue) {
+                            // Do not publish IDLE here: this callback fires after every
+                            // queued sentence, even when the next sentence is about to play.
+                            // GeminiAudioPlayer reports IDLE only after its whole queue drains.
                             Log.d(TAG, "VOICE_PLAYBACK_COMPLETED")
-                            updateSpeakingState(false)
                             onComplete?.invoke()
                         }
                         geminiSuccess = true
@@ -181,7 +188,7 @@ class KavyaVoiceEngine(
                 if (generation != speechGeneration || !isActive) return@launch
                 if (audio != null && audio.isNotEmpty() && geminiPlayer != null) {
                     geminiPlayer.playAudioBytes(audio, text = naturalFallback, enqueue = enqueue) {
-                        updateSpeakingState(false)
+                        // Queue-level speaking state is delivered by GeminiAudioPlayer.
                         onComplete?.invoke()
                     }
                 } else {
