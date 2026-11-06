@@ -177,51 +177,7 @@ class ScreenCaptureService : Service() {
             imageReader = reader
 
             reader.setOnImageAvailableListener({ imageReaderInstance ->
-                val image = imageReaderInstance.acquireLatestImage() ?: return@setOnImageAvailableListener
-                var rawBitmap: Bitmap? = null
-                try {
-                    val planes = image.planes
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * targetWidth
-
-                    rawBitmap = Bitmap.createBitmap(
-                        targetWidth + rowPadding / pixelStride,
-                        targetHeight,
-                        Bitmap.Config.ARGB_8888
-                    )
-                    rawBitmap.copyPixelsFromBuffer(buffer)
-
-                    val cleanBitmap = if (rowPadding == 0) {
-                        rawBitmap
-                    } else {
-                        try {
-                            Bitmap.createBitmap(rawBitmap, 0, 0, targetWidth, targetHeight)
-                        } finally {
-                            // The cropped bitmap owns its pixels; release the padded
-                            // intermediate immediately instead of leaking one per frame.
-                            rawBitmap.takeIf { !it.isRecycled }?.recycle()
-                        }
-                    }
-
-                    try {
-                        // Cache the first usable frame before publishing Active;
-                        // consumers must never observe an active share with no image.
-                        VisionPipeline.onNewFrame(cleanBitmap)
-                        ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
-                    } finally {
-                        // Both consumers retain their own copies. Release the
-                        // ImageReader frame even if one consumer throws.
-                        if (!cleanBitmap.isRecycled) cleanBitmap.recycle()
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
-                } finally {
-                    // Also release the raw allocation if buffer copy/cropping failed.
-                    rawBitmap?.takeIf { !it.isRecycled }?.recycle()
-                    image.close()
-                }
+                processCapturedImage(imageReaderInstance, targetWidth, targetHeight)
             }, backgroundHandler)
 
             virtualDisplay = projection.createVirtualDisplay(
@@ -240,6 +196,65 @@ class ScreenCaptureService : Service() {
             Log.e(TAG, "Fatal failure starting virtual screen capture", e)
             pendingServiceError = "Capture failed: ${e.message ?: e.javaClass.simpleName}"
             stopSelf()
+        }
+    }
+
+    /**
+     * Serializes frame processing with stopCapture so reset/teardown cannot race
+     * an in-flight callback and leave a stale frame cached after screen sharing stops.
+     */
+    @Synchronized
+    private fun processCapturedImage(
+        imageReaderInstance: ImageReader,
+        targetWidth: Int,
+        targetHeight: Int
+    ) {
+        if (isStopping || imageReader !== imageReaderInstance) return
+        val image = try {
+            imageReaderInstance.acquireLatestImage()
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to acquire screen frame: ${e.message}")
+            return
+        } ?: return
+
+        var rawBitmap: Bitmap? = null
+        try {
+            val planes = image.planes
+            val buffer = planes[0].buffer
+            val pixelStride = planes[0].pixelStride
+            val rowStride = planes[0].rowStride
+            val rowPadding = rowStride - pixelStride * targetWidth
+
+            rawBitmap = Bitmap.createBitmap(
+                targetWidth + rowPadding / pixelStride,
+                targetHeight,
+                Bitmap.Config.ARGB_8888
+            )
+            rawBitmap.copyPixelsFromBuffer(buffer)
+
+            val cleanBitmap = if (rowPadding == 0) {
+                rawBitmap
+            } else {
+                try {
+                    Bitmap.createBitmap(rawBitmap, 0, 0, targetWidth, targetHeight)
+                } finally {
+                    rawBitmap.takeIf { !it.isRecycled }?.recycle()
+                }
+            }
+
+            try {
+                if (!isStopping) {
+                    VisionPipeline.onNewFrame(cleanBitmap)
+                    ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
+                }
+            } finally {
+                if (!cleanBitmap.isRecycled) cleanBitmap.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
+        } finally {
+            rawBitmap?.takeIf { !it.isRecycled }?.recycle()
+            image.close()
         }
     }
 
