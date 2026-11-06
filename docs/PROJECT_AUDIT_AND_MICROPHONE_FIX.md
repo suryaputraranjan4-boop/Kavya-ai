@@ -61,6 +61,8 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 - Reconciled active-request counts after stale request cleanup and corrected daily quota reset so it is independent of the minute window.
 - Made suspending voice playback cancel its audio job/player when the 90-second safety timeout or caller cancellation occurs; generation checks prevent older in-flight TTS requests from starting playback after Stop or a newer turn.
 - Added a playback generation guard so late MediaPlayer callbacks cannot restart audio after stop/interrupt; temporary audio files are deleted on completion, error, and stop.
+- Made microphone recognition honor the app's Hindi/English language preference and request offline recognition only when Android reports an on-device recognizer is available.
+- Changed screen-share shutdown to stop the existing foreground capture service directly, avoiding a new background-service start that Android may reject while capture is active.
 - Released intermediate padded screen-capture bitmaps and temporary scaled bitmaps used by visual frame hashing/compression.
 - Updated Hugging Face inference requests to the current `router.huggingface.co/hf-inference/models` route and migrated the old non-generative DistilBERT default to the configured text-generation model.
 - Migrated custom API credentials out of plaintext SharedPreferences JSON into the Android SecureStorage vault; legacy saved keys are migrated when custom APIs are loaded, and deletion clears the associated secret.
