@@ -209,7 +209,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             "idhar", "is taraf", "us taraf", "isko", "is ko", "usko", "ispe", "is par",
             "us par", "uspe", "iske upar", "uske upar", "ja ke", "jaakar", "wahan ja",
             "udhar ja", "idhar ja", "phir ye", "phir isko", "ye kar do", "yeh kar do",
-            "kar ke dikhao", "karke dikhao", "yeh karo", "ye karo", "waha jaake", "yaha jaake"
+            "kar ke dikhao", "karke dikhao", "yeh karo", "ye karo", "waha jaake", "yaha jaake",
+            "go here", "move here", "come here", "open this", "open that", "select this", "choose this",
+            "click that", "tap that", "press that", "click this", "tap this", "press this",
+            "yahi", "yehi", "isi ko", "usi ko", "idhar click", "udhar click", "wahan click",
+            "isko select", "is par click", "ispe click", "uspe click", "us par click"
         )
         return visualKeywords.any { lower.contains(it) }
     }
