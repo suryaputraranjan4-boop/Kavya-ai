@@ -468,12 +468,32 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun analyzeScreenWithKavya(prompt: String = "What's on my screen right now? Please guide me.") {
-        if (!_isScreenSharing.value) {
-            toggleScreenSharing(true)
-        } else {
+        viewModelScope.launch {
+            val screenShareReady = kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+                com.example.services.ScreenShareManager.state.first {
+                    it is com.example.services.ScreenShareManager.ScreenShareState.Active
+                }
+                // Wait for the first owned frame, not just the service's start signal.
+                while (true) {
+                    val frame = com.example.visual.VisionPipeline.getLatestFrameCopy(maxAgeMs = 2500L)
+                    if (frame != null) {
+                        if (!frame.isRecycled) frame.recycle()
+                        return@withTimeoutOrNull true
+                    }
+                    kotlinx.coroutines.delay(100L)
+                }
+                false
+            } ?: false
+
+            if (!screenShareReady) {
+                val message = "I couldn't access a fresh screen frame. Please start Screen Share, approve Android's screen-capture prompt, and try again."
+                _latestKavyaCaption.value = message
+                return@launch
+            }
+
             refreshScreenContext()
+            sendMessage(prompt)
         }
-        sendMessage(prompt)
     }
 
     fun analyzeScreen(prompt: String = "What's on my screen right now? Please guide me.") {
