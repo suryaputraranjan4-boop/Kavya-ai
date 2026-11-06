@@ -367,6 +367,13 @@ class KavyaMicrophoneEngine : Service() {
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
+            // Partial callbacks can contain Kavya's own TTS audio. Do not let
+            // assistant speech update the transcript or trigger voice stop words.
+            if (assistantSpeaking) {
+                partialFlow.value = ""
+                return
+            }
+
             val text = partialResults
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull()
@@ -461,6 +468,7 @@ class KavyaMicrophoneEngine : Service() {
                 // being dispatched as a user command. Stopping and recreating the
                 // recognizer here caused an audible system mic-start cue every turn.
                 cancelRetry()
+                partialFlow.value = ""
                 amplitudeFlow.value = 0f
             } else if (desired && !sessionRunning) {
                 schedule(250L)
