@@ -72,9 +72,9 @@ object RuntimeActivityTracker {
         val hfKey = AppPreferences.getHuggingFaceApiKey(context)
 
         // Count only providers that have passed a real request, not merely saved keys.
-        val geminiConnected = AppPreferences.getProviderStatus(context, "gemini") == ConnectionStatus.CONNECTED.name && geminiKey.isNotBlank()
-        val orConnected = AppPreferences.getProviderStatus(context, "openrouter") == ConnectionStatus.CONNECTED.name && orKey.isNotBlank()
-        val hfConnected = AppPreferences.getProviderStatus(context, "huggingface") == ConnectionStatus.CONNECTED.name && hfKey.isNotBlank()
+        val geminiConnected = AppPreferences.getProviderStatus(context, "gemini") in listOf(ConnectionStatus.CONNECTED.name, ConnectionStatus.RATE_LIMITED.name) && geminiKey.isNotBlank()
+        val orConnected = AppPreferences.getProviderStatus(context, "openrouter") in listOf(ConnectionStatus.CONNECTED.name, ConnectionStatus.RATE_LIMITED.name) && orKey.isNotBlank()
+        val hfConnected = AppPreferences.getProviderStatus(context, "huggingface") in listOf(ConnectionStatus.CONNECTED.name, ConnectionStatus.RATE_LIMITED.name) && hfKey.isNotBlank()
         val publicApisConnected = AppPreferences.isPublicApisEnabled(context) &&
             AppPreferences.getProviderStatus(context, "public_apis") == ConnectionStatus.CONNECTED.name
 
