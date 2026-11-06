@@ -804,7 +804,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
                 // 0a. Master Intent Gate (Requirements 1, 2, 3)
                 val gateDecision = com.example.agent.IntentGate.evaluate(prompt, commandRouter.appResolver)
-                val isConversationalTurn = gateDecision.category in listOf(
+                // When the user points at the shared screen ("tap here", "do this",
+                // "ye wala"), route directly to visual perception before generic
+                // command classification can consume the request as an app action.
+                val isLiveVisualInteraction =
+                    com.example.services.ScreenShareManager.isScreenSharingActive &&
+                        isVisualInteractionIntent(prompt)
+                val isConversationalTurn = isLiveVisualInteraction || gateDecision.category in listOf(
                     com.example.agent.IntentCategory.CHAT,
                     com.example.agent.IntentCategory.QUESTION,
                     com.example.agent.IntentCategory.EXPLANATION
