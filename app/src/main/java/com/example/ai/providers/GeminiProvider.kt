@@ -29,9 +29,10 @@ class GeminiProvider : AIProvider {
         const val PROVIDER_ID = "gemini"
 
         val VERIFIED_MODELS = listOf(
-            ProviderModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Latest low-latency high-throughput Google Gemini model", true),
-            ProviderModelInfo("gemini-1.5-flash", "Gemini 1.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision"), 1048576, "Stable multimodal 1M context model", true),
-            ProviderModelInfo("gemini-1.5-pro", "Gemini 1.5 Pro", ProviderType.GEMINI, listOf("reasoning", "coding", "analysis"), 2097152, "State of the art reasoning model", false)
+            ProviderModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Fast multimodal chat and agent model", true),
+            ProviderModelInfo("gemini-2.5-pro", "Gemini 2.5 Pro", ProviderType.GEMINI, listOf("reasoning", "coding", "analysis", "vision"), 1048576, "Advanced reasoning and multimodal model", false),
+            ProviderModelInfo("gemini-2.0-flash", "Gemini 2.0 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Fast multimodal fallback model", true),
+            ProviderModelInfo("gemini-1.5-flash", "Gemini 1.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision"), 1048576, "Legacy multimodal fallback model", true)
         )
     }
 
@@ -82,10 +83,13 @@ class GeminiProvider : AIProvider {
             )
         }
 
-        val models = listOf(
-            "gemini-2.5-flash",
-            "gemini-1.5-flash"
-        )
+        // Respect the model selected in AI Provider settings first.
+        // Only fall back to compatible chat models if that model is unavailable.
+        val selectedModel = AppPreferences.getGeminiModel(context).trim()
+            .ifBlank { GeminiModelRegistry.DEFAULT_AGENT_MODEL }
+        val models = (listOf(selectedModel) + GeminiModelRegistry.CHAT_MODEL_TIERS)
+            .filter { it.isNotBlank() }
+            .distinct()
 
         val contents = listOf(Content(role = "user", parts = listOf(Part(text = prompt))))
         val request = GenerateContentRequest(
@@ -158,7 +162,11 @@ class GeminiProvider : AIProvider {
             return@flow
         }
 
-        val targetModel = modelOverride?.ifBlank { null } ?: "gemini-2.5-flash"
+        val targetModel = modelOverride
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: AppPreferences.getGeminiModel(context).trim()
+                .ifBlank { GeminiModelRegistry.DEFAULT_AGENT_MODEL }
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$targetModel:streamGenerateContent?key=$apiKey&alt=sse"
 
         val contentsArray = JSONArray().apply {
