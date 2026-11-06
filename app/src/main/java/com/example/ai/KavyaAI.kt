@@ -245,10 +245,14 @@ class KavyaAI(private val context: android.content.Context? = null) {
             Log.w(TAG, "Model $model temporarily throttled (cooldown for ${cooldownDurationMs}ms)")
         }
 
-        fun getAvailableModels(): List<String> {
+        fun getAvailableModels(preferredModel: String? = null): List<String> {
             val now = System.currentTimeMillis()
             val available = MODEL_TIERS.filter { (modelCooldowns[it] ?: 0L) <= now }
-            return if (available.isNotEmpty()) available else MODEL_TIERS
+            val preferred = preferredModel
+                ?.trim()
+                ?.takeIf { it.isNotBlank() && (modelCooldowns[it] ?: 0L) <= now }
+            val ordered = (listOfNotNull(preferred) + available).distinct()
+            return ordered.ifEmpty { MODEL_TIERS }
         }
     }
 
@@ -692,7 +696,9 @@ class KavyaAI(private val context: android.content.Context? = null) {
         )
 
         // Try supported model tiers with exponential backoff for 429 rate limit errors
-        val candidateModels = getAvailableModels()
+        val candidateModels = getAvailableModels(
+            context?.let { com.example.utils.AppPreferences.getGeminiModel(it) }
+        )
         for (model in candidateModels) {
             var attempt = 0
             val maxRetries = 1
@@ -1061,7 +1067,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         memoryContext: String = "",
         isProactiveMode: Boolean = true
     ): kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.flow {
-        val requestId = (prompt.hashCode() * 31 + history.size).toString()
+        val requestId = buildQuotaRequestId(prompt, history, screenContext, memoryContext, isProactiveMode)
         val priority = if (isProactiveMode) com.example.api.RequestPriority.P3_PROACTIVE_CONVERSATION else com.example.api.RequestPriority.P0_ACTIVE_USER_REQUEST
         
         if (!com.example.api.QuotaManager.instance.acquireQuota(requestId, priority)) {
@@ -1133,66 +1139,94 @@ class KavyaAI(private val context: android.content.Context? = null) {
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .build()
 
-        val candidateModels = getAvailableModels()
+        val candidateModels = getAvailableModels(
+            context?.let { com.example.utils.AppPreferences.getGeminiModel(it) }
+        )
         var hasEmittedTokens = false
+        var stopTryingModels = false
+        var lastStreamError: String? = null
 
         for (model in candidateModels) {
-                if (hasEmittedTokens) break
-                val request = okhttp3.Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$apiKey")
-                    .post(okhttp3.RequestBody.create("application/json".toMediaType(), requestJson))
-                    .build()
+            if (hasEmittedTokens || stopTryingModels) break
+            val request = okhttp3.Request.Builder()
+                .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$apiKey")
+                .post(okhttp3.RequestBody.create("application/json".toMediaType(), requestJson))
+                .build()
 
-                try {
-                    val response = okHttpClient.newCall(request).execute()
-                    response.use { res ->
-                        if (!res.isSuccessful) {
-                            val code = res.code
-                            if (code == 429 || code == 503 || code == 500) {
-                                markModelThrottled(model)
-                                Log.w(TAG, "Stream HTTP $code on $model, attempting next tier...")
-                            } else {
-                                Log.w(TAG, "Stream HTTP $code on $model, attempting next tier...")
-                            }
-                            return@use
+            try {
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val code = response.code
+                        val errorBody = response.body?.string().orEmpty()
+                        val detail = try {
+                            org.json.JSONObject(errorBody).optJSONObject("error")
+                                ?.optString("message")?.takeIf { it.isNotBlank() }
+                        } catch (_: Exception) { null }
+                        lastStreamError = when (code) {
+                            400 -> "Gemini rejected the request (HTTP 400). ${detail.orEmpty()}"
+                            401 -> "Gemini API key was rejected (HTTP 401)."
+                            403 -> "Gemini access denied for this key or model (HTTP 403). ${detail.orEmpty()}"
+                            404 -> "Gemini model '$model' was not found (HTTP 404)."
+                            429 -> "Gemini quota or rate limit reached (HTTP 429)."
+                            in 500..599 -> "Gemini service error (HTTP $code)."
+                            else -> "Gemini returned HTTP $code. ${detail.orEmpty()}"
                         }
-
-                        res.body?.source()?.let { source ->
-                            while (!source.exhausted()) {
-                                val line = source.readUtf8LineStrict()
-                                if (line.startsWith("data: ")) {
-                                    val dataJson = line.substring(6)
-                                    if (dataJson.isNotBlank()) {
-                                        try {
-                                            val chunk = json.decodeFromString(GenerateContentResponse.serializer(), dataJson)
-                                            val textChunk = chunk.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: ""
-                                            if (textChunk.isNotEmpty()) {
-                                                hasEmittedTokens = true
-                                                emit(textChunk)
-                                            }
-                                        } catch (e: Exception) {
-                                            // parse error on chunk
+                        if (code == 429 || code == 503 || code == 500) {
+                            markModelThrottled(model)
+                        }
+                        if (code == 400 || code == 401 || code == 403) {
+                            stopTryingModels = true
+                        }
+                        Log.w(TAG, "Stream HTTP $code on $model: $lastStreamError")
+                    } else {
+                        val source = response.body?.source()
+                        if (source == null) {
+                            lastStreamError = "Gemini returned an empty streaming response."
+                        } else {
+                            while (true) {
+                                val line = source.readUtf8Line() ?: break
+                                if (!line.startsWith("data:")) continue
+                                val dataJson = line.removePrefix("data:").trim()
+                                if (dataJson.isBlank() || dataJson == "[DONE]") continue
+                                try {
+                                    val chunk = json.decodeFromString(
+                                        GenerateContentResponse.serializer(),
+                                        dataJson
+                                    )
+                                    val parts = chunk.candidates?.firstOrNull()?.content?.parts.orEmpty()
+                                    for (part in parts) {
+                                        val textChunk = part.text.orEmpty()
+                                        if (textChunk.isNotEmpty()) {
+                                            hasEmittedTokens = true
+                                            emit(textChunk)
                                         }
                                     }
+                                } catch (parseError: Exception) {
+                                    Log.w(TAG, "Ignoring malformed Gemini stream event: ${parseError.message}")
                                 }
+                            }
+                            if (!hasEmittedTokens && lastStreamError == null) {
+                                lastStreamError = "Gemini returned no text for model '$model'."
                             }
                         }
                     }
-
-                    if (hasEmittedTokens) {
-                        break
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Stream error on $model: ${e.message}")
                 }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                lastStreamError = when (e) {
+                    is java.net.UnknownHostException -> "DNS/network unavailable while reaching Gemini."
+                    is java.net.SocketTimeoutException -> "Gemini streaming request timed out."
+                    is java.io.IOException -> "Gemini streaming network error: ${e.localizedMessage ?: "I/O error"}"
+                    else -> "Gemini streaming failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
+                }
+                Log.w(TAG, "Stream error on $model: ${e.message}")
             }
+        }
 
-            if (!hasEmittedTokens) {
-                // Fallback to local intelligent assistant response
-                val localAnswer = LocalAssistantEngine.handleFastQuery(prompt) 
-                    ?: LocalAssistantEngine.getHighTrafficFallbackResponse(prompt)
-                emit(localAnswer)
-            }
+        if (!hasEmittedTokens) {
+            emit(lastStreamError?.let { "Gemini streaming failed: $it" }
+                ?: "Gemini returned an empty response from all available models.")
+        }
         } finally {
             com.example.api.QuotaManager.instance.releaseQuota(requestId)
         }
