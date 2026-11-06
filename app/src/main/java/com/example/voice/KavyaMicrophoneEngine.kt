@@ -340,7 +340,13 @@ class KavyaMicrophoneEngine : Service() {
                     Log.e(TAG, "Microphone permission was revoked")
                 }
 
-                else -> scheduleRetry()
+                else -> {
+                    // Network/server/client failures can leave a SpeechRecognizer
+                    // instance unusable. Recreate it before retrying; keep the
+                    // recognizer for ordinary no-match and busy conditions above.
+                    cancelRecognizer()
+                    scheduleRetry()
+                }
             }
         }
 
