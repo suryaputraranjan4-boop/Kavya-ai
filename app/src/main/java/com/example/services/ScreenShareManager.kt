@@ -147,13 +147,13 @@ object ScreenShareManager {
      */
     fun stopScreenShare(context: Context) {
         Log.i(TAG, "Stopping screen sharing session...")
-        val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
-            action = ScreenCaptureService.ACTION_STOP
-        }
+        // Stop the foreground service directly. Starting a new background service
+        // just to deliver ACTION_STOP can be rejected by Android background-start
+        // limits, leaving capture running after the UI has cleared its state.
         try {
-            context.startService(serviceIntent)
+            context.stopService(Intent(context, ScreenCaptureService::class.java))
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to send stop intent to ScreenCaptureService: ${e.message}")
+            Log.w(TAG, "Failed to stop ScreenCaptureService: ${e.message}")
         }
         frameCounter.set(0)
         currentFps = 0
