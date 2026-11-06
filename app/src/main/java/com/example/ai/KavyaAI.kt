@@ -253,14 +253,24 @@ class KavyaAI(private val context: android.content.Context? = null) {
     }
 
     suspend fun analyzeVisualUI(bitmap: android.graphics.Bitmap, prompt: String): String {
-        try {
-            val key = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
-            if (key.isBlank()) return "Error: Gemini API key missing."
-            
+        val key = if (context != null) {
+            val secureKey = com.example.security.SecureStorage.getSecret(context, "gemini_api_key")
+            secureKey.ifBlank { com.example.utils.AppPreferences.getEffectiveApiKey(context) }
+        } else {
+            BuildConfig.GEMINI_API_KEY
+        }
+        if (key.isBlank()) return "Visual analysis unavailable: add a Gemini API key in provider settings."
+
+        return try {
             val byteArrayOutputStream = java.io.ByteArrayOutputStream()
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)
-            val base64Image = android.util.Base64.encodeToString(byteArrayOutputStream.toByteArray(), android.util.Base64.NO_WRAP)
-            
+            if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)) {
+                return "Visual analysis unavailable: screenshot could not be encoded."
+            }
+            val base64Image = android.util.Base64.encodeToString(
+                byteArrayOutputStream.toByteArray(),
+                android.util.Base64.NO_WRAP
+            )
+
             val request = GenerateContentRequest(
                 contents = listOf(
                     Content(
@@ -273,19 +283,46 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 ),
                 generationConfig = GenerationConfig(temperature = 0.2f)
             )
-            
-            val configuredModel = context?.let { com.example.utils.AppPreferences.getGeminiModel(it) }.orEmpty()
-            val activeModel = configuredModel.takeIf { it.isNotBlank() } ?: getAvailableModels().firstOrNull() ?: MODEL_TIERS.first()
-            val response = RetrofitClient.service.generateContent(
-                model = activeModel,
-                apiKey = key,
-                request = request
-            )
-            
-            return response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: "No visual result found."
+
+            val configuredModel = context?.let {
+                com.example.utils.AppPreferences.getGeminiModel(it)
+            }.orEmpty().trim()
+            // A saved chat/TTS model may not support image input. Try it first,
+            // then fall back only to known multimodal chat models.
+            val candidateModels = (listOf(configuredModel) + listOf(
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            )).filter { it.isNotBlank() }.distinct()
+
+            var lastFailure: String? = null
+            for (model in candidateModels) {
+                try {
+                    val response = RetrofitClient.service.generateContent(
+                        model = model,
+                        apiKey = key,
+                        request = request
+                    )
+                    val resultText = response.candidates
+                        ?.firstOrNull()
+                        ?.content
+                        ?.parts
+                        ?.firstOrNull()
+                        ?.text
+                        ?.trim()
+                    if (!resultText.isNullOrBlank()) return resultText
+                    lastFailure = "Model $model returned no visual description."
+                } catch (e: retrofit2.HttpException) {
+                    lastFailure = "Model $model returned HTTP ${e.code()}: ${e.response()?.errorBody()?.string().orEmpty()}"
+                    if (e.code() == 401 || e.code() == 403) break
+                } catch (e: Exception) {
+                    lastFailure = "Model $model failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
+                }
+            }
+            "Visual analysis failed after model fallback: ${lastFailure ?: "No compatible Gemini vision model responded."}"
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Gemini visual analysis failed", e)
-            return "Visual parsing failed: ${e.message}"
+            "Visual analysis failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
         }
     }
 
