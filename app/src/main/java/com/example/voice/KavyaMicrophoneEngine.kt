@@ -240,6 +240,12 @@ class KavyaMicrophoneEngine : Service() {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                // Keep a recognition session open through normal pauses instead of
+                // tearing down the mic after every short phrase. SpeechRecognizer is
+                // still session-based, so these are best-effort hints to its service.
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 60_000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 60_000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1_000L)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
 
                 // Open.Jarvis-style local-first preference where Android supports it.
@@ -319,7 +325,8 @@ class KavyaMicrophoneEngine : Service() {
                 ?.trim()
                 .orEmpty()
 
-            if (text.isNotBlank()) handleRecognizedText(text)
+            // Never interpret Kavya's own spoken reply as a user command.
+            if (text.isNotBlank() && !assistantSpeaking) handleRecognizedText(text)
 
             if (desired && !assistantSpeaking) schedule(NO_MATCH_RETRY_MS)
         }
@@ -410,10 +417,13 @@ class KavyaMicrophoneEngine : Service() {
         handler.post {
             assistantSpeaking = isSpeaking
             if (isSpeaking) {
+                // Keep the current recognition session alive during playback.
+                // Results are ignored while Kavya is speaking, preventing echo from
+                // being dispatched as a user command. Stopping and recreating the
+                // recognizer here caused an audible system mic-start cue every turn.
                 cancelRetry()
-                cancelRecognizer()
                 amplitudeFlow.value = 0f
-            } else if (desired) {
+            } else if (desired && !sessionRunning) {
                 schedule(250L)
             }
         }
