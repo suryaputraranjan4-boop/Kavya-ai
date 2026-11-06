@@ -457,12 +457,29 @@ object AppPreferences {
             contents = listOf(Content(role = "user", parts = listOf(Part(text = "Reply with OK."))))
         )
         try {
-            RetrofitClient.service.generateContent(
+            val response = RetrofitClient.service.generateContent(
                 model = targetModel,
                 apiKey = apiKey.trim(),
                 request = testRequest
             )
-            Pair(true, "Gemini connected successfully. Model: $targetModel")
+            val reply = response.candidates
+                ?.firstOrNull()
+                ?.content
+                ?.parts
+                ?.firstOrNull()
+                ?.text
+                ?.trim()
+            if (reply.isNullOrBlank()) {
+                val finishReason = response.candidates?.firstOrNull()?.finishReason
+                val detail = when (finishReason?.toString()?.uppercase()) {
+                    "SAFETY" -> "The test prompt was blocked by the model's safety filters."
+                    "RECITATION" -> "The model refused to return a completion because of recitation filtering."
+                    else -> "The API responded, but the selected model returned no text completion."
+                }
+                Pair(false, "Gemini endpoint reached, but model '$targetModel' did not complete the test. $detail")
+            } else {
+                Pair(true, "Gemini connected successfully. Model: $targetModel")
+            }
         } catch (e: retrofit2.HttpException) {
             val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
             val detail = try {
