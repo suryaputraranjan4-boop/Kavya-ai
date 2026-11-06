@@ -97,9 +97,13 @@ object VisionPipeline {
                 frame
             }
 
-            val stream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
-            stream.toByteArray()
+            try {
+                val stream = ByteArrayOutputStream()
+                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+                stream.toByteArray()
+            } finally {
+                if (scaledBitmap !== frame && !scaledBitmap.isRecycled) scaledBitmap.recycle()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error compressing visual frame: ${e.message}")
             null
@@ -139,20 +143,24 @@ object VisionPipeline {
         return try {
             // Compute quick downsampled hash (16x16)
             val small = Bitmap.createScaledBitmap(bitmap, 16, 16, false)
-            val bytes = ByteArray(256)
-            var idx = 0
-            for (y in 0 until 16) {
-                for (x in 0 until 16) {
-                    val color = small.getPixel(x, y)
-                    val r = (color shr 16) and 0xFF
-                    val g = (color shr 8) and 0xFF
-                    val b = color and 0xFF
-                    bytes[idx++] = ((r + g + b) / 3).toByte()
+            try {
+                val bytes = ByteArray(256)
+                var idx = 0
+                for (y in 0 until 16) {
+                    for (x in 0 until 16) {
+                        val color = small.getPixel(x, y)
+                        val r = (color shr 16) and 0xFF
+                        val g = (color shr 8) and 0xFF
+                        val b = color and 0xFF
+                        bytes[idx++] = ((r + g + b) / 3).toByte()
+                    }
                 }
+                val md = MessageDigest.getInstance("MD5")
+                val digest = md.digest(bytes)
+                digest.joinToString("") { "%02x".format(it) }
+            } finally {
+                if (small !== bitmap && !small.isRecycled) small.recycle()
             }
-            val md = MessageDigest.getInstance("MD5")
-            val digest = md.digest(bytes)
-            digest.joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
             bitmap.generationId.toString()
         }
