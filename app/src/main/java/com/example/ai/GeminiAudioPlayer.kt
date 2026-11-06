@@ -32,6 +32,8 @@ class GeminiAudioPlayer(
     
     private val audioQueue: Queue<QueuedAudio> = LinkedList()
     private var isProcessingQueue = false
+    private var playbackGeneration = 0L
+    private var activeTempFile: File? = null
     private var fileCounter = 0
     private val instanceId = java.util.UUID.randomUUID().toString().take(8)
 
@@ -77,60 +79,63 @@ class GeminiAudioPlayer(
             return
         }
         isProcessingQueue = true
-        
+        val generation = playbackGeneration
+
         try {
             fileCounter++
             val tempFile = File(context.cacheDir, "gemini_audio_${instanceId}_${fileCounter}.wav")
+            activeTempFile = tempFile
             FileOutputStream(tempFile).use { it.write(queuedItem.audioBytes) }
 
-            mediaPlayer = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .build()
-                )
-                setDataSource(tempFile.absolutePath)
-                setOnPreparedListener { mp ->
-                    try {
-                        mainHandler.post {
+            val player = MediaPlayer()
+            mediaPlayer = player
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .build()
+            )
+            player.setDataSource(tempFile.absolutePath)
+            player.setOnPreparedListener { mp ->
+                try {
+                    // Serialize start against stop(): a late prepare callback must
+                    // never restart audio after the user has interrupted playback.
+                    synchronized(this@GeminiAudioPlayer) {
+                        if (generation != playbackGeneration || mediaPlayer !== mp) {
+                            try { mp.release() } catch (_: Exception) {}
+                            tempFile.delete()
+                            return@setOnPreparedListener
+                        }
+                        mp.start()
+                    }
+                    mainHandler.post {
+                        if (generation == playbackGeneration) {
                             if (!this@GeminiAudioPlayer.isPlaying) {
                                 this@GeminiAudioPlayer.isPlaying = true
                                 onSpeakingStateChanged?.invoke(true)
                             }
-                            queuedItem.text?.let { chunkText ->
-                                if (chunkText.isNotBlank()) {
-                                    onAudioChunkStarted?.invoke(chunkText)
-                                }
-                            }
+                            queuedItem.text?.takeIf { it.isNotBlank() }?.let(onAudioChunkStarted ?: {})
                         }
-                        mp.start()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to start MediaPlayer", e)
-                        try { mp.release() } catch (_: Exception) {}
-                        if (mediaPlayer === mp) mediaPlayer = null
-                        queuedItem.onComplete?.invoke()
-                        processNextInQueue()
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start MediaPlayer", e)
+                    finishCurrent(mp, tempFile, queuedItem, generation)
                 }
-                setOnCompletionListener { mp ->
-                    try { mp.release() } catch (_: Exception) {}
-                    if (mediaPlayer === mp) mediaPlayer = null
-                    queuedItem.onComplete?.invoke()
-                    processNextInQueue()
-                }
-                setOnErrorListener { mp, what, extra ->
-                    Log.e(TAG, "MediaPlayer error: what=$what, extra=$extra")
-                    try { mp.reset(); mp.release() } catch (_: Exception) {}
-                    if (mediaPlayer === mp) mediaPlayer = null
-                    queuedItem.onComplete?.invoke()
-                    processNextInQueue()
-                    true
-                }
-                prepareAsync()
             }
+            player.setOnCompletionListener { mp ->
+                finishCurrent(mp, tempFile, queuedItem, generation)
+            }
+            player.setOnErrorListener { mp, what, extra ->
+                Log.e(TAG, "MediaPlayer error: what=$what, extra=$extra")
+                finishCurrent(mp, tempFile, queuedItem, generation)
+                true
+            }
+            player.prepareAsync()
         } catch (e: Exception) {
             Log.e(TAG, "Audio setup error: ${e.message}", e)
+            activeTempFile?.delete()
+            activeTempFile = null
+            mediaPlayer = null
             queuedItem.onComplete?.invoke()
             processNextInQueue()
         }
@@ -138,27 +143,53 @@ class GeminiAudioPlayer(
 
     @Synchronized
     fun stop() {
+        // Invalidate callbacks from the previous player before releasing it.
+        playbackGeneration++
         audioQueue.clear()
         isProcessingQueue = false
-        if (mediaPlayer != null) {
-            try {
-                if (mediaPlayer?.isPlaying == true) {
-                    mediaPlayer?.stop()
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Error stopping player: ${e.message}")
-            } finally {
-                cleanupAndNotify(null)
-            }
-        } else {
+
+        val player = mediaPlayer
+        mediaPlayer = null
+        activeTempFile?.delete()
+        activeTempFile = null
+
+        try {
+            if (player?.isPlaying == true) player.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping player: ${e.message}")
+        } finally {
+            try { player?.release() } catch (_: Exception) {}
             cleanupAndNotify(null)
         }
+    }
+
+    @Synchronized
+    private fun finishCurrent(
+        player: MediaPlayer,
+        tempFile: File,
+        item: QueuedAudio,
+        generation: Long
+    ) {
+        if (generation != playbackGeneration || mediaPlayer !== player) {
+            try { player.release() } catch (_: Exception) {}
+            tempFile.delete()
+            return
+        }
+
+        try { player.release() } catch (_: Exception) {}
+        mediaPlayer = null
+        if (activeTempFile === tempFile) activeTempFile = null
+        tempFile.delete()
+        item.onComplete?.invoke()
+        processNextInQueue()
     }
 
     private fun cleanupAndNotify(onComplete: (() -> Unit)?) {
         try {
             mediaPlayer?.release()
             mediaPlayer = null
+            activeTempFile?.delete()
+            activeTempFile = null
         } catch (e: Exception) {
             Log.w(TAG, "Error releasing player: ${e.message}")
         } finally {
