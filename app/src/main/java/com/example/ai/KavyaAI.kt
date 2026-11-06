@@ -944,6 +944,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
             return@flow
         }
         
+        try {
         if (context != null) {
             val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
             val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
@@ -960,8 +961,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
         val isUsingOpenRouter = context != null && com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER"
         if (isUsingOpenRouter) {
-            val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode)
-            emit(responseText)
+            // Avoid nested chat(): it would acquire the same request quota key
+            // and be rejected by the duplicate-request guard.
+            val responseText = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
+            emit(responseText ?: "OpenRouter could not generate a response. Check its API key and model settings.")
             return@flow
         }
 
@@ -1008,8 +1011,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         val candidateModels = getAvailableModels()
         var hasEmittedTokens = false
 
-        try {
-            for (model in candidateModels) {
+        for (model in candidateModels) {
                 if (hasEmittedTokens) break
                 val request = okhttp3.Request.Builder()
                     .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$apiKey")
