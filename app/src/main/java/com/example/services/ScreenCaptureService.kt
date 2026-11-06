@@ -202,8 +202,10 @@ class ScreenCaptureService : Service() {
                     }
 
                     try {
-                        ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
+                        // Cache the first usable frame before publishing Active;
+                        // consumers must never observe an active share with no image.
                         VisionPipeline.onNewFrame(cleanBitmap)
+                        ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
                     } finally {
                         // Both consumers retain their own copies. Release the
                         // ImageReader frame even if one consumer throws.
