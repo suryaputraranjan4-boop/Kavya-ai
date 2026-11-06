@@ -274,7 +274,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 generationConfig = GenerationConfig(temperature = 0.2f)
             )
             
-            val activeModel = getAvailableModels().firstOrNull() ?: MODEL_TIERS.first()
+            val configuredModel = context?.let { com.example.utils.AppPreferences.getGeminiModel(it) }.orEmpty()
+            val activeModel = configuredModel.takeIf { it.isNotBlank() } ?: getAvailableModels().firstOrNull() ?: MODEL_TIERS.first()
             val response = RetrofitClient.service.generateContent(
                 model = activeModel,
                 apiKey = key,
