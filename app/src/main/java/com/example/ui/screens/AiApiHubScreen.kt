@@ -843,6 +843,7 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isOrTesting = true
                             orTestResult = AppPreferences.validateOpenRouterConnection(orKeyInput, orModel)
+                            AppPreferences.recordProviderConnectionTest(context, "openrouter", orTestResult!!)
                             isOrTesting = false
                         }
                     },
@@ -919,6 +920,7 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isHfTesting = true
                             hfTestResult = AppPreferences.validateHuggingFaceConnection(hfKeyInput, hfModel)
+                            AppPreferences.recordProviderConnectionTest(context, "huggingface", hfTestResult!!)
                             isHfTesting = false
                         }
                     },
@@ -993,6 +995,7 @@ fun AiApiHubScreen(navController: NavController) {
                                 if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey,
                                 geminiModel
                             )
+                            AppPreferences.recordProviderConnectionTest(context, "gemini", geminiTestResult!!)
                             isGeminiTesting = false
                         }
                     },
