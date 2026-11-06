@@ -1272,7 +1272,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 // 4. Kavya Visual Action Engine execution check
-                if (!isFastChat && cleanResponse.isBlank() &&
+                if (cleanResponse.isBlank() &&
                     (isVisualInteractionIntent(prompt) ||
                         (com.example.services.ScreenShareManager.isScreenSharingActive && !isConversationalTurn))) {
                     val visualPrompt = if (liveVisualAnalysis.isNotBlank()) {
