@@ -535,8 +535,16 @@ class KavyaMicrophoneEngine : Service() {
             .build()
 
     override fun onDestroy() {
-        stopEngine()
-        if (instance === this) instance = null
+        if (instance === this) {
+            stopEngine()
+            instance = null
+        } else {
+            // A superseded service instance must not publish MIC_OFF over a
+            // newer instance that has already started.
+            desired = false
+            cancelRetry()
+            cancelRecognizer()
+        }
         super.onDestroy()
     }
 
