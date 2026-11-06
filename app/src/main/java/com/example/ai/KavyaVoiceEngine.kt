@@ -72,7 +72,7 @@ class KavyaVoiceEngine(
     ) {
         val cleanText = cleanText(text)
         if (cleanText.isBlank()) {
-            updateSpeakingState(false)
+            if (!enqueue) stop()
             onComplete?.invoke()
             return
         }
@@ -80,12 +80,18 @@ class KavyaVoiceEngine(
         // Suppress raw technical errors from ever being spoken aloud
         if (isTechnicalErrorString(cleanText)) {
             Log.w(TAG, "Suppressed technical error string from voice output: $cleanText")
-            updateSpeakingState(false)
+            if (!enqueue) {
+                speechGeneration++
+                activeSpeechJob?.cancel()
+                geminiPlayer?.stop(notifySpeakingState = false)
+            }
             val now = System.currentTimeMillis()
             if (now - lastErrorSpeechTimestamp > ERROR_THROTTLE_WINDOW_MS) {
                 lastErrorSpeechTimestamp = now
                 speakCleanFallback(enqueue, onComplete)
             } else {
+                geminiPlayer?.notifySpeaking(false)
+                updateSpeakingState(false)
                 onComplete?.invoke()
             }
             return
@@ -154,6 +160,7 @@ class KavyaVoiceEngine(
                 Log.w(TAG, "Gemini voice synthesis unavailable. Gracefully terminating voice turn without robotic TTS fallback.")
                 withContext(Dispatchers.Main) {
                     geminiPlayer?.notifyCaption(cleanText)
+                    geminiPlayer?.notifySpeaking(false)
                     updateSpeakingState(false)
                     onComplete?.invoke()
                 }
@@ -164,6 +171,7 @@ class KavyaVoiceEngine(
 
     private fun speakCleanFallback(enqueue: Boolean, onComplete: (() -> Unit)?) {
         val naturalFallback = "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
+        updateSpeakingState(true)
         val selectedVoice = com.example.utils.AppPreferences.getGeminiVoice(context)
         val effectiveAI = kavyaAI ?: KavyaAI(context)
         val generation = speechGeneration
@@ -177,6 +185,7 @@ class KavyaVoiceEngine(
                         onComplete?.invoke()
                     }
                 } else {
+                    geminiPlayer?.notifySpeaking(false)
                     updateSpeakingState(false)
                     onComplete?.invoke()
                 }
@@ -184,6 +193,7 @@ class KavyaVoiceEngine(
                 throw e
             } catch (_: Exception) {
                 if (generation == speechGeneration) {
+                    geminiPlayer?.notifySpeaking(false)
                     updateSpeakingState(false)
                     onComplete?.invoke()
                 }
