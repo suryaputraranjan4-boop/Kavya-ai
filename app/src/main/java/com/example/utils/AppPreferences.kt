@@ -470,13 +470,10 @@ object AppPreferences {
                 ?.text
                 ?.trim()
             if (reply.isNullOrBlank()) {
-                val finishReason = response.candidates?.firstOrNull()?.finishReason
-                val detail = when (finishReason?.toString()?.uppercase()) {
-                    "SAFETY" -> "The test prompt was blocked by the model's safety filters."
-                    "RECITATION" -> "The model refused to return a completion because of recitation filtering."
-                    else -> "The API responded, but the selected model returned no text completion."
-                }
-                Pair(false, "Gemini endpoint reached, but model '$targetModel' did not complete the test. $detail")
+                Pair(
+                    false,
+                    "Gemini endpoint reached, but model '$targetModel' returned no text completion. Check model availability, permissions, and response filters."
+                )
             } else {
                 Pair(true, "Gemini connected successfully. Model: $targetModel")
             }
