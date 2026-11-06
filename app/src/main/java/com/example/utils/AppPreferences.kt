@@ -367,9 +367,9 @@ object AppPreferences {
         val rateLimited = result.second.contains("429") ||
             result.second.contains("rate limit", ignoreCase = true) ||
             result.second.contains("quota", ignoreCase = true)
-        if (result.first && rateLimited) {
-            // The provider was reached and accepted the credentials, but cannot
-            // serve this test because the account/model is currently throttled.
+        if (rateLimited) {
+            // A 429 still proves the endpoint was reached; it is a quota/rate
+            // condition, not a generic credential or network failure.
             setProviderStatus(context, providerId, "RATE_LIMITED")
             setProviderLastError(context, providerId, result.second)
         } else if (result.first) {
@@ -506,11 +506,11 @@ object AppPreferences {
             if (response.error != null) {
                 return@withContext Pair(false, "OpenRouter connection failed: ${response.error.message ?: "Authentication error"}")
             }
-            val reply = response.choices?.firstOrNull()?.message?.content
+            val reply = response.choices?.firstOrNull()?.message?.content?.trim()
             if (!reply.isNullOrBlank()) {
-                Pair(true, "OpenRouter connected successfully.")
+                Pair(true, "OpenRouter connected successfully. Model: ${model.ifBlank { "openrouter/free" }}")
             } else {
-                Pair(true, "OpenRouter connected successfully.")
+                Pair(false, "OpenRouter endpoint responded, but the selected model returned no completion. Check model availability or access permissions.")
             }
         } catch (e: retrofit2.HttpException) {
             val errorBody = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
