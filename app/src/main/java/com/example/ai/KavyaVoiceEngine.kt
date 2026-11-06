@@ -19,6 +19,7 @@ class KavyaVoiceEngine(
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeSpeechJob: Job? = null
+    @Volatile private var speechGeneration = 0L
     private var lastErrorSpeechTimestamp = 0L
 
     @Volatile
@@ -100,6 +101,7 @@ class KavyaVoiceEngine(
         if (!enqueue) {
             stop()
         }
+        val generation = speechGeneration
 
         updateSpeakingState(true)
 
@@ -120,6 +122,8 @@ class KavyaVoiceEngine(
                         effectiveSpeed
                     )
 
+                    if (generation != speechGeneration || !isActive) return@launch
+
                     if (audioBytes != null && audioBytes.isNotEmpty()) {
                         Log.d(TAG, "GEMINI_VOICE_PLAYBACK_STARTED: ${audioBytes.size} bytes")
                         geminiPlayer.playAudioBytes(audioBytes, text = cleanText, enqueue = enqueue) {
@@ -131,10 +135,14 @@ class KavyaVoiceEngine(
                     } else {
                         Log.w(TAG, "Gemini voice returned empty audio.")
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "Gemini Voice generation failed: ${e.message}")
                 }
             }
+
+            if (generation != speechGeneration || !isActive) return@launch
 
             if (!geminiSuccess) {
                 // If Gemini voice generation fails, NEVER use Android TTS and NEVER trigger recursive speech requests
@@ -146,18 +154,18 @@ class KavyaVoiceEngine(
                 }
             }
         }
-        if (!enqueue) {
-            activeSpeechJob = job
-        }
+        activeSpeechJob = job
     }
 
     private fun speakCleanFallback(enqueue: Boolean, onComplete: (() -> Unit)?) {
         val naturalFallback = "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
         val selectedVoice = com.example.utils.AppPreferences.getGeminiVoice(context)
         val effectiveAI = kavyaAI ?: KavyaAI(context)
-        scope.launch(Dispatchers.IO) {
+        val generation = speechGeneration
+        val job = scope.launch(Dispatchers.IO) {
             try {
                 val audio = effectiveAI.generateSpeechAudio(naturalFallback, selectedVoice, "Calm and relaxed", 1.0f, 1.0f)
+                if (generation != speechGeneration || !isActive) return@launch
                 if (audio != null && audio.isNotEmpty() && geminiPlayer != null) {
                     geminiPlayer.playAudioBytes(audio, text = naturalFallback, enqueue = enqueue) {
                         updateSpeakingState(false)
@@ -167,11 +175,16 @@ class KavyaVoiceEngine(
                     updateSpeakingState(false)
                     onComplete?.invoke()
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {
-                updateSpeakingState(false)
-                onComplete?.invoke()
+                if (generation == speechGeneration) {
+                    updateSpeakingState(false)
+                    onComplete?.invoke()
+                }
             }
         }
+        activeSpeechJob = job
     }
 
     suspend fun speakSuspending(text: String, explicitSentiment: Sentiment? = null) {
@@ -180,9 +193,7 @@ class KavyaVoiceEngine(
         kotlinx.coroutines.withTimeoutOrNull(10_000L) {
             kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
                 continuation.invokeOnCancellation {
-                    activeSpeechJob?.cancel()
-                    geminiPlayer?.stop()
-                    updateSpeakingState(false)
+                    stop()
                 }
                 speak(clean, explicitSentiment, enqueue = false) {
                     if (continuation.isActive) {
@@ -198,6 +209,7 @@ class KavyaVoiceEngine(
     }
 
     fun stop() {
+        speechGeneration++
         activeSpeechJob?.cancel()
         geminiPlayer?.stop()
         updateSpeakingState(false)
