@@ -362,6 +362,18 @@ object AppPreferences {
         getPrefs(context).edit().putString(PREFIX_PROVIDER_LAST_ERROR + providerId.lowercase(), error).apply()
     }
 
+    /** Persist the result of an explicit provider connectivity test. */
+    fun recordProviderConnectionTest(context: Context, providerId: String, result: Pair<Boolean, String>) {
+        if (result.first) {
+            setProviderStatus(context, providerId, "CONNECTED")
+            setProviderLastSuccessTime(context, providerId, System.currentTimeMillis())
+            setProviderLastError(context, providerId, null)
+        } else {
+            setProviderStatus(context, providerId, "ERROR")
+            setProviderLastError(context, providerId, result.second)
+        }
+    }
+
     fun isBuiltInApiKeyAvailable(): Boolean {
         return BuildConfig.GEMINI_API_KEY.isNotBlank()
     }
