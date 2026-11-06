@@ -470,7 +470,7 @@ object AppPreferences {
                 in 500..599 -> "Google Gemini service error (HTTP ${e.code()}). Try again later."
                 else -> "Gemini returned HTTP ${e.code()}. ${detail.orEmpty()}"
             }
-            Pair(e.code() == 429, reason)
+            Pair(false, reason)
         } catch (e: java.net.UnknownHostException) {
             Pair(false, "No network/DNS connection to Gemini. Check internet access.")
         } catch (e: java.net.SocketTimeoutException) {
@@ -557,17 +557,23 @@ object AppPreferences {
                 .post(requestBody)
                 .build()
 
-            val response = RetrofitClient.okHttpClient.newCall(request).execute()
-            val code = response.code
-            response.close()
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                val code = response.code
+                val detail = response.body?.string()
+                    ?.replace(Regex("\\s+"), " ")
+                    ?.take(400)
+                    .orEmpty()
 
-            when (code) {
-                200 -> Pair(true, "Hugging Face connected successfully ($targetModel).")
-                503 -> Pair(true, "Hugging Face connected ($targetModel is loading).")
-                401 -> Pair(false, "Invalid Hugging Face API key (401).")
-                404 -> Pair(false, "Model '$targetModel' not found on Hugging Face (404).")
-                429 -> Pair(true, "Hugging Face connected (Rate limited, but active).")
-                else -> Pair(false, "Hugging Face returned status $code.")
+                when (code) {
+                    200 -> Pair(true, "Hugging Face connected successfully ($targetModel).")
+                    503 -> Pair(true, "Hugging Face accepted the request, but model '$targetModel' is still loading (HTTP 503). Retry shortly.")
+                    401 -> Pair(false, "Invalid or expired Hugging Face API key (HTTP 401).")
+                    403 -> Pair(false, "Hugging Face denied access to this model or account (HTTP 403). $detail")
+                    404 -> Pair(false, "Model '$targetModel' was not found or is unavailable (HTTP 404).")
+                    429 -> Pair(false, "Hugging Face is reachable, but the request is rate-limited (HTTP 429). Retry later.")
+                    in 500..599 -> Pair(false, "Hugging Face service error (HTTP $code). $detail")
+                    else -> Pair(false, "Hugging Face returned HTTP $code. $detail")
+                }
             }
         } catch (e: Exception) {
             Pair(false, "Hugging Face connection failed: ${e.message ?: "Network error"}")
