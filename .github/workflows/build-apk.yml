@@ -2,6 +2,8 @@ name: Build Kavya APK
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
 
@@ -54,8 +56,8 @@ jobs:
         run: cp .env.example .env
 
       # No artificial model-size validation is applied by this build.
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
+      - name: Run unit tests and build debug APK
+        run: gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v6
