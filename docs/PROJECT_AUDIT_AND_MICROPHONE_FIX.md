@@ -64,6 +64,11 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 - Made microphone recognition honor the app's Hindi/English language preference and request offline recognition only when Android reports an on-device recognizer is available.
 - Changed screen-share shutdown to stop the existing foreground capture service directly, avoiding a new background-service start that Android may reject while capture is active.
 - Released intermediate padded screen-capture bitmaps and temporary scaled bitmaps used by visual frame hashing/compression.
+- Made MediaProjection shutdown idempotent so the projection stop callback and service destruction cannot repeatedly tear down the same capture resources.
+- Added a final cleanup path for raw ImageReader bitmaps when pixel copying or cropping fails, not only when a complete frame reaches the consumers.
+- Corrected screenshot bitmap ownership: failed/unretained encodes release their input and scaled bitmaps, while retained output remains available to its caller.
+- Removed artificial minimum screen dimensions from screenshot metadata so coordinate planning uses the actual display size.
+- Ignore partial speech-recognition callbacks while Kavya is speaking, preventing her own TTS audio from appearing as user input or triggering partial stop-word handling.
 - Updated Hugging Face inference requests to the current `router.huggingface.co/hf-inference/models` route and migrated the old non-generative DistilBERT default to the configured text-generation model.
 - Migrated custom API credentials out of plaintext SharedPreferences JSON into the Android SecureStorage vault; legacy saved keys are migrated when custom APIs are loaded, and deletion clears the associated secret.
 - Removed duplicate coroutine imports from the ViewModel.
@@ -80,7 +85,7 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 
 ## Next implementation priorities
 
-1. Run the Gradle unit tests and debug APK build; fix any build failures before further integration.
+1. Run the source-check workflow (unit tests and lint), fix all reported failures, and keep APK creation disabled unless the user explicitly asks for it.
 2. Validate the microphone service on-device, including rapid taps and Android process/service recreation.
 3. Implement or integrate the missing PMX/MMD runtime, external MCP protocol client, and camera capture flow only after selecting compatible libraries, model formats, and permission UX.
 4. Decide and implement an actual screen-stream transport if remote continuous video is required.
