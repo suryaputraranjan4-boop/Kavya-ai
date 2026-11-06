@@ -54,8 +54,9 @@ The project is an Android/Kotlin/Jetpack Compose app with a native C++/JNI compo
 ## Build and validation
 
 - Source-level changes are committed to this branch for review.
-- The microphone-state unit tests have been added but have not yet been executed in an Android/Gradle build environment.
-- No APK is claimed as built or device-tested by this audit.
+- The GitHub Actions APK workflow now runs for pull requests and executes `gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace`.
+- The workflow result must be checked on this pull request before treating the changes as build-verified.
+- No APK is claimed as built or device-tested until the CI build completes; physical-device testing is still required.
 - Before release, run `gradle :app:testDebugUnitTest` and `gradle :app:assembleDebug`, then verify repeated ON/OFF taps, app relaunch, service recreation, permission denial/regrant, wake phrase, speech playback interruption, and screen navigation on a physical Android device.
 
 ## Next implementation priorities
