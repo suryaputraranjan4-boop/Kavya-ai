@@ -22,6 +22,9 @@ class GeminiAudioPlayer(
     private val onSpeakingStateChanged: ((Boolean) -> Unit)? = null,
     private val onAudioChunkStarted: ((String) -> Unit)? = null
 ) {
+    /** Secondary observer used by KavyaVoiceEngine to track queue-drained state. */
+    @Volatile
+    var onPlaybackStateChanged: ((Boolean) -> Unit)? = null
     companion object {
         private const val TAG = "GeminiAudioPlayer"
     }
@@ -43,6 +46,7 @@ class GeminiAudioPlayer(
         mainHandler.post {
             this.isPlaying = speaking
             onSpeakingStateChanged?.invoke(speaking)
+            onPlaybackStateChanged?.invoke(speaking)
         }
     }
 
@@ -118,6 +122,7 @@ class GeminiAudioPlayer(
                             if (!this@GeminiAudioPlayer.isPlaying) {
                                 this@GeminiAudioPlayer.isPlaying = true
                                 onSpeakingStateChanged?.invoke(true)
+                                onPlaybackStateChanged?.invoke(true)
                             }
                             queuedItem.text?.takeIf { it.isNotBlank() }?.let { onAudioChunkStarted?.invoke(it) }
                         }
@@ -207,7 +212,10 @@ class GeminiAudioPlayer(
                 // MediaPlayer reached its prepared/playing callback.
                 isPlaying = false
                 mainHandler.post {
-                    if (notifySpeakingState) onSpeakingStateChanged?.invoke(false)
+                    if (notifySpeakingState) {
+                        onSpeakingStateChanged?.invoke(false)
+                        onPlaybackStateChanged?.invoke(false)
+                    }
                     onComplete?.invoke()
                 }
             } else {
