@@ -178,6 +178,7 @@ object ScreenShareManager {
      * Reports an internal error from the service.
      */
     @Synchronized
+    @Synchronized
     fun reportServiceError(errorMessage: String) {
         Log.e(TAG, "Screen share service error: $errorMessage")
         frameCounter.set(0)
