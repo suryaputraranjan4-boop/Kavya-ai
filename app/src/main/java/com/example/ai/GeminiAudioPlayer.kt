@@ -202,7 +202,9 @@ class GeminiAudioPlayer(
         } catch (e: Exception) {
             Log.w(TAG, "Error releasing player: ${e.message}")
         } finally {
-            if (isPlaying && audioQueue.isEmpty()) {
+            if (audioQueue.isEmpty()) {
+                // Also publish IDLE after setup failures that occurred before
+                // MediaPlayer reached its prepared/playing callback.
                 isPlaying = false
                 mainHandler.post {
                     if (notifySpeakingState) onSpeakingStateChanged?.invoke(false)
