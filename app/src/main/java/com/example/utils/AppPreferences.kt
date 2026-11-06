@@ -588,7 +588,7 @@ object AppPreferences {
 
                 when (code) {
                     200 -> Pair(true, "Hugging Face connected successfully ($targetModel).")
-                    503 -> Pair(true, "Hugging Face accepted the request, but model '$targetModel' is still loading (HTTP 503). Retry shortly.")
+                    503 -> Pair(false, "Hugging Face accepted the request, but model '$targetModel' is still loading (HTTP 503). The provider is reachable; retry the connection test shortly.")
                     401 -> Pair(false, "Invalid or expired Hugging Face API key (HTTP 401).")
                     403 -> Pair(false, "Hugging Face denied access to this model or account (HTTP 403). $detail")
                     404 -> Pair(false, "Model '$targetModel' was not found or is unavailable (HTTP 404).")
