@@ -126,8 +126,9 @@ class GeminiProvider : AIProvider {
                 val errBody = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
                 lastError = handleError(code, errBody)
                 Log.w(TAG, "Gemini $model HTTP $code: $lastError")
-                if (code == 401 || code == 403) {
-                    // Authentication failure shouldn't blindly retry subsequent models
+                if (code == 400 || code == 401 || code == 403 || code == 429) {
+                    // Invalid requests, auth failures and quota throttling are not
+                    // model-specific fallbacks; retrying other models only wastes calls.
                     break
                 }
             } catch (e: Exception) {
@@ -196,40 +197,46 @@ class GeminiProvider : AIProvider {
             .build()
 
         try {
-            val response = RetrofitClient.okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                val err = handleError(response.code, response.body?.string())
-                response.close()
-                emit(err)
-                return@flow
-            }
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val err = handleError(response.code, response.body?.string())
+                    emit(err)
+                    return@flow
+                }
 
-            val stream = response.body?.byteStream()
-            if (stream != null) {
+                val stream = response.body?.byteStream()
+                if (stream == null) {
+                    emit("Gemini returned an empty streaming response.")
+                    return@flow
+                }
+
                 BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
-                        val l = line?.trim() ?: continue
-                        if (l.startsWith("data:")) {
-                            val data = l.removePrefix("data:").trim()
-                            if (data.isBlank()) continue
-                            try {
-                                val json = JSONObject(data)
-                                val candidates = json.optJSONArray("candidates")
-                                val first = candidates?.optJSONObject(0)
-                                val content = first?.optJSONObject("content")
-                                val parts = content?.optJSONArray("parts")
-                                val text = parts?.optJSONObject(0)?.optString("text", "") ?: ""
-                                if (text.isNotEmpty()) {
-                                    emit(text)
+                        val currentLine = line?.trim().orEmpty()
+                        if (!currentLine.startsWith("data:")) continue
+                        val data = currentLine.removePrefix("data:").trim()
+                        if (data.isBlank() || data == "[DONE]") continue
+                        try {
+                            val json = JSONObject(data)
+                            val parts = json.optJSONArray("candidates")
+                                ?.optJSONObject(0)
+                                ?.optJSONObject("content")
+                                ?.optJSONArray("parts")
+                            if (parts != null) {
+                                for (index in 0 until parts.length()) {
+                                    val chunk = parts.optJSONObject(index)?.optString("text").orEmpty()
+                                    if (chunk.isNotBlank()) emit(chunk)
                                 }
-                            } catch (ignored: Exception) {}
+                            }
+                        } catch (parseError: Exception) {
+                            Log.w(TAG, "Ignoring malformed Gemini stream event: ${parseError.message}")
                         }
                     }
                 }
             }
-            response.close()
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             emit(handleError(-1, e.localizedMessage))
         }
     }.flowOn(Dispatchers.IO)
