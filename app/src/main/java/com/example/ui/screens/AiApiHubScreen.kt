@@ -990,7 +990,8 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isGeminiTesting = true
                             geminiTestResult = AppPreferences.validateGeminiApiKey(
-                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey
+                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey,
+                                geminiModel
                             )
                             isGeminiTesting = false
                         }
@@ -1014,7 +1015,8 @@ fun AiApiHubScreen(navController: NavController) {
                         coroutineScope.launch {
                             isGeminiTesting = true
                             geminiTestResult = AppPreferences.validateGeminiApiKey(
-                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey
+                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey,
+                                geminiModel
                             )
                             isGeminiTesting = false
                         }
