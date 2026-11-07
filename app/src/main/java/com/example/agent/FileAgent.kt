@@ -54,14 +54,26 @@ class FileAgent(private val context: Context) {
         return try {
             val uri = resolveUri(target)
                 ?: return failure(stepId, UniversalActionType.READ_FILE, "File not found or not accessible. Select it through Android's file picker and pass its content URI.")
+            val mimeType = context.contentResolver.getType(uri) ?: mimeTypeFor(target)
+            val isTextDocument = mimeType == null ||
+                mimeType.startsWith("text/") ||
+                mimeType in setOf("application/json", "application/xml", "application/javascript")
+            if (!isTextDocument) {
+                return failure(
+                    stepId, UniversalActionType.READ_FILE,
+                    "This file is not plain text ($mimeType). Binary PDF/DOCX/image extraction is not implemented; the file was not misread as text."
+                )
+            }
             val input = context.contentResolver.openInputStream(uri)
                 ?: return failure(stepId, UniversalActionType.READ_FILE, "Android could not open the selected file for reading.")
-            val bytes = input.use { readBounded(it, MAX_READ_BYTES) }
+            val bytes = input.use { readBounded(it, MAX_READ_BYTES + 1) }
             if (bytes.isEmpty()) {
                 StepExecutionResult(stepId, true, UniversalActionType.READ_FILE, "File '$target' is empty.")
             } else {
-                val text = bytes.toString(Charsets.UTF_8)
-                val suffix = if (bytes.size >= MAX_READ_BYTES) "\n[Output limited to $MAX_READ_BYTES bytes.]" else ""
+                val truncated = bytes.size > MAX_READ_BYTES
+                val visibleBytes = if (truncated) bytes.copyOf(MAX_READ_BYTES) else bytes
+                val text = visibleBytes.toString(Charsets.UTF_8)
+                val suffix = if (truncated) "\n[Output limited to $MAX_READ_BYTES bytes.]" else ""
                 StepExecutionResult(stepId, true, UniversalActionType.READ_FILE, "Contents of '$target':\n$text$suffix")
             }
         } catch (e: Exception) {
