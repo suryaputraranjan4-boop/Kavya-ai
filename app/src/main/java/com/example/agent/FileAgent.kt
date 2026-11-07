@@ -106,6 +106,9 @@ class FileAgent(private val context: Context) {
             if (file.parentFile != parent.canonicalFile) {
                 return failure(stepId, UniversalActionType.CREATE_FILE, "File path must stay inside Kavya's app-specific Downloads folder.")
             }
+            if (file.exists()) {
+                return failure(stepId, UniversalActionType.CREATE_FILE, "File '$safeName' already exists. It was not overwritten.")
+            }
             FileOutputStream(file, false).use { it.write(content.toByteArray(Charsets.UTF_8)) }
             StepExecutionResult(stepId, true, UniversalActionType.CREATE_FILE, "Created '$safeName' in Kavya's app-specific Downloads folder.")
         } catch (e: Exception) {
