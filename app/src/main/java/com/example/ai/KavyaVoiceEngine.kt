@@ -100,39 +100,52 @@ class KavyaVoiceEngine(
         updateSpeakingState(true)
 
         val job = scope.launch(Dispatchers.IO) {
-            var geminiSuccess = false
-            if (geminiPlayer != null) {
-                val effectiveAI = kavyaAI ?: KavyaAI(context)
-                val selectedVoice = com.example.utils.AppPreferences.getGeminiVoice(context)
-
-                try {
-                    com.example.api.QuotaManager.instance.totalVoiceRequests++
-                    Log.d(TAG, "VOICE_REQUEST_STARTED: length=${cleanText.length}, voice=$selectedVoice")
-                    val audioBytes = effectiveAI.generateSpeechAudio(
-                        cleanText,
-                        selectedVoice,
-                        sentiment.label,
-                        effectivePitch,
-                        effectiveSpeed
-                    )
-
-                    if (audioBytes != null && audioBytes.isNotEmpty()) {
-                        Log.d(TAG, "GEMINI_VOICE_PLAYBACK_STARTED: ${audioBytes.size} bytes")
-                        geminiPlayer.playAudioBytes(audioBytes, text = cleanText, enqueue = enqueue) {
-                            Log.d(TAG, "VOICE_PLAYBACK_COMPLETED")
-                            updateSpeakingState(false)
-                            onComplete?.invoke()
-                        }
-                        geminiSuccess = true
-                    } else {
-                        Log.w(TAG, "Gemini voice returned empty audio.")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Gemini Voice generation failed: ${e.message}")
+            val player = geminiPlayer
+            if (player == null) {
+                withContext(Dispatchers.Main) {
+                    updateSpeakingState(false)
+                    onComplete?.invoke()
                 }
+                return@launch
             }
 
+            val effectiveAI = kavyaAI ?: KavyaAI(context)
+            val selectedVoice = com.example.utils.AppPreferences.getGeminiVoice(context)
+            var playbackStarted = false
 
+            try {
+                com.example.api.QuotaManager.instance.totalVoiceRequests++
+                Log.d(TAG, "VOICE_REQUEST_STARTED: length=${cleanText.length}, voice=$selectedVoice")
+                val audioBytes = effectiveAI.generateSpeechAudio(
+                    cleanText,
+                    selectedVoice,
+                    sentiment.label,
+                    effectivePitch,
+                    effectiveSpeed
+                )
+
+                if (audioBytes != null && audioBytes.isNotEmpty()) {
+                    Log.d(TAG, "GEMINI_VOICE_PLAYBACK_STARTED: ${audioBytes.size} bytes")
+                    player.playAudioBytes(audioBytes, text = cleanText, enqueue = enqueue) {
+                        Log.d(TAG, "VOICE_PLAYBACK_COMPLETED")
+                        updateSpeakingState(false)
+                        onComplete?.invoke()
+                    }
+                    playbackStarted = true
+                } else {
+                    Log.w(TAG, "Gemini voice returned empty audio; speech output skipped.")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Gemini voice generation failed; speech output skipped: ${e.message}")
+            }
+
+            if (!playbackStarted) {
+                withContext(Dispatchers.Main) {
+                    player.notifyCaption(cleanText)
+                    updateSpeakingState(false)
+                    onComplete?.invoke()
+                }
+            }
         }
         if (!enqueue) {
             activeSpeechJob = job
