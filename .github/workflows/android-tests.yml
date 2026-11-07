@@ -42,8 +42,23 @@ jobs:
       - name: Prepare Environment
         run: cp .env.example .env
 
+      - name: Create debug keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
       - name: Run Unit Tests
         run: gradle :app:testDebugUnitTest --stacktrace
 
       - name: Verify Source Compilation
         run: gradle :app:compileDebugKotlin --stacktrace
+
+      - name: Build Debug APK
+        run: gradle :app:assembleDebug --stacktrace
