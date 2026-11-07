@@ -2,6 +2,8 @@ name: Build Kavya APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["fix/ci-robolectric-java21"]
 
 permissions:
   contents: read
