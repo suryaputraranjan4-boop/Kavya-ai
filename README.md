@@ -120,12 +120,12 @@ The repository includes GitHub Actions workflows configured with strict security
 
 - **`.github/workflows/android-tests.yml`**:
   - Automatically runs on all pushes and pull requests to `main` and feature branches.
-  - Executes unit tests (`gradle :app:testDebugUnitTest`) and Kotlin source compilation (`gradle :app:compileDebugKotlin`).
-  - **Does not build or export any APK files.**
+  - Executes unit tests (`gradle :app:testDebugUnitTest`), Kotlin source compilation (`gradle :app:compileDebugKotlin`), and a debug APK build (`gradle :app:assembleDebug`).
+  - Does not upload an APK artifact; the debug APK is only produced in the workflow workspace.
 
 - **`.github/workflows/build-apk.yml`**:
-  - Configured strictly with `workflow_dispatch` (manual trigger only; never runs automatically on commit).
-  - Enforces successful completion of all unit tests before any APK compilation step.
+  - Runs on manual `workflow_dispatch` and on pushes to `main` or `fix/ci-robolectric-java21`.
+  - Runs unit tests before building the debug APK and uploads `app-debug.apk` as a seven-day artifact.
 
 ---
 
