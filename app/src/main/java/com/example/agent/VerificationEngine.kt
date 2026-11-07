@@ -80,53 +80,70 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
 
         return when (actionType) {
             UniversalActionType.TAP, UniversalActionType.SELECT, UniversalActionType.NAVIGATE -> {
-                if (screenChanged) {
-                    VerificationResult(true, "PASS: UI screen transitioned after $actionType", currentPkg, screenAfter.take(120))
-                } else {
-                    VerificationResult(true, "PASS: Action dispatched to targeted UI control", currentPkg, screenAfter.take(120))
-                }
+                VerificationResult(
+                    screenChanged,
+                    if (screenChanged) "PASS: UI changed after $actionType"
+                    else "FAIL: No observable UI change after $actionType",
+                    currentPkg,
+                    screenAfter.take(120)
+                )
             }
             UniversalActionType.SUBMIT -> {
-                if (screenChanged) {
-                    VerificationResult(true, "PASS: Search submitted, new results displayed", currentPkg, screenAfter.take(120))
-                } else {
-                    VerificationResult(true, "PASS: Submit action performed", currentPkg, screenAfter.take(120))
-                }
+                VerificationResult(
+                    screenChanged,
+                    if (screenChanged) "PASS: Screen changed after submit"
+                    else "FAIL: Submit did not produce an observable screen change",
+                    currentPkg,
+                    screenAfter.take(120)
+                )
             }
             UniversalActionType.TYPE -> {
-                if (screenAfter.contains(targetParam, ignoreCase = true)) {
-                    VerificationResult(true, "PASS: Verified text '$targetParam' present in editable field", currentPkg)
-                } else {
-                    VerificationResult(true, "PASS: Text injection dispatched to active input", currentPkg)
-                }
+                val textPresent = targetParam.isNotBlank() && screenAfter.contains(targetParam, ignoreCase = true)
+                VerificationResult(
+                    textPresent,
+                    if (textPresent) "PASS: Entered text is visible on screen"
+                    else "FAIL: Entered text could not be confirmed on screen",
+                    currentPkg,
+                    screenAfter.take(120)
+                )
             }
             UniversalActionType.CLEAR, UniversalActionType.CLEAR_TEXT -> {
-                VerificationResult(true, "PASS: Input field cleared", currentPkg)
+                val cleared = screenChanged && (targetParam.isBlank() || !screenAfter.contains(targetParam, ignoreCase = true))
+                VerificationResult(
+                    cleared,
+                    if (cleared) "PASS: Screen changed and target text is absent"
+                    else "FAIL: Cleared state could not be confirmed",
+                    currentPkg,
+                    screenAfter.take(120)
+                )
             }
-            UniversalActionType.PLAY, UniversalActionType.PAUSE, UniversalActionType.NEXT, UniversalActionType.PREVIOUS -> {
-                VerificationResult(true, "PASS: Media action $actionType executed", currentPkg)
-            }
-            UniversalActionType.SCROLL, UniversalActionType.SWIPE -> {
-                VerificationResult(true, "PASS: Viewport gesture executed", currentPkg)
-            }
-            UniversalActionType.LONG_PRESS -> {
-                VerificationResult(true, "PASS: Long press triggered", currentPkg)
+            UniversalActionType.PLAY, UniversalActionType.PAUSE, UniversalActionType.NEXT, UniversalActionType.PREVIOUS,
+            UniversalActionType.SCROLL, UniversalActionType.SWIPE, UniversalActionType.LONG_PRESS,
+            UniversalActionType.CHESS_MOVE, UniversalActionType.BACK, UniversalActionType.HOME -> {
+                VerificationResult(
+                    screenChanged,
+                    if (screenChanged) "PASS: Observable screen change after $actionType"
+                    else "FAIL: No observable result after $actionType",
+                    currentPkg,
+                    screenAfter.take(120)
+                )
             }
             UniversalActionType.COPY, UniversalActionType.PASTE -> {
-                VerificationResult(true, "PASS: Clipboard action completed", currentPkg)
+                VerificationResult(false, "FAIL: Clipboard state is not exposed to the verifier; action cannot be confirmed.", currentPkg, screenAfter.take(120))
             }
-            UniversalActionType.CHESS_MOVE -> {
-                VerificationResult(true, "PASS: Chess move $targetParam dispatched to board", currentPkg)
+            UniversalActionType.OPEN_APP, UniversalActionType.OPEN_URL -> {
+                VerificationResult(false, "FAIL: Use foreground-package verification for navigation actions.", currentPkg, screenAfter.take(120))
             }
-            UniversalActionType.BACK, UniversalActionType.HOME -> {
-                VerificationResult(true, "PASS: System navigation dispatched", currentPkg)
+            UniversalActionType.VERIFY -> {
+                val expectedPresent = targetParam.isNotBlank() && screenAfter.contains(targetParam, ignoreCase = true)
+                VerificationResult(
+                    expectedPresent,
+                    if (expectedPresent) "PASS: Expected text is visible" else "FAIL: Expected text is not visible",
+                    currentPkg,
+                    screenAfter.take(120)
+                )
             }
-            UniversalActionType.OPEN_APP, UniversalActionType.OPEN_URL, UniversalActionType.VERIFY -> {
-                VerificationResult(true, "PASS: Navigation verified", currentPkg)
-            }
-            else -> {
-                VerificationResult(true, "PASS: Action completed", currentPkg)
-            }
+            else -> VerificationResult(false, "FAIL: No verification rule exists for $actionType.", currentPkg, screenAfter.take(120))
         }
     }
 
