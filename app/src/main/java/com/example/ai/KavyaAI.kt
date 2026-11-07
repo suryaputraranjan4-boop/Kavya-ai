@@ -42,14 +42,7 @@ data class Content(
 @Serializable
 data class Part(
     val text: String? = null,
-    val inlineData: InlineData? = null,
-    val speechMetadata: SpeechMetadata? = null
-)
-
-@Serializable
-data class SpeechMetadata(
-    val style: String? = null,
-    val speaker: String? = null
+    val inlineData: InlineData? = null
 )
 
 @Serializable
@@ -743,21 +736,22 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 Content(
                     role = "user",
                     parts = listOf(
-                        Part(
-                            text = cleanPrompt,
-                            speechMetadata = SpeechMetadata(
-                                style = "$emotionLabel, $speedDesc, $pitchDesc; natural Indian Hindi pronunciation; preserve English app names and technical terms."
-                            )
-                        )
+                        Part(text = cleanPrompt)
                     )
                 )
             ),
             generationConfig = GenerationConfig(
+                temperature = 0.6f,
                 responseModalities = listOf("AUDIO"),
                 speechConfig = SpeechConfig(
                     voiceConfig = VoiceConfig(
                         prebuiltVoiceConfig = PrebuiltVoiceConfig(voiceName = voiceName)
                     )
+                )
+            ),
+            systemInstruction = Content(
+                parts = listOf(
+                    Part(text = "Persona: Kavya, sweet anime female personal assistant. Style: $emotionLabel, $speedDesc, $pitchDesc. Use natural Indian Hindi pronunciation for Hindi, preserve English technical and app names. Speak only the text.")
                 )
             )
         )

@@ -387,11 +387,20 @@ object AppPreferences {
     }
 
     fun getEffectiveApiKey(context: Context): String {
-        val customKey = getCustomApiKey(context)
-        if (customKey.isNotBlank()) {
+        val customKey = getCustomApiKey(context).trim()
+        if (customKey.isNotBlank() && !isPlaceholderKey(customKey)) {
             return customKey
         }
-        return BuildConfig.GEMINI_API_KEY
+        val buildKey = BuildConfig.GEMINI_API_KEY.trim()
+        if (buildKey.isNotBlank() && !isPlaceholderKey(buildKey)) {
+            return buildKey
+        }
+        return ""
+    }
+
+    fun isPlaceholderKey(key: String): Boolean {
+        val lower = key.lowercase(java.util.Locale.ROOT).trim()
+        return lower.isBlank() || lower == "my_gemini_api_key" || lower == "your_api_key" || lower == "my_api_key" || lower == "placeholder"
     }
 
     fun hasAnyApiKey(context: Context): Boolean {

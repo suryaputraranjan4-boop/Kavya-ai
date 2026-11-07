@@ -36,8 +36,42 @@ class KavyaVoiceEngine(
         }
     }
 
+    private var androidTts: android.speech.tts.TextToSpeech? = null
+    @Volatile
+    private var isTtsReady = false
+
     init {
-        Log.i(TAG, "KavyaVoiceEngine initialized with pure Gemini Cloud Voice audio synthesis (Zero Android TTS).")
+        try {
+            androidTts = android.speech.tts.TextToSpeech(context) { status ->
+                if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                    isTtsReady = true
+                    try {
+                        val hiResult = androidTts?.setLanguage(Locale.forLanguageTag("hi-IN"))
+                        if (hiResult == android.speech.tts.TextToSpeech.LANG_MISSING_DATA || hiResult == android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED) {
+                            androidTts?.setLanguage(Locale.ENGLISH)
+                        }
+                    } catch (_: Exception) {
+                        androidTts?.setLanguage(Locale.getDefault())
+                    }
+                    androidTts?.setPitch(1.25f) // Youthful cute anime female voice
+                    androidTts?.setSpeechRate(1.05f)
+                    androidTts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {
+                            updateSpeakingState(true)
+                        }
+                        override fun onDone(utteranceId: String?) {
+                            updateSpeakingState(false)
+                        }
+                        override fun onError(utteranceId: String?) {
+                            updateSpeakingState(false)
+                        }
+                    })
+                    Log.i(TAG, "Kavya Android TTS fallback initialized with anime pitch.")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "TextToSpeech init failed: ${e.message}")
+        }
     }
 
     fun processAndSpeak(rawText: String, enqueue: Boolean = false, onComplete: (() -> Unit)? = null): SpeechAnalysisResult {
@@ -137,12 +171,34 @@ class KavyaVoiceEngine(
             }
 
             if (!geminiSuccess) {
-                // If Gemini voice generation fails, NEVER use Android TTS and NEVER trigger recursive speech requests
-                Log.w(TAG, "Gemini voice synthesis unavailable. Gracefully terminating voice turn without robotic TTS fallback.")
+                Log.w(TAG, "Gemini Cloud voice synthesis unavailable. Falling back to anime-pitch Android TTS.")
                 withContext(Dispatchers.Main) {
                     geminiPlayer?.notifyCaption(cleanText)
-                    updateSpeakingState(false)
-                    onComplete?.invoke()
+                    if (isTtsReady && androidTts != null) {
+                        try {
+                            androidTts?.setPitch(effectivePitch * 1.25f)
+                            androidTts?.setSpeechRate(effectiveSpeed * 1.05f)
+                            val params = android.os.Bundle().apply {
+                                putFloat(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                            }
+                            val uttId = "kavya_tts_${System.currentTimeMillis()}"
+                            val queueMode = if (enqueue) android.speech.tts.TextToSpeech.QUEUE_ADD else android.speech.tts.TextToSpeech.QUEUE_FLUSH
+                            androidTts?.speak(cleanText, queueMode, params, uttId)
+                            val approxDurationMs = (cleanText.length * 65L).coerceIn(1200L, 8000L)
+                            scope.launch {
+                                delay(approxDurationMs)
+                                updateSpeakingState(false)
+                                onComplete?.invoke()
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "TTS speak error: ${e.message}")
+                            updateSpeakingState(false)
+                            onComplete?.invoke()
+                        }
+                    } else {
+                        updateSpeakingState(false)
+                        onComplete?.invoke()
+                    }
                 }
             }
         }
@@ -200,6 +256,7 @@ class KavyaVoiceEngine(
     fun stop() {
         activeSpeechJob?.cancel()
         geminiPlayer?.stop()
+        try { androidTts?.stop() } catch (_: Exception) {}
         updateSpeakingState(false)
         Log.d(TAG, "VOICE_PLAYBACK_INTERRUPTED")
     }

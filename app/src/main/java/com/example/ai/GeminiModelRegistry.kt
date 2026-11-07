@@ -9,22 +9,22 @@ package com.example.ai
  */
 object GeminiModelRegistry {
     // Primary Fast Multimodal & Agent Reasoning Model
-    const val DEFAULT_AGENT_MODEL = "gemini-2.5-flash"
+    const val DEFAULT_AGENT_MODEL = "gemini-3.5-flash"
 
     // High-complexity Planning & Code Architecture Model
-    const val PRO_REASONING_MODEL = "gemini-2.5-pro"
+    const val PRO_REASONING_MODEL = "gemini-3.1-pro-preview"
 
     // Ultra-low Latency Bidi Live Streaming Model (WebSocket)
-    const val LIVE_STREAM_MODEL = "models/gemini-2.5-flash"
+    const val LIVE_STREAM_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 
     // Primary High-Fidelity Audio & Speech Synthesis Model (Gemini TTS)
     const val PRIMARY_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 
     // High-volume / Low-latency Audio Model Fallback
-    const val SECONDARY_TTS_MODEL = "gemini-2.5-flash"
+    const val SECONDARY_TTS_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
     // Real-time Screen & UI Vision Understanding Model
-    const val VISION_ANALYZER_MODEL = "gemini-2.5-flash"
+    const val VISION_ANALYZER_MODEL = "gemini-2.5-flash-image"
 
     // Semantic Text Embedding Model for Knowledge & Memory Retrieval
     const val EMBEDDING_MODEL = "gemini-embedding-2-preview"
@@ -32,17 +32,12 @@ object GeminiModelRegistry {
     // Ordered candidate tiers for fallback audio generation
     val AUDIO_MODEL_TIERS = listOf(
         PRIMARY_TTS_MODEL,
-        SECONDARY_TTS_MODEL,
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
+        SECONDARY_TTS_MODEL
     )
 
     // Ordered candidate tiers for chat and reasoning
     val CHAT_MODEL_TIERS = listOf(
         DEFAULT_AGENT_MODEL,
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-flash-latest",
         PRO_REASONING_MODEL
     )
 }

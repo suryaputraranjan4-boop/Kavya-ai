@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.example.ai.KavyaAI
 import com.example.ai.KavyaVoiceEngine
+import com.example.ai.LocalAssistantEngine
 import com.example.data.AppDatabase
 import com.example.data.ChatEntity
 import com.example.data.MessageEntity
@@ -19,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import java.util.UUID
 
 /**
@@ -215,7 +217,7 @@ class KavyaAssistantPipeline(
                             finalResponse = "Kaunsa app kholna hai? Mile: " + gateDecision.candidateApps.joinToString(", ") { it.appName }
                         } else {
                             // Fallback to conversational AI
-                            finalResponse = executeConversationalTurn(prompt)
+                            finalResponse = executeConversationalTurn(prompt, chatId)
                         }
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
@@ -223,7 +225,7 @@ class KavyaAssistantPipeline(
                     else -> {
                         // Conversational Turn (CHAT, QUESTION, EXPLANATION, RESEARCH)
                         KavyaStateManager.updateTaskState(TaskState.UNDERSTANDING, prompt)
-                        finalResponse = executeConversationalTurn(prompt)
+                        finalResponse = executeConversationalTurn(prompt, chatId)
                         KavyaStateManager.updateTaskState(TaskState.COMPLETED, finalResponse)
                     }
                 }
@@ -258,7 +260,7 @@ class KavyaAssistantPipeline(
                 KavyaStateManager.updateVoiceState(VoiceState.ERROR)
                 KavyaStateManager.updateTaskState(TaskState.FAILED, errMsg)
                 if (autoSpeak) {
-                    voiceEngine.speakSuspending("अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।")
+                    voiceEngine.speakSuspending("माफ़ कीजिए, क्या आप एक बार फिर से बोल सकते हैं?")
                 }
                 onTurnFinished?.invoke(errMsg)
             } finally {
@@ -268,18 +270,28 @@ class KavyaAssistantPipeline(
         }
     }
 
-    private suspend fun executeConversationalTurn(prompt: String): String = withContext(Dispatchers.IO) {
+    private suspend fun executeConversationalTurn(prompt: String, chatId: String): String = withContext(Dispatchers.IO) {
         val ai = KavyaAI(context)
         val relevantMems = memoryEngine.retrieveRelevantMemories(prompt, screenInspector.getCurrentForegroundPackage())
         val memoryBlock = if (relevantMems.isNotEmpty()) relevantMems.joinToString("\n") { "- ${it.key}: ${it.content}" } else ""
-        val response = ai.chat(
-            prompt = prompt,
-            history = emptyList(),
-            screenContext = screenInspector.getCurrentForegroundPackage(),
-            memoryContext = memoryBlock,
-            isProactiveMode = false
-        )
-        voiceEngine.cleanText(response)
+        val historyEntities = chatDao.getMessagesForChat(chatId).first().takeLast(12)
+        try {
+            val response = ai.chat(
+                prompt = prompt,
+                history = historyEntities,
+                screenContext = screenInspector.getCurrentForegroundPackage(),
+                memoryContext = memoryBlock,
+                isProactiveMode = false
+            )
+            if (response.isNotBlank() && response != "AI model is currently unavailable.") {
+                return@withContext voiceEngine.cleanText(response)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "executeConversationalTurn AI chat exception: ${e.message}")
+        }
+        val fallback = LocalAssistantEngine.handleFastQuery(prompt)
+            ?: LocalAssistantEngine.resolveLocalCommandOrFallback(prompt, memoryBlock)
+        voiceEngine.cleanText(fallback)
     }
 
     private suspend fun ensureActiveChatId(): String = withContext(Dispatchers.IO) {

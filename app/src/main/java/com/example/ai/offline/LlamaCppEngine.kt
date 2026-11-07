@@ -18,7 +18,11 @@ class LlamaCppEngine private constructor() {
             }
 
         init {
-            System.loadLibrary("kavya_llama")
+            try {
+                System.loadLibrary("kavya_llama")
+            } catch (_: Throwable) {
+                // Native library not present or disabled in current build
+            }
         }
     }
 

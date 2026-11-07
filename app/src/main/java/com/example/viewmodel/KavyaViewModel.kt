@@ -587,9 +587,18 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         voiceEngine.stop() // Immediate barge-in stop
-        proactiveController.onUserInteraction(text)
-        
-        val chatId = _currentChatId.value ?: return
+        val chatId = _currentChatId.value ?: run {
+            val newId = java.util.UUID.randomUUID().toString()
+            _currentChatId.value = newId
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                chatDao.insertChat(com.example.data.ChatEntity(
+                    id = newId,
+                    title = "New Chat",
+                    timestamp = System.currentTimeMillis()
+                ))
+            }
+            newId
+        }
 
         // Check for Silence / Resume / Proactive control commands
         val silenceCheck = com.example.proactive.SilenceCommandDetector.evaluate(text)
@@ -1340,7 +1349,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
                     // If still blank, use pleasant natural response
                     if (fullResponse.isBlank()) {
-                        fullResponse = "अभी connection में problem आ रही है। कृपया थोड़ी देर में दोबारा try करें।"
+                        fullResponse = com.example.ai.LocalAssistantEngine.handleFastQuery(prompt)
+                            ?: com.example.ai.LocalAssistantEngine.resolveLocalCommandOrFallback(prompt, memoryBlock)
+                            .ifBlank { "हाँ जी, मैं आपकी बात समझ रही हूँ। कहिए क्या काम है?" }
                     }
 
                     // Parse structured actions (JSON schema or action tags)

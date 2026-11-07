@@ -168,7 +168,7 @@ object LocalAssistantEngine {
                 "Screenshot ले रही हूँ।\n```json\n[{\"action\":\"GLOBAL_ACTION\",\"target\":\"SCREENSHOT\"}]\n```"
             }
             else -> {
-                "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
+                "हाँ जी, मैं आपकी मदद के लिए तैयार हूँ। आप कोई भी काम या सवाल पूछ सकते हैं।"
             }
         }
     }
