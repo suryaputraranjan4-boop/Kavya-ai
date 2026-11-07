@@ -34,9 +34,13 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
             currentPkg = screenInspector.getCurrentForegroundPackage()
             val serviceRootPkg = service?.safeRootPackage() ?: ""
 
-            val isMatch = currentPkg.equals(expectedPackage, ignoreCase = true) ||
-                currentPkg.contains(expectedPackage, ignoreCase = true) ||
-                expectedPackage.contains(currentPkg, ignoreCase = true) ||
+            val hasRealForegroundPackage = currentPkg.isNotBlank() &&
+                !currentPkg.equals("unknown", ignoreCase = true) &&
+                !currentPkg.equals("com.example", ignoreCase = true)
+            val isMatch = (hasRealForegroundPackage && (
+                currentPkg.equals(expectedPackage, ignoreCase = true) ||
+                    currentPkg.contains(expectedPackage, ignoreCase = true)
+                )) ||
                 (service?.isForegroundPackage(expectedPackage) == true) ||
                 (expectedPackage.contains("youtube", ignoreCase = true) && (currentPkg.contains("youtube") || serviceRootPkg.contains("youtube"))) ||
                 (expectedPackage.contains("spotify", ignoreCase = true) && (currentPkg.contains("spotify") || serviceRootPkg.contains("spotify"))) ||
