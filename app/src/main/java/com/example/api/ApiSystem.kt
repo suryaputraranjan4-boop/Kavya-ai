@@ -1,9 +1,6 @@
 package com.example.api
 
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 class ApiSystem {
     companion object {
@@ -14,7 +11,6 @@ class ApiSystem {
     val cache = ApiCache()
     val router = IntentRouter(registry)
     private val executor = ApiExecutor()
-    private val scope = CoroutineScope(Dispatchers.IO)
     
     // Core Orchestration Pipeline
 
