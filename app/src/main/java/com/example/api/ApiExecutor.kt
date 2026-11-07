@@ -1,5 +1,6 @@
 package com.example.api
 
+import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -69,15 +70,30 @@ class ApiExecutor {
                 return@withContext null
             }
 
-            // The current public API registry models parameters as strings. It cannot safely
-            // turn local audio/image URIs into the binary request bodies required by these models.
-            if ((api.apiId == "hf-whisper" || api.apiId == "hf-vit") &&
-                requestParams["inputs"].orEmpty().let {
-                    it.startsWith("content://", true) || it.startsWith("file://", true)
+            // Hugging Face inference expects raw bytes, not a JSON string. Accept base64
+            // payloads (including data URIs); a local URI needs a SAF/content resolver and
+            // is rejected rather than being sent as meaningless text.
+            val binaryRequestBody = if (api.apiId == "hf-whisper" || api.apiId == "hf-vit") {
+                val input = requestParams.remove("inputs").orEmpty()
+                if (input.isBlank() || input.startsWith("content://", true) || input.startsWith("file://", true)) {
+                    Log.w(TAG, "${api.apiId} requires base64 audio/image bytes; local URI strings are not valid request bodies.")
+                    return@withContext null
                 }
-            ) {
-                Log.w(TAG, "${api.apiId} requires a binary audio/image upload; a URI string is not a valid payload.")
-                return@withContext null
+                val dataUriMime = input.takeIf { it.startsWith("data:", true) }
+                    ?.substringAfter("data:", "")
+                    ?.substringBefore(";")
+                    ?.takeIf { it.contains("/") }
+                val encoded = if (input.startsWith("data:", true)) input.substringAfter("base64,", "") else input
+                val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()
+                if (bytes.isNullOrEmpty()) {
+                    Log.w(TAG, "${api.apiId} received an invalid or empty base64 payload.")
+                    return@withContext null
+                }
+                val defaultMime = if (api.apiId == "hf-whisper") "audio/wav" else "image/jpeg"
+                val contentType = dataUriMime ?: requestParams.remove("content_type") ?: defaultMime
+                bytes.toRequestBody(contentType.toMediaType())
+            } else {
+                null
             }
 
             val baseUrl = api.endpoint.toHttpUrlOrNull()
@@ -114,7 +130,7 @@ class ApiExecutor {
                 requestBuilder.header("Accept", "application/vnd.github+json")
             }
 
-            val requestBody = when (api.method) {
+            val requestBody = binaryRequestBody ?: when (api.method) {
                 HttpMethod.GET -> null
                 HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH, HttpMethod.DELETE -> {
                     if (requestParams.isEmpty() && api.method == HttpMethod.DELETE) {
