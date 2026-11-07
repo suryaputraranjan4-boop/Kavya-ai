@@ -188,9 +188,12 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
         while (System.currentTimeMillis() - startTime < timeoutMs) {
             val fgPkg = screenInspector.getCurrentForegroundPackage().lowercase()
             val screenContext = screenInspector.getScreenContextString().lowercase()
+            val hasActiveCallEvidence = screenContext.contains("calling") ||
+                screenContext.contains("ringing") || screenContext.contains("end call") ||
+                screenContext.contains("hang up") || screenContext.contains("call duration") ||
+                screenContext.contains("ongoing call")
             val isCallScreen = fgPkg.contains("telecom") || fgPkg.contains("incall") ||
-                    fgPkg.contains("dialer") || fgPkg.contains("phone") ||
-                    (fgPkg.contains("whatsapp") && (screenContext.contains("calling") || screenContext.contains("ringing") || screenContext.contains("call")))
+                ((fgPkg.contains("dialer") || fgPkg.contains("phone") || fgPkg.contains("whatsapp")) && hasActiveCallEvidence)
 
             if (isCallScreen) {
                 return VerificationResult(
