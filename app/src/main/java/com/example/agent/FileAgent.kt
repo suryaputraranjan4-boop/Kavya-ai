@@ -37,9 +37,8 @@ class FileAgent(private val context: Context) {
                 setDataAndType(uri, mimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            if (intent.resolveActivity(context.packageManager) == null) {
-                return failure(stepId, UniversalActionType.OPEN_FILE, "No installed app can open this file type ($mimeType).")
-            }
+            // Package visibility can make resolveActivity return null on Android 11+.
+            // Let Android resolve the chooser/handler and report ActivityNotFoundException if none exists.
             context.startActivity(intent)
             StepExecutionResult(stepId, true, UniversalActionType.OPEN_FILE, "Opened '$target' in an installed viewer.")
         } catch (e: Exception) {
