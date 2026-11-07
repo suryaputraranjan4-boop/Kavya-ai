@@ -463,8 +463,12 @@ class AndroidAgent(
             UniversalActionType.SAVE_FILE,
             UniversalActionType.SHARE_FILE,
             UniversalActionType.UPLOAD_FILE,
-            UniversalActionType.DOWNLOAD_FILE -> fileAgent.executeFileAction(step.actionType, step.param, step.targetAppOrUrl)
-            UniversalActionType.CREATE_FILE -> fileAgent.executeFileAction(step.actionType, step.param, step.targetAppOrUrl, step.messageText)
+            UniversalActionType.DOWNLOAD_FILE -> fileAgent.executeFileAction(
+                step.actionType, step.param, step.targetAppOrUrl, stepId = step.id
+            )
+            UniversalActionType.CREATE_FILE -> fileAgent.executeFileAction(
+                step.actionType, step.param, step.targetAppOrUrl, step.messageText, step.id
+            )
             UniversalActionType.SEARCH -> handleSearch(step)
             UniversalActionType.TAP -> handleTapNode(step)
             UniversalActionType.TYPE -> handleTypeNode(step)
@@ -496,8 +500,10 @@ class AndroidAgent(
             UniversalActionType.SEND_WHATSAPP_MESSAGE -> handleWhatsAppMessage(step)
             UniversalActionType.SEND_EMAIL -> handleEmail(step)
             UniversalActionType.SELECT_RESULT -> handleSelectOrdinalResult(step)
-            UniversalActionType.CREATE_FOLDER -> fileAgent.executeFileAction(step.actionType, step.param, step.targetAppOrUrl)
-            UniversalActionType.VERIFY -> StepExecutionResult(step.id, true, step.actionType, "Verified")
+            UniversalActionType.CREATE_FOLDER -> fileAgent.executeFileAction(
+                step.actionType, step.param, step.targetAppOrUrl, stepId = step.id
+            )
+            UniversalActionType.VERIFY -> verifyExpectedState(step)
             UniversalActionType.BACK -> handleGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK, step.id)
             UniversalActionType.HOME -> handleGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME, step.id)
             UniversalActionType.SYSTEM_CONTROL -> handleSystemControl(step)
@@ -512,8 +518,30 @@ class AndroidAgent(
             UniversalActionType.SEMANTIC_SEARCH -> handleSemanticSearch(step)
             UniversalActionType.GOOGLE_MAPS_SEARCH -> handleGoogleMapsSearch(step)
             UniversalActionType.MEMORY_TOOL -> handleMemoryTool(step)
-            else -> StepExecutionResult(step.id, true, step.actionType, "Action executed")
+            else -> StepExecutionResult(
+                step.id, false, step.actionType, "Unsupported action type: ${step.actionType}"
+            )
         }
+    }
+
+    private suspend fun verifyExpectedState(step: TaskStep): StepExecutionResult {
+        val expected = step.expectedOutcome.ifBlank { step.param }.trim()
+        if (expected.isBlank()) {
+            return StepExecutionResult(
+                step.id, false, UniversalActionType.VERIFY,
+                "Verification failed: no expected screen state or text was supplied."
+            )
+        }
+        val screen = screenInspector.getScreenContextString()
+        val normalizedScreen = screen.replace(Regex("\\s+"), " ").trim()
+        val normalizedExpected = expected.replace(Regex("\\s+"), " ").trim()
+        val passed = normalizedScreen.contains(normalizedExpected, ignoreCase = true)
+        return StepExecutionResult(
+            step.id, passed, UniversalActionType.VERIFY,
+            if (passed) "Verified expected text/state: '$expected'."
+            else "Verification failed: expected '$expected' was not found on the current screen.",
+            screenSummary = screen.take(500)
+        )
     }
 
     private suspend fun handleGoogleMapsSearch(step: TaskStep): StepExecutionResult = withContext(Dispatchers.IO) {

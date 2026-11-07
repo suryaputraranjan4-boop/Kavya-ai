@@ -59,13 +59,13 @@ class ApiRegistry {
         val githubApi = ApiMetadata(
             apiId = "github-api-v3",
             name = "GitHub REST API v3",
-            category = ApiCategory.UTILITY,
-            subcategory = ApiSubcategory.TRANSCRIPTION,
-            capabilities = listOf(ApiCapability.RETRIEVE, ApiCapability.ANALYZE),
+            category = ApiCategory.DEVELOPMENT,
+            subcategory = ApiSubcategory.WEB_SEARCH,
+            capabilities = listOf(ApiCapability.SEARCH, ApiCapability.RETRIEVE),
             tags = listOf("github", "git", "repositories", "code", "discovery"),
             endpoint = "https://api.github.com/search/repositories",
             method = HttpMethod.GET,
-            authType = AuthType.BEARER_TOKEN,
+            authType = AuthType.NONE,
             requiredParams = listOf(
                 ApiParameter("q", "string", true, "Search query")
             ),

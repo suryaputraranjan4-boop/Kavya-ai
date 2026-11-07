@@ -1,9 +1,6 @@
 package com.example.api
 
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 class ApiSystem {
     companion object {
@@ -14,7 +11,6 @@ class ApiSystem {
     val cache = ApiCache()
     val router = IntentRouter(registry)
     private val executor = ApiExecutor()
-    private val scope = CoroutineScope(Dispatchers.IO)
     
     // Core Orchestration Pipeline
 
@@ -35,7 +31,7 @@ class ApiSystem {
     }
 
     suspend fun processRequest(userInput: String): ApiExecutionResult? {
-        Log.d(TAG, "Processing request: \$userInput")
+        Log.d(TAG, "Processing request: $userInput")
         
         // 1. Intent Detection & Routing
         val match = router.routeIntent(userInput) ?: return null
@@ -46,10 +42,10 @@ class ApiSystem {
         }
         
         // 2. Cache Check (Request Deduplication)
-        val requestKey = "\${match.capability.name}_\${match.extractedParams.hashCode()}"
+        val requestKey = "${match.capability.name}_${match.extractedParams.hashCode()}"
         val cached = cache.getCachedResult(requestKey)
         if (cached != null) {
-            Log.d(TAG, "Cache hit for \$requestKey")
+            Log.d(TAG, "Cache hit for $requestKey")
             return ApiExecutionResult.Success(cached, fromCache = true)
         }
         
@@ -67,7 +63,7 @@ class ApiSystem {
         
         // 4. Execution with Fallback Loop
         for (api in candidates) {
-            Log.d(TAG, "Attempting execution with \${api.name} (\${api.apiId})")
+            Log.d(TAG, "Attempting execution with ${api.name} (${api.apiId})")
             val startTime = System.currentTimeMillis()
             
             val result = executor.execute(api, match.extractedParams)
@@ -95,7 +91,7 @@ class ApiSystem {
                     if (h.failureCount > 3) h.status = ApiHealthStatus.DEGRADED
                     h
                 }
-                Log.w(TAG, "API \${api.apiId} failed. Trying fallback if available.")
+                Log.w(TAG, "API ${api.apiId} failed. Trying fallback if available.")
             }
         }
         

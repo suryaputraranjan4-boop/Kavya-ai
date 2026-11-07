@@ -6,7 +6,7 @@ import com.example.api.ApiSystem
 /**
  * Public API Tool Provider — External Data & Tool Resource.
  * Supplies real-time weather (Open-Meteo), currency conversion (Frankfurter),
- * country facts (REST Countries), and other external live data.
+ * GitHub repository discovery and other registered public API data.
  */
 class PublicApiToolProvider(
     private val apiSystem: ApiSystem = ApiSystem()
