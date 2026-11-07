@@ -85,7 +85,7 @@ class ApiExecutor {
                     ?.takeIf { it.contains("/") }
                 val encoded = if (input.startsWith("data:", true)) input.substringAfter("base64,", "") else input
                 val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()
-                if (bytes.isNullOrEmpty()) {
+                if (bytes == null || bytes.isEmpty()) {
                     Log.w(TAG, "${api.apiId} received an invalid or empty base64 payload.")
                     return@withContext null
                 }
