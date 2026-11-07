@@ -12,16 +12,21 @@ class LlamaCppEngine private constructor() {
     companion object {
         @Volatile private var instance: LlamaCppEngine? = null
 
+        @Volatile private var isNativeLoaded = false
+
         fun getInstance(): LlamaCppEngine =
             instance ?: synchronized(this) {
                 instance ?: LlamaCppEngine().also { instance = it }
             }
 
+        fun isNativeAvailable(): Boolean = isNativeLoaded
+
         init {
             try {
                 System.loadLibrary("kavya_llama")
+                isNativeLoaded = true
             } catch (_: Throwable) {
-                // Native library not present or disabled in current build
+                isNativeLoaded = false
             }
         }
     }

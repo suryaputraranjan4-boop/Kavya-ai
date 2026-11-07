@@ -84,8 +84,8 @@ class GoogleMapsScraperClient(private val context: Context) {
                     .build()
 
                 client.newCall(request).execute().use { response ->
-                    val latency = System.currentTimeMillis() - startTime
-                    if (response.isSuccessful || response.code == 200 || response.code == 404) {
+                    if (response.isSuccessful && response.code in 200..299) {
+                        val latency = System.currentTimeMillis() - startTime
                         return@withContext ScraperHealthStatus(
                             isHealthy = true,
                             latencyMs = latency,

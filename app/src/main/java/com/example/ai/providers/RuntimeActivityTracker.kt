@@ -89,8 +89,8 @@ object RuntimeActivityTracker {
         return mapOf(
             "total_providers" to 4,
             "connected_providers" to connectedCount,
-            "active_ai_models" to ModelRegistry.getActiveModelCount(),
-            "available_tools" to 6, // Weather, Currency, Geocoding, Accessibility Hands, Vision Inspector, Memory
+            "active_ai_models" to ModelRegistry.getActiveModelCount(context),
+            "available_tools" to com.example.agent.KavyaToolRegistry.AVAILABLE_TOOLS.size,
             "recent_requests" to totalRequests,
             "successful_requests" to successfulRequests,
             "failed_requests" to failedRequests

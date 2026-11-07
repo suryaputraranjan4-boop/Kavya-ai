@@ -68,6 +68,26 @@ class GeminiAudioPlayer(
         }
     }
 
+    private var currentTempFile: File? = null
+
+    init {
+        cleanupOldTempFiles()
+    }
+
+    private fun cleanupOldTempFiles() {
+        try {
+            val cacheFiles = context.cacheDir.listFiles { _, name -> name.startsWith("gemini_audio_") && name.endsWith(".wav") }
+            cacheFiles?.forEach { file ->
+                // Clean up files created in previous sessions or older than 10 minutes
+                if (System.currentTimeMillis() - file.lastModified() > 10 * 60 * 1000 || !file.name.contains(instanceId)) {
+                    file.delete()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed cleaning cache files: ${e.message}")
+        }
+    }
+
     @Synchronized
     private fun processNextInQueue() {
         val queuedItem = audioQueue.poll()
@@ -78,11 +98,14 @@ class GeminiAudioPlayer(
         }
         isProcessingQueue = true
         
+        var tempFile: File? = null
         try {
             fileCounter++
-            val tempFile = File(context.cacheDir, "gemini_audio_${instanceId}_${fileCounter}.wav")
+            tempFile = File(context.cacheDir, "gemini_audio_${instanceId}_${fileCounter}.wav")
+            currentTempFile = tempFile
             FileOutputStream(tempFile).use { it.write(queuedItem.audioBytes) }
 
+            val fileToDelete = tempFile
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
@@ -90,7 +113,7 @@ class GeminiAudioPlayer(
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .build()
                 )
-                setDataSource(tempFile.absolutePath)
+                setDataSource(fileToDelete.absolutePath)
                 setOnPreparedListener { mp ->
                     try {
                         mainHandler.post {
@@ -109,6 +132,8 @@ class GeminiAudioPlayer(
                         Log.e(TAG, "Failed to start MediaPlayer", e)
                         try { mp.release() } catch (_: Exception) {}
                         if (mediaPlayer === mp) mediaPlayer = null
+                        try { fileToDelete.delete() } catch (_: Exception) {}
+                        if (currentTempFile == fileToDelete) currentTempFile = null
                         queuedItem.onComplete?.invoke()
                         processNextInQueue()
                     }
@@ -116,6 +141,8 @@ class GeminiAudioPlayer(
                 setOnCompletionListener { mp ->
                     try { mp.release() } catch (_: Exception) {}
                     if (mediaPlayer === mp) mediaPlayer = null
+                    try { fileToDelete.delete() } catch (_: Exception) {}
+                    if (currentTempFile == fileToDelete) currentTempFile = null
                     queuedItem.onComplete?.invoke()
                     processNextInQueue()
                 }
@@ -123,6 +150,8 @@ class GeminiAudioPlayer(
                     Log.e(TAG, "MediaPlayer error: what=$what, extra=$extra")
                     try { mp.reset(); mp.release() } catch (_: Exception) {}
                     if (mediaPlayer === mp) mediaPlayer = null
+                    try { fileToDelete.delete() } catch (_: Exception) {}
+                    if (currentTempFile == fileToDelete) currentTempFile = null
                     queuedItem.onComplete?.invoke()
                     processNextInQueue()
                     true
@@ -131,6 +160,8 @@ class GeminiAudioPlayer(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Audio setup error: ${e.message}", e)
+            try { tempFile?.delete() } catch (_: Exception) {}
+            if (currentTempFile == tempFile) currentTempFile = null
             queuedItem.onComplete?.invoke()
             processNextInQueue()
         }
@@ -140,6 +171,10 @@ class GeminiAudioPlayer(
     fun stop() {
         audioQueue.clear()
         isProcessingQueue = false
+        try {
+            currentTempFile?.delete()
+            currentTempFile = null
+        } catch (_: Exception) {}
         if (mediaPlayer != null) {
             try {
                 if (mediaPlayer?.isPlaying == true) {

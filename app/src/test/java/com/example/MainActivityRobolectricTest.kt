@@ -1,21 +1,22 @@
 package com.example
 
-import androidx.test.core.app.ActivityScenario
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
-@RunWith(AndroidJUnit4::class)
-@Config(sdk = [34])
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33])
 class MainActivityRobolectricTest {
 
     @Test
     fun testActivityLaunches() {
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            scenario.onActivity { activity ->
-                println("Activity launched successfully!")
-            }
-        }
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create().start().resume()
+        val activity = controller.get()
+        assertNotNull(activity)
+        println("Activity launched successfully!")
+        controller.pause().stop().destroy()
     }
 }

@@ -49,7 +49,7 @@ fun AppNavGraph(
         composable("voice_settings") { VoiceSettingsScreen(navController, viewModel) }
         composable("screenshare") { ScreenShareScreen(navController, viewModel) }
         composable("language") { LanguageScreen(navController) }
-        composable("privacy") { AutomationDebugPanelScreen(navController, viewModel) }
+        composable("privacy") { PrivacyScreen(navController, viewModel) }
         composable("automation_debug") { AutomationDebugPanelScreen(navController, viewModel) }
         composable("advanced") { AdvancedScreen(navController) }
         composable("ai_provider_settings") { AiApiHubScreen(navController) }

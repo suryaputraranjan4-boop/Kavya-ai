@@ -149,4 +149,27 @@ object ModelRegistry {
     }
 
     fun getActiveModelCount(): Int = models.size
+
+    fun getActiveModelCount(context: android.content.Context): Int {
+        val geminiKey = com.example.utils.AppPreferences.getEffectiveApiKey(context)
+        val hasGemini = geminiKey.isNotBlank()
+        val hasGemmaOffline = com.example.utils.AppPreferences.isOfflineFallbackEnabled(context) ||
+                (com.example.ai.offline.GemmaModelManager.getModelFile(context) != null)
+        val hasOpenRouter = com.example.utils.AppPreferences.isOpenRouterEnabled(context) &&
+                com.example.utils.AppPreferences.getOpenRouterApiKey(context).isNotBlank()
+        val hasHuggingFace = com.example.utils.AppPreferences.isHuggingFaceEnabled(context) &&
+                com.example.utils.AppPreferences.getHuggingFaceApiKey(context).isNotBlank()
+        val hasPublicApis = com.example.utils.AppPreferences.isPublicApisEnabled(context)
+
+        return models.count { model ->
+            when (model.providerId.lowercase()) {
+                "gemini" -> hasGemini
+                "gemma_offline" -> hasGemmaOffline
+                "openrouter" -> hasOpenRouter
+                "huggingface" -> hasHuggingFace
+                "public_apis" -> hasPublicApis
+                else -> false
+            }
+        }
+    }
 }

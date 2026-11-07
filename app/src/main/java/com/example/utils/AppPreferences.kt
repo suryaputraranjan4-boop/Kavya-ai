@@ -288,7 +288,7 @@ object AppPreferences {
     }
 
     fun isMapsScraperEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_MAPS_SCRAPER_ENABLED, true)
+        return getPrefs(context).getBoolean(KEY_MAPS_SCRAPER_ENABLED, false)
     }
 
     fun setMapsScraperEnabled(context: Context, enabled: Boolean) {
@@ -364,12 +364,13 @@ object AppPreferences {
     }
 
     fun isBuiltInApiKeyAvailable(): Boolean {
-        return BuildConfig.GEMINI_API_KEY.isNotBlank()
+        val key = BuildConfig.GEMINI_API_KEY.trim()
+        return key.isNotBlank() && !isPlaceholderKey(key)
     }
 
     fun isApiSetupCompleted(context: Context): Boolean {
-        if (getOpenRouterApiKey(context).isNotBlank()) return true
-        if (getCustomApiKey(context).isNotBlank()) return true
+        if (getOpenRouterApiKey(context).isNotBlank() && !isPlaceholderKey(getOpenRouterApiKey(context))) return true
+        if (getCustomApiKey(context).isNotBlank() && !isPlaceholderKey(getCustomApiKey(context))) return true
         return getPrefs(context).getBoolean(KEY_API_SETUP_COMPLETED, false)
     }
 
@@ -380,7 +381,8 @@ object AppPreferences {
     fun hasConfiguredApiKey(context: Context): Boolean {
         val provider = getAiProvider(context)
         return if (provider == "OPENROUTER") {
-            getOpenRouterApiKey(context).isNotBlank()
+            val key = getOpenRouterApiKey(context).trim()
+            key.isNotBlank() && !isPlaceholderKey(key)
         } else {
             getEffectiveApiKey(context).isNotBlank()
         }
@@ -400,7 +402,19 @@ object AppPreferences {
 
     fun isPlaceholderKey(key: String): Boolean {
         val lower = key.lowercase(java.util.Locale.ROOT).trim()
-        return lower.isBlank() || lower == "my_gemini_api_key" || lower == "your_api_key" || lower == "my_api_key" || lower == "placeholder"
+        return lower.isBlank() ||
+                lower == "my_gemini_api_key" ||
+                lower == "your_gemini_api_key" ||
+                lower == "your_api_key" ||
+                lower == "my_api_key" ||
+                lower == "placeholder" ||
+                lower == "dummy" ||
+                lower == "null" ||
+                lower == "undefined" ||
+                lower == "enter_key_here" ||
+                lower == "change_me" ||
+                lower.startsWith("your_") ||
+                (lower.startsWith("my_") && lower.endsWith("_key"))
     }
 
     fun hasAnyApiKey(context: Context): Boolean {

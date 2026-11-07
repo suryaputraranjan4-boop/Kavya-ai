@@ -192,7 +192,9 @@ class ScreenCaptureService : Service() {
                     val cleanBitmap = if (rowPadding == 0) {
                         rawBitmap
                     } else {
-                        Bitmap.createBitmap(rawBitmap, 0, 0, targetWidth, targetHeight)
+                        val cropped = Bitmap.createBitmap(rawBitmap, 0, 0, targetWidth, targetHeight)
+                        rawBitmap.recycle()
+                        cropped
                     }
 
                     ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)

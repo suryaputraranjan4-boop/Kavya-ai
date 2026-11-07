@@ -39,10 +39,10 @@ class GemmaModelFormatTest {
         FileOutputStream(ggufFile).use { fos ->
             val data = ByteArray(2 * 1024 * 1024)
             // Write GGUF magic header: 0x47 0x47 0x55 0x46 ('G' 'G' 'U' 'F')
-            data[0] = 'G'.toByte()
-            data[1] = 'G'.toByte()
-            data[2] = 'U'.toByte()
-            data[3] = 'F'.toByte()
+            data[0] = 'G'.code.toByte()
+            data[1] = 'G'.code.toByte()
+            data[2] = 'U'.code.toByte()
+            data[3] = 'F'.code.toByte()
             fos.write(data)
         }
 
@@ -58,8 +58,8 @@ class GemmaModelFormatTest {
         FileOutputStream(taskFile).use { fos ->
             val data = ByteArray(2 * 1024 * 1024)
             // Write ZIP magic header: 0x50 0x4B 0x03 0x04 ('P' 'K' 0x03 0x04)
-            data[0] = 'P'.toByte()
-            data[1] = 'K'.toByte()
+            data[0] = 'P'.code.toByte()
+            data[1] = 'K'.code.toByte()
             data[2] = 0x03.toByte()
             data[3] = 0x04.toByte()
             fos.write(data)
@@ -77,10 +77,10 @@ class GemmaModelFormatTest {
         FileOutputStream(tfliteFile).use { fos ->
             val data = ByteArray(2 * 1024 * 1024)
             // Write TFL3 magic header at offset 4: 'T' 'F' 'L' '3'
-            data[4] = 'T'.toByte()
-            data[5] = 'F'.toByte()
-            data[6] = 'L'.toByte()
-            data[7] = '3'.toByte()
+            data[4] = 'T'.code.toByte()
+            data[5] = 'F'.code.toByte()
+            data[6] = 'L'.code.toByte()
+            data[7] = '3'.code.toByte()
             fos.write(data)
         }
 

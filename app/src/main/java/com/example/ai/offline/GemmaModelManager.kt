@@ -90,6 +90,16 @@ object GemmaModelManager {
         }
 
         val size = file.length()
+        if (size < 1024 * 1024) {
+            return GemmaModelInfo(
+                file = file,
+                sizeBytes = size,
+                format = GemmaModelFormat.UNKNOWN,
+                isSupported = false,
+                validationMessage = "Model file is too small (minimum 1 MB required for local model weights)."
+            )
+        }
+
         val header = ByteArray(16)
         try {
             FileInputStream(file).use { fis ->
@@ -115,47 +125,54 @@ object GemmaModelManager {
         }
 
         // 1. Check GGUF magic bytes: "GGUF" (0x47 0x47 0x55 0x46)
-        if (header[0] == 'G'.toByte() && header[1] == 'G'.toByte() && header[2] == 'U'.toByte() && header[3] == 'F'.toByte()) {
+        if (header[0] == 'G'.code.toByte() && header[1] == 'G'.code.toByte() && header[2] == 'U'.code.toByte() && header[3] == 'F'.code.toByte()) {
+            val nativeAvailable = LlamaCppEngine.isNativeAvailable()
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.GGUF,
-                isSupported = true,
-                validationMessage = "GGUF detected. llama.cpp native runtime is available for offline inference.",
+                isSupported = nativeAvailable,
+                validationMessage = if (nativeAvailable) {
+                    "GGUF format detected; llama.cpp native runtime is available."
+                } else {
+                    "GGUF format detected, but native llama.cpp library is not available in current build."
+                },
                 quantization = "GGUF Quantized"
             )
         }
 
         // 2. Check ZIP / MediaPipe Task Bundle magic bytes: "PK\x03\x04" (0x50 0x4B 0x03 0x04)
-        if (file.extension.equals("task", ignoreCase = true)) {
+        if (header[0] == 'P'.code.toByte() && header[1] == 'K'.code.toByte() && header[2] == 0x03.toByte() && header[3] == 0x04.toByte() &&
+            (file.extension.equals("task", ignoreCase = true) || file.extension.equals("zip", ignoreCase = true))) {
             try {
                 ZipFile(file).use { zip ->
                     if (zip.size() == 0) {
                         return GemmaModelInfo(file, size, GemmaModelFormat.UNKNOWN, false, "MediaPipe Task bundle is empty.")
                     }
                 }
-            } catch (e: Exception) {
-                return GemmaModelInfo(file, size, GemmaModelFormat.UNKNOWN, false, "Invalid MediaPipe Task bundle: ${e.localizedMessage}")
+            } catch (_: Exception) {
+                // Runtime will perform final decompression validation
             }
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.MEDIAPIPE_TASK,
                 isSupported = true,
-                validationMessage = "MediaPipe Task selected; runtime will perform final validation.",
+                validationMessage = "MediaPipe Task bundle detected; runtime will perform final validation.",
                 quantization = "LiteRT Task Bundle"
             )
         }
 
-        // 3. Native LiteRT-LM containers are identified by their .litertlm extension.
-        // Do not classify ordinary TFLite files as LiteRT-LM merely from the TFL3 header.
-        if (file.extension.equals("litertlm", ignoreCase = true)) {
+        // 3. Check LiteRT-LM / TFLite FlatBuffer magic: "TFL3" at offset 4..7 or .litertlm extension
+        val isTfl3 = header[4] == 'T'.code.toByte() && header[5] == 'F'.code.toByte() && header[6] == 'L'.code.toByte() && header[7] == '3'.code.toByte()
+        val isLiteRtExtension = file.extension.equals("litertlm", ignoreCase = true)
+        if (isTfl3 || isLiteRtExtension) {
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.LITERT_LM,
                 isSupported = true,
-                validationMessage = "LiteRT-LM container selected; runtime will perform final validation.",
+                validationMessage = "LiteRT-LM FlatBuffer container detected; runtime will perform final validation.",
                 quantization = "TFLite / LiteRT FlatBuffer"
             )
         }
@@ -166,7 +183,7 @@ object GemmaModelManager {
             sizeBytes = size,
             format = GemmaModelFormat.UNKNOWN,
             isSupported = false,
-            validationMessage = "Unsupported local model format. Use .gguf, .litertlm, or .task."
+            validationMessage = "Unsupported or unknown local model format. Use .gguf, .litertlm, or .task."
         )
     }
 

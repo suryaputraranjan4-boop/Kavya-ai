@@ -25,9 +25,9 @@ class GeminiVisionAnalyzer(private val context: Context) {
     companion object {
         private const val TAG = "KavyaGeminiVision"
         private val VISION_MODELS = listOf(
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash"
+            GeminiModelRegistry.VISION_ANALYZER_MODEL,
+            GeminiModelRegistry.DEFAULT_AGENT_MODEL,
+            GeminiModelRegistry.PRO_REASONING_MODEL
         )
     }
 

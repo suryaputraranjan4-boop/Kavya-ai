@@ -16,7 +16,7 @@ object OfflineModelCompatibility {
     fun capabilityFor(format: OfflineModelFormat): OfflineRuntimeCapability = when (format) {
         OfflineModelFormat.LITERT_LM -> OfflineRuntimeCapability.LITERT_LM_INFERENCE
         OfflineModelFormat.MEDIA_PIPE_TASK -> OfflineRuntimeCapability.MEDIAPIPE_TASK_INFERENCE
-        OfflineModelFormat.GGUF -> OfflineRuntimeCapability.GGUF_INFERENCE
+        OfflineModelFormat.GGUF -> if (LlamaCppEngine.isNativeAvailable()) OfflineRuntimeCapability.GGUF_INFERENCE else OfflineRuntimeCapability.UNSUPPORTED
         OfflineModelFormat.UNKNOWN -> OfflineRuntimeCapability.UNSUPPORTED
     }
 }

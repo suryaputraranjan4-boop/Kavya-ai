@@ -2,8 +2,6 @@ name: Build Kavya APK
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -53,7 +51,9 @@ jobs:
       - name: Create build environment file
         run: cp .env.example .env
 
-      # No artificial model-size validation is applied by this build.
+      - name: Run Unit Tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
