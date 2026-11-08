@@ -82,7 +82,7 @@ class GemmaModelFormatTest {
         val info = GemmaModelManager.inspectModel(taskFile)
         assertEquals(GemmaModelFormat.MEDIAPIPE_TASK, info.format)
         assertTrue("MediaPipe Task bundle must be marked supported", info.isSupported)
-        assertTrue(info.validationMessage.contains("MediaPipe Task bundle"))
+        assertTrue(info.validationMessage.contains("MediaPipe Task ZIP archive detected"))
     }
 
     @Test
