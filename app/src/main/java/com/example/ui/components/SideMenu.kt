@@ -45,18 +45,18 @@ import kotlinx.coroutines.launch
  * STRICT ENFORCEMENT: Absolutely no purple, pink, magenta, or violet tints.
  */
 private object WhiteLiquidGlassTokens {
-    val GlassSurface = Color(0xCCFFFFFF)
-    val GlassSurfaceSubtle = Color(0xBFFFFFFF)
+    val GlassSurface = Color(0x2EFFFFFF)
+    val GlassSurfaceSubtle = Color(0x1FFFFFFF)
     val GlassSelected = Color(0x140F172A)
     val GlassHover = Color(0x0A0F172A)
     val Separator = Color(0x140F172A)
     
     val GlossyWhiteBorder = Brush.linearGradient(
         listOf(
-            Color.White,
-            Color(0xCCFFFFFF),
-            Color(0x80FFFFFF),
-            Color(0xCCFFFFFF)
+            Color(0x66FFFFFF),
+            Color(0x40FFFFFF),
+            Color(0x26FFFFFF),
+            Color(0x40FFFFFF)
         )
     )
     val SubtleBorder = Color(0x1F000000)
@@ -178,8 +178,8 @@ fun KavyaSideMenu(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White)
-                            .border(1.dp, Color(0x1F000000), RoundedCornerShape(12.dp))
+                            .background(Color(0x1FFFFFFF))
+                            .border(1.dp, Color(0x26FFFFFF), RoundedCornerShape(12.dp))
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -467,8 +467,8 @@ fun KavyaSideMenu(
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
-                        .background(Color.White)
-                        .border(1.dp, Color(0x1F000000), CircleShape)
+                        .background(Color(0x1FFFFFFF))
+                        .border(1.dp, Color(0x26FFFFFF), CircleShape)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
