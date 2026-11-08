@@ -244,11 +244,20 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         displayName.endsWith(".xml", true)
 
                 if (isText) {
-                    val rawText = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                    val snippet = if (rawText.length > 2500) rawText.take(2500) + "\n...[truncated for length]" else rawText
-                    viewModel.sendMessage("[Document Attached: $displayName]\n\nDocument Contents:\n$snippet\n\nPlease review and explain this document.")
+                    val rawText = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
+                        val buffer = CharArray(20000)
+                        val output = StringBuilder()
+                        var count: Int
+                        while (output.length < 100000 && reader.read(buffer, 0, minOf(buffer.size, 100000 - output.length).coerceAtLeast(1)).also { count = it } > 0) {
+                            output.append(buffer, 0, count)
+                        }
+                        output.toString()
+                    } ?: throw IllegalArgumentException("Unable to read selected document.")
+                    if (rawText.isBlank()) throw IllegalArgumentException("Selected document is empty.")
+                    val snippet = if (rawText.length >= 100000) rawText + "\n[Content limit reached: first 100,000 characters included.]" else rawText
+                    viewModel.sendMessage("[Document: $displayName]\n\nDocument Contents:\n$snippet\n\nPlease review and explain this document.")
                 } else {
-                    viewModel.sendMessage("[Document Attached: $displayName ($mimeType)] Please review this document.")
+                    viewModel.sendMessage("I can identify this file ($displayName, $mimeType), but this file format is not yet supported for content extraction. Please choose a TXT, MD, CSV, JSON, or XML file, or use PDF Files for a PDF.")
                 }
                 navController.navigate("chat")
             } catch (e: Exception) {
