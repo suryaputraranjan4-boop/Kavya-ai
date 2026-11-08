@@ -611,6 +611,76 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Renders each page of a selected PDF and analyzes its actual visual content.
+     * Limits page count and render dimensions to keep memory use bounded.
+     */
+    fun analyzePdf(file: java.io.File, displayName: String = file.name) {
+        if (_isOfflineMode.value || aiClient.isOfflineMode()) {
+            sendMessage("PDF visual analysis is not available in Offline Mode. Switch to Online Mode to analyze this PDF.")
+            return
+        }
+        if (!file.isFile || file.length() <= 0L) {
+            sendMessage("The selected PDF could not be read.")
+            return
+        }
+        if (_isProcessing.value) {
+            sendMessage("Please wait until the current response finishes before attaching a PDF.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also { id ->
+                _currentChatId.value = id
+                chatDao.insertChat(ChatEntity(id = id, title = "PDF: " + displayName.take(20), timestamp = System.currentTimeMillis()))
+            }
+            val userText = "PDF attached: " + displayName
+            val userId = UUID.randomUUID().toString()
+            chatDao.insertMessage(MessageEntity(userId, chatId, userText, true, System.currentTimeMillis()))
+            _messages.value = _messages.value + ChatMessage(userId, userText, true)
+            val loadingId = UUID.randomUUID().toString()
+            _messages.value = _messages.value + ChatMessage(loadingId, "Reading PDF pages…", false, isLoading = true)
+            try {
+                val pageResults = mutableListOf<String>()
+                val descriptor = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                android.graphics.pdf.PdfRenderer(descriptor).use { renderer ->
+                    val pageLimit = minOf(renderer.pageCount, 20)
+                    for (index in 0 until pageLimit) {
+                        renderer.openPage(index).use { page ->
+                            val scale = minOf(1f, 1400f / maxOf(page.width, page.height).toFloat())
+                            val width = (page.width * scale).toInt().coerceAtLeast(1)
+                            val height = (page.height * scale).toInt().coerceAtLeast(1)
+                            val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+                            page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            try {
+                                val analysis = KavyaAI(getApplication<Application>()).analyzeVisualUI(
+                                    bitmap,
+                                    "Analyze page " + (index + 1) + " of PDF " + displayName + ". Extract all readable text, tables, headings, diagrams and important details. Clearly state anything unreadable."
+                                )
+                                pageResults.add("Page " + (index + 1) + ":\n" + analysis)
+                            } finally {
+                                bitmap.recycle()
+                            }
+                        }
+                    }
+                    if (renderer.pageCount > pageLimit) {
+                        pageResults.add("Only the first " + pageLimit + " of " + renderer.pageCount + " pages were analyzed to protect device memory and request limits.")
+                    }
+                }
+                descriptor.close()
+                val answer = pageResults.joinToString("\n\n").ifBlank { "No readable PDF pages were found." }
+                val assistantId = UUID.randomUUID().toString()
+                _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false)
+                chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+                _latestKavyaCaption.value = "PDF analysis complete."
+            } catch (e: Exception) {
+                val answer = "PDF analysis failed: " + (e.localizedMessage ?: "Unable to render this PDF.")
+                val assistantId = UUID.randomUUID().toString()
+                _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
+                chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+            }
+        }
+    }
+
     fun sendMessage(text: String) {
         if (text.isBlank()) return
 
