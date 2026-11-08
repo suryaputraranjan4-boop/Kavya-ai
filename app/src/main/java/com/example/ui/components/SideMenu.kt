@@ -45,8 +45,8 @@ import kotlinx.coroutines.launch
  * STRICT ENFORCEMENT: Absolutely no purple, pink, magenta, or violet tints.
  */
 private object WhiteLiquidGlassTokens {
-    val GlassSurface = Color(0xF7FFFFFF)
-    val GlassSurfaceSubtle = Color(0xEEF8FAFC)
+    val GlassSurface = Color(0xCCFFFFFF)
+    val GlassSurfaceSubtle = Color(0xBFFFFFFF)
     val GlassSelected = Color(0x140F172A)
     val GlassHover = Color(0x0A0F172A)
     val Separator = Color(0x140F172A)
