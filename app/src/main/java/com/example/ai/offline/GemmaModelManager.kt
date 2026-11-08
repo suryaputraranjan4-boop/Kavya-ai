@@ -150,15 +150,21 @@ object GemmaModelManager {
                         return GemmaModelInfo(file, size, GemmaModelFormat.UNKNOWN, false, "MediaPipe Task bundle is empty.")
                     }
                 }
-            } catch (_: Exception) {
-                // Runtime will perform final decompression validation
+            } catch (e: Exception) {
+                return GemmaModelInfo(
+                    file = file,
+                    sizeBytes = size,
+                    format = GemmaModelFormat.UNKNOWN,
+                    isSupported = false,
+                    validationMessage = "Invalid MediaPipe Task archive: " + (e.localizedMessage ?: "ZIP validation failed.")
+                )
             }
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.MEDIAPIPE_TASK,
                 isSupported = true,
-                validationMessage = "MediaPipe Task bundle detected; runtime will perform final validation.",
+                validationMessage = "MediaPipe Task ZIP archive detected; runtime initialization is still required to verify model compatibility.",
                 quantization = "LiteRT Task Bundle"
             )
         }
