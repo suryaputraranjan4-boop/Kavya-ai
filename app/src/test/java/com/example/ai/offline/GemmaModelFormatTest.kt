@@ -6,6 +6,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class GemmaModelFormatTest {
 
@@ -55,14 +57,10 @@ class GemmaModelFormatTest {
     @Test
     fun testMediaPipeTaskBundleDetection() {
         val taskFile = tempFolder.newFile("gemma.task")
-        FileOutputStream(taskFile).use { fos ->
-            val data = ByteArray(2 * 1024 * 1024)
-            // Write ZIP magic header: 0x50 0x4B 0x03 0x04 ('P' 'K' 0x03 0x04)
-            data[0] = 'P'.code.toByte()
-            data[1] = 'K'.code.toByte()
-            data[2] = 0x03.toByte()
-            data[3] = 0x04.toByte()
-            fos.write(data)
+        ZipOutputStream(FileOutputStream(taskFile)).use { zip ->
+            zip.putNextEntry(ZipEntry("model/metadata.txt"))
+            zip.write("valid test bundle".toByteArray())
+            zip.closeEntry()
         }
 
         val info = GemmaModelManager.inspectModel(taskFile)
