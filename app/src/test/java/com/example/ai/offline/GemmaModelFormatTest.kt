@@ -6,6 +6,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.FileOutputStream
+import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -57,12 +58,27 @@ class GemmaModelFormatTest {
     @Test
     fun testMediaPipeTaskBundleDetection() {
         val taskFile = tempFolder.newFile("gemma.task")
+        val modelPayload = ByteArray(1024 * 1024)
+        val modelEntry = ZipEntry("model/model.bin").apply {
+            method = ZipEntry.STORED
+            size = modelPayload.size.toLong()
+            compressedSize = modelPayload.size.toLong()
+            crc = CRC32().apply { update(modelPayload) }.value
+        }
+
         ZipOutputStream(FileOutputStream(taskFile)).use { zip ->
             zip.putNextEntry(ZipEntry("model/metadata.txt"))
             zip.write("valid test bundle".toByteArray())
             zip.closeEntry()
+
+            // The inspector rejects model files smaller than 1 MiB. Store a
+            // deterministic payload so this valid ZIP fixture crosses that gate.
+            zip.putNextEntry(modelEntry)
+            zip.write(modelPayload)
+            zip.closeEntry()
         }
 
+        assertTrue("Test ZIP fixture must meet the minimum model size", taskFile.length() >= 1024L * 1024L)
         val info = GemmaModelManager.inspectModel(taskFile)
         assertEquals(GemmaModelFormat.MEDIAPIPE_TASK, info.format)
         assertTrue("MediaPipe Task bundle must be marked supported", info.isSupported)
