@@ -47,8 +47,8 @@ import kotlinx.coroutines.launch
  * STRICT ENFORCEMENT: Absolutely no purple, pink, magenta, or violet tints.
  */
 private object WhiteLiquidGlassTokens {
-    val GlassSurface = Color(0x99FFFFFF)
-    val GlassSurfaceSubtle = Color(0x66FFFFFF)
+    val GlassSurface = Color(0xB3FFFFFF)
+    val GlassSurfaceSubtle = Color(0x80FFFFFF)
     val GlassSelected = Color(0x33FFFFFF)
     val GlassHover = Color(0x1FFFFFFF)
     val Separator = Color(0x40FFFFFF)
@@ -453,7 +453,7 @@ fun KavyaSideMenu(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = WhiteLiquidGlassTokens.TextPrimary,
-                            shadow = Shadow(Color(0xCC000000), Offset(0f, 1f), 3f)
+                            shadow = Shadow(Color(0xF0000000), Offset(0f, 1.5f), 4.5f)
                         )
                     )
                     Text(
