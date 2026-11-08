@@ -42,7 +42,7 @@ class FileAgent(private val context: Context) {
             context.startActivity(intent)
             StepExecutionResult(stepId, true, UniversalActionType.OPEN_FILE, "Opened '$target' in an installed viewer.")
         } catch (e: Exception) {
-            Log.e(TAG, "Unable to open file '$target'", e)
+            Log.e(TAG, "Unable to open requested file (${e.javaClass.simpleName}).")
             failure(stepId, UniversalActionType.OPEN_FILE, "Could not open '$target': ${e.message ?: "unknown error"}")
         }
     }
@@ -77,7 +77,7 @@ class FileAgent(private val context: Context) {
                 StepExecutionResult(stepId, true, UniversalActionType.READ_FILE, "Contents of '$target':\n$text$suffix")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Unable to read file '$target'", e)
+            Log.e(TAG, "Unable to read requested file (${e.javaClass.simpleName}).")
             failure(stepId, UniversalActionType.READ_FILE, "Could not read '$target': ${e.message ?: "unknown error"}")
         }
     }
@@ -100,7 +100,7 @@ class FileAgent(private val context: Context) {
                 failure(stepId, UniversalActionType.CREATE_FOLDER, "Android could not create folder '$safeName'.")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error creating folder '$safeName'", e)
+            Log.e(TAG, "Error creating folder (${e.javaClass.simpleName}).")
             failure(stepId, UniversalActionType.CREATE_FOLDER, "Could not create folder: ${e.message ?: "unknown error"}")
         }
     }
@@ -123,7 +123,7 @@ class FileAgent(private val context: Context) {
             FileOutputStream(file, false).use { it.write(content.toByteArray(Charsets.UTF_8)) }
             StepExecutionResult(stepId, true, UniversalActionType.CREATE_FILE, "Created '$safeName' in Kavya's app-specific Downloads folder.")
         } catch (e: Exception) {
-            Log.e(TAG, "Error creating file '$safeName'", e)
+            Log.e(TAG, "Error creating file (${e.javaClass.simpleName}).")
             failure(stepId, UniversalActionType.CREATE_FILE, "Could not create file: ${e.message ?: "unknown error"}")
         }
     }
@@ -165,7 +165,7 @@ class FileAgent(private val context: Context) {
         val file = resolveLocalFile(value) ?: return null
         return runCatching {
             FileProvider.getUriForFile(context, context.packageName + FILE_PROVIDER_SUFFIX, file)
-        }.onFailure { Log.e(TAG, "Unable to create content URI for '${file.name}'", it) }.getOrNull()
+        }.onFailure { Log.e(TAG, "Unable to create content URI for shared file.") }.getOrNull()
     }
 
     private fun resolveLocalFile(value: String): File? {

@@ -74,7 +74,7 @@ class KavyaVoiceEngine(
 
         // Suppress raw technical errors from ever being spoken aloud
         if (isTechnicalErrorString(cleanText)) {
-            Log.w(TAG, "Suppressed technical error string from voice output: $cleanText")
+            Log.w(TAG, "Suppressed a technical error string from voice output.")
             updateSpeakingState(false)
             val now = System.currentTimeMillis()
             if (now - lastErrorSpeechTimestamp > ERROR_THROTTLE_WINDOW_MS) {
@@ -136,7 +136,7 @@ class KavyaVoiceEngine(
                     Log.w(TAG, "Gemini voice returned empty audio; speech output skipped.")
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Gemini voice generation failed; speech output skipped: ${e.message}")
+                Log.w(TAG, "Gemini voice generation failed (${e.javaClass.simpleName}); speech output skipped.")
             }
 
             if (!playbackStarted) {
