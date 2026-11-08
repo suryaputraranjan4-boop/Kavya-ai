@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
                 val blurModifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && isDrawerOpen) {
                     Modifier.graphicsLayer {
                         renderEffect = android.graphics.RenderEffect.createBlurEffect(
-                            25f, 25f, android.graphics.Shader.TileMode.CLAMP
+                            12f, 12f, android.graphics.Shader.TileMode.CLAMP
                         ).asComposeRenderEffect()
                     }
                 } else Modifier
