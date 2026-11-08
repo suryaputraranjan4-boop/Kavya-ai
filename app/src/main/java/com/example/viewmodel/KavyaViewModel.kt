@@ -566,6 +566,51 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Sends actual image pixels to Gemini Vision instead of only sending a filename.
+     * Images are never uploaded while explicit offline mode is enabled.
+     */
+    fun analyzeImage(bitmap: android.graphics.Bitmap, sourceName: String = "image") {
+        if (bitmap.width <= 0 || bitmap.height <= 0) return
+        if (_isOfflineMode.value || aiClient.isOfflineMode()) {
+            sendMessage("Image analysis is not available in Offline Mode. Switch to Online Mode to send this image to Gemini Vision.")
+            return
+        }
+        if (_isProcessing.value) {
+            sendMessage("Please wait until the current response finishes before attaching another image.")
+            return
+        }
+        val safeName = sourceName.replace(Regex("[\\r\\n]"), " ").take(120)
+        viewModelScope.launch(Dispatchers.IO) {
+            val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also { id ->
+                _currentChatId.value = id
+                chatDao.insertChat(ChatEntity(id = id, title = "Image: " + safeName.take(20), timestamp = System.currentTimeMillis()))
+            }
+            val userText = "Image attached: " + safeName + " (" + bitmap.width + " × " + bitmap.height + ")."
+            val userId = UUID.randomUUID().toString()
+            chatDao.insertMessage(MessageEntity(userId, chatId, userText, true, System.currentTimeMillis()))
+            _messages.value = _messages.value + ChatMessage(userId, userText, true)
+            val loadingId = UUID.randomUUID().toString()
+            _messages.value = _messages.value + ChatMessage(loadingId, "Analyzing image…", false, isLoading = true)
+            try {
+                val result = KavyaAI(getApplication<Application>()).analyzeVisualUI(
+                    bitmap,
+                    "Carefully describe and analyze this user-provided image. Answer questions about its contents. Distinguish visible facts from uncertainty and do not invent details."
+                )
+                val answer = result.takeIf { it.isNotBlank() } ?: "I could not analyze this image. Please try another image."
+                val assistantId = UUID.randomUUID().toString()
+                _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = answer.startsWith("Visual parsing failed:") || answer.startsWith("Error:"))
+                chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+                _latestKavyaCaption.value = answer
+            } catch (e: Exception) {
+                val answer = "Image analysis failed: " + (e.localizedMessage ?: "Unknown error")
+                val assistantId = UUID.randomUUID().toString()
+                _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
+                chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+            }
+        }
+    }
+
     fun sendMessage(text: String) {
         if (text.isBlank()) return
 
