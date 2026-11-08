@@ -368,7 +368,7 @@ class KavyaMicrophoneEngine : Service() {
     }
 
     private fun dispatch(command: String) {
-        Log.i(TAG, "Dispatching voice command: $command")
+        Log.i(TAG, "Dispatching recognized voice command.")
         commandListener?.invoke(command)
     }
 

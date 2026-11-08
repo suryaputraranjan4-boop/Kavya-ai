@@ -129,7 +129,7 @@ class AndroidAgent(
                 val recipient = step.recipient.ifBlank { step.param.substringBefore("||").substringBefore(":") }.trim()
                 val msg = step.messageText.ifBlank { step.param.substringAfter("||", "").substringAfter(":", "") }.trim()
                 if (checkpointManager.isMessageAlreadySent(recipient, msg)) {
-                    Log.i(TAG, "Skipping duplicate send message step: already verified as sent to '$recipient'")
+                    Log.i(TAG, "Skipping duplicate send message step: already verified.")
                     completedSteps++
                     continue
                 }
@@ -137,7 +137,7 @@ class AndroidAgent(
             if (step.actionType == UniversalActionType.CALL || step.actionType == UniversalActionType.MAKE_PHONE_CALL) {
                 val target = step.recipient.ifBlank { step.param }.trim()
                 if (checkpointManager.isCallAlreadyInitiated(target)) {
-                    Log.i(TAG, "Skipping duplicate call step: call already initiated for '$target'")
+                    Log.i(TAG, "Skipping duplicate call step: call already initiated.")
                     completedSteps++
                     continue
                 }
@@ -161,7 +161,7 @@ class AndroidAgent(
             val isCurrentPkgMatching = isPackageMatching(freshScreenBefore.foregroundPackage, plan.targetAppName)
 
             if (step.actionType == UniversalActionType.OPEN_APP && isCurrentPkgMatching && freshScreenBefore.foregroundPackage.isNotBlank()) {
-                Log.i(TAG, "Current screen priority: ${plan.targetAppName} is already open and foreground. Skipping redundant launch.")
+                Log.i(TAG, "Current screen priority: target app is already open and foreground. Skipping redundant launch.")
                 completedSteps++
                 checkpointManager.recordCheckpoint(
                     stepId = step.id,
@@ -176,7 +176,7 @@ class AndroidAgent(
                 val targetContact = step.recipient.ifBlank { step.param }
                 val isChatAlreadyOpen = freshScreenBefore.visibleTexts.any { it.contains(targetContact, ignoreCase = true) }
                 if (isChatAlreadyOpen) {
-                    Log.i(TAG, "Current screen priority: Chat with '$targetContact' is already open on screen.")
+                    Log.i(TAG, "Current screen priority: requested chat is already open on screen.")
                     completedSteps++
                     checkpointManager.recordCheckpoint(
                         stepId = step.id,
@@ -212,7 +212,7 @@ class AndroidAgent(
 
             // 2. CONTEXT-AWARE ADVANCED RECOVERY LOOP (Requirements 1, 3, 4, 25, 26, 27)
             if (!stepResult.success && !stepResult.isAmbiguous && step.actionType != UniversalActionType.OPEN_APP && step.actionType != UniversalActionType.VERIFY) {
-                Log.w(TAG, "Step ${step.id} (${step.actionType}) unverified: ${stepResult.output}. Initiating Context-Aware Recovery...")
+                Log.w(TAG, "Step ${step.id} (${step.actionType}) unverified. Initiating Context-Aware Recovery...")
 
                 val resolvedTarget = appResolver.resolve(plan.targetAppName).matchedApp
                 val targetPkg = resolvedTarget?.packageName ?: plan.targetAppName
@@ -232,7 +232,7 @@ class AndroidAgent(
                     )
 
                     if (strategy.level == RecoveryLevel.LEVEL_5_SAFE_STOP) {
-                        Log.w(TAG, "Recovery ended: ${strategy.description}")
+                        Log.w(TAG, "Recovery ended safely at ${strategy.level}.")
                         break
                     }
 
@@ -409,9 +409,9 @@ class AndroidAgent(
             } else null
             try {
                 memoryEngine.recordWorkflowSuccess(plan.appliedMemory, learnedDetails)
-                Log.i(TAG, "Workflow memory '${plan.appliedMemory.key}' successfully reinforced and updated.")
+                Log.i(TAG, "Workflow memory successfully reinforced and updated.")
             } catch (e: Exception) {
-                Log.w(TAG, "Notice: could not record workflow memory update: ${e.message}")
+                Log.w(TAG, "Notice: could not record workflow memory update.")
             }
         }
 
@@ -1189,14 +1189,14 @@ class AndroidAgent(
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Contacts query failed: ${e.message}")
+                Log.w(TAG, "Contacts query failed.")
             }
         }
 
         if (!resolvedNumber.isNullOrBlank()) {
             val cleanNumber = resolvedNumber!!.filter { it.isDigit() || it == '+' }
             val displayName = resolvedDisplayName ?: target
-            Log.i(TAG, "Resolved contact '$target' to '$displayName' ($cleanNumber)")
+            Log.i(TAG, "Resolved a contact for the requested call.")
             return makeDirectOrDialCall(cleanNumber, step.id, displayName)
         }
 
@@ -1688,7 +1688,7 @@ class AndroidAgent(
     }
 
     private suspend fun executeGeminiVisualFallback(actionType: UniversalActionType, param: String): StepExecutionResult? {
-        Log.d(TAG, "Triggering Kavya Visual Action Engine fallback for action: $actionType on '$param'")
+        Log.d(TAG, "Triggering Kavya Visual Action Engine fallback for action: $actionType.")
         val (width, height) = visualActionEngine.screenshotManager.getScreenDimensions()
         val snapshot = visualActionEngine.screenObserver.observeScreen(captureVisual = true)
         val screenshot = snapshot.screenshot ?: return null

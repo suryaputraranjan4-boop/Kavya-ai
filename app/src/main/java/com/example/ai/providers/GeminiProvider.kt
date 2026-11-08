@@ -118,14 +118,14 @@ class GeminiProvider : AIProvider {
                 val code = e.code()
                 val errBody = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
                 lastError = handleError(code, errBody)
-                Log.w(TAG, "Gemini $model HTTP $code: $lastError")
+                Log.w(TAG, "Gemini $model request failed with HTTP $code.")
                 if (code == 401 || code == 403) {
                     // Authentication failure shouldn't blindly retry subsequent models
                     break
                 }
             } catch (e: Exception) {
                 lastError = handleError(-1, e.localizedMessage)
-                Log.w(TAG, "Gemini $model failed: ${e.message}")
+                Log.w(TAG, "Gemini $model request failed (${e.javaClass.simpleName}).")
             }
         }
 

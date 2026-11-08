@@ -187,7 +187,7 @@ class OpenRouterProvider : AIProvider {
             }
             return@withContext Pair(true, "OpenRouter connected successfully.")
         } catch (e: Exception) {
-            Log.e(TAG, "OpenRouter validation network error", e)
+            Log.e(TAG, "OpenRouter validation network error (${e.javaClass.simpleName}).")
             val msg = handleError(-1, e.localizedMessage)
             return@withContext Pair(false, "OpenRouter connection failed: $msg")
         }

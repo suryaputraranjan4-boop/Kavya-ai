@@ -164,7 +164,7 @@ class HuggingFaceProvider : AIProvider {
                 return@withContext Pair(false, handleError(code, body))
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Hugging Face token validation error", e)
+            Log.e(TAG, "Hugging Face token validation error (${e.javaClass.simpleName}).")
             val msg = handleError(-1, e.localizedMessage)
             return@withContext Pair(false, "Hugging Face connection failed: $msg")
         }

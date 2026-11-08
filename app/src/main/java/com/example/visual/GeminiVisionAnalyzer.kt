@@ -91,7 +91,7 @@ class GeminiVisionAnalyzer(private val context: Context) {
                     break
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Gemini vision call failed on $model: ${e.message}")
+                Log.w(TAG, "Gemini vision call failed (${e.javaClass.simpleName}).")
             }
         }
 
@@ -226,7 +226,7 @@ CRITICAL INSTRUCTIONS:
             val understanding = ScreenUnderstanding(desc, targetFound, confidence)
             return Pair(understanding, visualAction)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse structured action JSON: ${e.message}\nRaw: $jsonStr", e)
+            Log.e(TAG, "Failed to parse structured action JSON.")
             return Pair(
                 ScreenUnderstanding(
                     description = "JSON parsing failed for visual response.",

@@ -54,7 +54,7 @@ class ApiExecutor {
                     return@withContext null
                 }
                 val coordinates = geocode(location) ?: run {
-                    Log.w(TAG, "Could not resolve weather location '$location'.")
+                    Log.w(TAG, "Could not resolve supplied weather location.")
                     return@withContext null
                 }
                 requestParams["latitude"] = coordinates.first.toString()
@@ -146,16 +146,16 @@ class ApiExecutor {
             client.newCall(request).execute().use { response ->
                 val responseText = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    Log.w(TAG, "HTTP ${response.code} from ${api.apiId}: ${responseText.take(300)}")
+                    Log.w(TAG, "HTTP ${response.code} from ${api.apiId}; response body omitted.")
                     return@withContext null
                 }
                 minifyResponse(api, responseText)
             }
         } catch (e: IOException) {
-            Log.e(TAG, "Network error executing ${api.apiId}: ${e.message}")
+            Log.e(TAG, "Network error executing ${api.apiId} (${e.javaClass.simpleName}).")
             null
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing ${api.apiId}: ${e.message}", e)
+            Log.e(TAG, "Error executing ${api.apiId} (${e.javaClass.simpleName}).")
             null
         }
     }
