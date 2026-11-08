@@ -1,6 +1,7 @@
 package com.example.security
 
 import android.content.Context
+import android.content.res.XmlResourceParser
 import androidx.test.core.app.ApplicationProvider
 import com.example.R
 import org.junit.Assert.assertEquals
@@ -26,7 +27,7 @@ class SecureStorageBackupRulesTest {
         assertEquals(setOf("cloud-backup", "device-transfer"), extractionTargets)
     }
 
-    private fun findVaultExclusions(parser: XmlPullParser): Set<String> {
+    private fun findVaultExclusions(parser: XmlResourceParser): Set<String> {
         val excludedTargets = mutableSetOf<String>()
         var currentTarget = "full-backup-content"
 
