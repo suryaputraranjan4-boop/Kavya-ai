@@ -249,7 +249,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             .graphicsLayer {
                 renderEffect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && showAttachmentPopup) {
                     android.graphics.RenderEffect.createBlurEffect(
-                        12f, 12f, android.graphics.Shader.TileMode.CLAMP
+                        16f, 16f, android.graphics.Shader.TileMode.CLAMP
                     ).asComposeRenderEffect()
                 } else null
             }
@@ -640,7 +640,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         ),
                         shape = RoundedCornerShape(22.dp)
                     ),
-                color = Color(0x99FFFFFF),
+                color = Color(0xB3FFFFFF),
                 shape = RoundedCornerShape(22.dp)
             ) {
                 Column(
@@ -658,7 +658,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                                 fontWeight = FontWeight.ExtraBold,
                                 letterSpacing = 1.2.sp,
                                 color = Color.White,
-                                shadow = Shadow(Color(0xCC000000), Offset(0f, 1f), 3f)
+                                shadow = Shadow(Color(0xF0000000), Offset(0f, 1.5f), 4.5f)
                             ),
                             modifier = Modifier.padding(start = 4.dp)
                         )
