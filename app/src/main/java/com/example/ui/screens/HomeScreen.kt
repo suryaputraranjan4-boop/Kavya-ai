@@ -26,6 +26,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -242,6 +246,13 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black) // Extreme minimalist dark background
+            .graphicsLayer {
+                renderEffect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && showAttachmentPopup) {
+                    android.graphics.RenderEffect.createBlurEffect(
+                        12f, 12f, android.graphics.Shader.TileMode.CLAMP
+                    ).asComposeRenderEffect()
+                } else null
+            }
     ) {
         // Very subtle background atmosphere
         Box(
@@ -621,7 +632,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                             Brush.linearGradient(
                                 listOf(
                                     Color.White,
-                                    Color(0xCCFFFFFF),
+                                    Color(0xB3FFFFFF),
                                     Color(0x80FFFFFF),
                                     Color.White
                                 )
@@ -629,7 +640,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         ),
                         shape = RoundedCornerShape(22.dp)
                     ),
-                color = Color(0xF9FFFFFF),
+                color = Color(0x99FFFFFF),
                 shape = RoundedCornerShape(22.dp)
             ) {
                 Column(
@@ -646,7 +657,8 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 letterSpacing = 1.2.sp,
-                                color = Color(0xFF64748B)
+                                color = Color.White,
+                                shadow = Shadow(Color(0xCC000000), Offset(0f, 1f), 3f)
                             ),
                             modifier = Modifier.padding(start = 4.dp)
                         )
@@ -657,7 +669,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Close attachments",
-                                tint = Color(0xFF64748B),
+                                tint = Color.White,
                                 modifier = Modifier.size(15.dp)
                             )
                         }
