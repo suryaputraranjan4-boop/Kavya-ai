@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.rememberNavController
@@ -77,9 +78,18 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             ) {
+                val isDrawerOpen = drawerState.isOpen || drawerState.targetValue == DrawerValue.Open
+                val blurModifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && isDrawerOpen) {
+                    Modifier.graphicsLayer {
+                        renderEffect = android.graphics.RenderEffect.createBlurEffect(
+                            25f, 25f, android.graphics.Shader.TileMode.CLAMP
+                        ).asComposeRenderEffect()
+                    }
+                } else Modifier
+
                 Scaffold(
                     containerColor = Background,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().then(blurModifier)
                 ) { innerPadding ->
                     AppNavGraph(
                         navController = navController,

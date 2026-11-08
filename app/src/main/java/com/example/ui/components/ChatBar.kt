@@ -43,7 +43,6 @@ fun ChatBar(
     isMicListening: Boolean = false
 ) {
     var text by remember { mutableStateOf("") }
-    var showPlusMenu by remember { mutableStateOf(false) }
 
     Row(
         modifier = modifier
@@ -55,7 +54,7 @@ fun ChatBar(
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(
-            onClick = { showPlusMenu = true },
+            onClick = onPlusClick,
             modifier = Modifier.size(38.dp)
         ) {
             Icon(
@@ -63,22 +62,6 @@ fun ChatBar(
                 contentDescription = "Actions menu",
                 tint = TextSecondary,
                 modifier = Modifier.size(20.dp)
-            )
-        }
-
-        DropdownMenu(
-            expanded = showPlusMenu,
-            onDismissRequest = { showPlusMenu = false }
-        ) {
-            DropdownMenuItem(
-                text = { Text("Live Screen & Vision") },
-                leadingIcon = {
-                    Icon(Icons.Default.ScreenShare, contentDescription = null)
-                },
-                onClick = {
-                    showPlusMenu = false
-                    onPlusClick()
-                }
             )
         }
 
