@@ -221,7 +221,7 @@ class KavyaMicrophoneEngine : Service() {
             Log.i(TAG, "Microphone recognition session started (reusing recognizer when possible)")
         } catch (t: Throwable) {
             Log.e(TAG, "Recognition start failed", t)
-            sessionRunning = false
+            destroyRecognizer()
             scheduleRetry()
         }
     }
@@ -378,16 +378,16 @@ class KavyaMicrophoneEngine : Service() {
             assistantSpeaking = isSpeaking
             if (isSpeaking) {
                 cancelRetry()
-                cancelRecognizer()
+                stopActiveSession()
                 amplitudeFlow.value = 0f
             } else if (desired) {
-                schedule(250L)
+                schedule(300L)
             }
         }
     }
 
     private fun restartRecognition() {
-        cancelRecognizer()
+        stopActiveSession()
         if (desired && !assistantSpeaking) schedule(120L)
     }
 
@@ -395,14 +395,23 @@ class KavyaMicrophoneEngine : Service() {
         handler.post {
             desired = false
             cancelRetry()
-            cancelRecognizer()
+            destroyRecognizer()
             stateFlow.value = EngineState.MIC_OFF
             partialFlow.value = ""
             amplitudeFlow.value = 0f
         }
     }
 
-    private fun cancelRecognizer() {
+    private fun stopActiveSession() {
+        try {
+            recognizer?.cancel()
+        } catch (_: Throwable) {
+        } finally {
+            sessionRunning = false
+        }
+    }
+
+    private fun destroyRecognizer() {
         try {
             recognizer?.cancel()
             recognizer?.destroy()
