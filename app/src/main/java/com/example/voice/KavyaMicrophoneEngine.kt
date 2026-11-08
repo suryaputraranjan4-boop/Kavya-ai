@@ -192,9 +192,10 @@ class KavyaMicrophoneEngine : Service() {
                 return
             }
 
-            recognizer?.destroy()
-            recognizer = createBestRecognizer().also {
-                it.setRecognitionListener(listener)
+            if (recognizer == null) {
+                recognizer = createBestRecognizer().also {
+                    it.setRecognitionListener(listener)
+                }
             }
 
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -217,7 +218,7 @@ class KavyaMicrophoneEngine : Service() {
             recognizer?.startListening(intent)
             sessionRunning = true
             stateFlow.value = if (sleeping) EngineState.MIC_SLEEPING else EngineState.MIC_ACTIVE
-            Log.i(TAG, "Microphone recognition session started")
+            Log.i(TAG, "Microphone recognition session started (reusing recognizer when possible)")
         } catch (t: Throwable) {
             Log.e(TAG, "Recognition start failed", t)
             sessionRunning = false
