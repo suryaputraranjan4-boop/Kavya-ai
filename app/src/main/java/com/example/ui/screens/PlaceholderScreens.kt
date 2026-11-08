@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1056,10 +1058,21 @@ fun MusicScreen(navController: NavController, viewModel: KavyaViewModel? = null)
 @Composable
 fun MemoryScreen(navController: NavController, viewModel: KavyaViewModel) {
     val coroutineScope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     var selectedCategory by remember { mutableStateOf("ALL") }
     var searchQuery by remember { mutableStateOf("") }
     
     val allMemories by viewModel.memoryEngine.getAllMemoriesFlow().collectAsState(initial = emptyList())
+    val obsidianSyncState by viewModel.obsidianVaultManager.syncState.collectAsState()
+
+    val obsidianVaultLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.obsidianVaultManager.connectVault(uri)
+            viewModel.syncMemoriesToObsidian()
+        }
+    }
     
     var showAddDialog by remember { mutableStateOf(false) }
     var editingMemory by remember { mutableStateOf<com.example.data.MemoryEntity?>(null) }
@@ -1231,6 +1244,124 @@ fun MemoryScreen(navController: NavController, viewModel: KavyaViewModel) {
                             border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
                         ) {
                             Text("Fluent Hinglish", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                        }
+                    }
+                }
+            }
+
+            // Obsidian Vault Sync Integration Card
+            val isVaultConnected = viewModel.obsidianVaultManager.isVaultConnected()
+            val vaultName = viewModel.obsidianVaultManager.getVaultName()
+
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(AccentCyan.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Folder, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
+                            }
+                            Column {
+                                Text(
+                                    text = "Obsidian Vault Sync",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = if (isVaultConnected) (vaultName ?: "Connected") else "Markdown Notes Sync",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (isVaultConnected) SuccessGreen.copy(alpha = 0.15f) else SurfaceGlass,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isVaultConnected) SuccessGreen.copy(alpha = 0.4f) else GlassBorder)
+                        ) {
+                            Text(
+                                text = if (isVaultConnected) "Connected" else "SAF Offline",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                                color = if (isVaultConnected) SuccessGreenGlow else TextSecondary
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Store your AI assistant's memories as structured Markdown (.md) notes directly in your authorized Obsidian Vault. Full two-way offline synchronization.",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                        color = TextSecondary
+                    )
+
+                    when (obsidianSyncState) {
+                        is com.example.memory.obsidian.ObsidianVaultManager.SyncState.Syncing -> {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = PrimaryLight)
+                                Text("Synchronizing with Obsidian Vault...", fontSize = 11.sp, color = PrimaryLight)
+                            }
+                        }
+                        is com.example.memory.obsidian.ObsidianVaultManager.SyncState.Success -> {
+                            val msg = (obsidianSyncState as com.example.memory.obsidian.ObsidianVaultManager.SyncState.Success).message
+                            Text("✓ $msg", fontSize = 11.sp, color = SuccessGreenGlow)
+                        }
+                        is com.example.memory.obsidian.ObsidianVaultManager.SyncState.Error -> {
+                            val err = (obsidianSyncState as com.example.memory.obsidian.ObsidianVaultManager.SyncState.Error).error
+                            Text("⚠️ $err", fontSize = 11.sp, color = Error)
+                        }
+                        else -> {}
+                    }
+
+                    if (!isVaultConnected) {
+                        Button(
+                            onClick = { obsidianVaultLauncher.launch(null) },
+                            modifier = Modifier.fillMaxWidth().height(36.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                        ) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp), tint = androidx.compose.ui.graphics.Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Select Obsidian Vault Folder", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = androidx.compose.ui.graphics.Color.White)
+                        }
+                    } else {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { viewModel.syncMemoriesToObsidian() },
+                                modifier = Modifier.weight(1f).height(34.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                            ) {
+                                Text("Sync to Vault", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = androidx.compose.ui.graphics.Color.White)
+                            }
+                            Button(
+                                onClick = { viewModel.importMemoriesFromObsidian() },
+                                modifier = Modifier.weight(1f).height(34.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
+                            ) {
+                                Text("Import Notes", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                            }
+                            OutlinedButton(
+                                onClick = { viewModel.obsidianVaultManager.disconnectVault() },
+                                modifier = Modifier.height(34.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp)
+                            ) {
+                                Text("Disconnect", fontSize = 11.sp, color = TextTertiary)
+                            }
                         }
                     }
                 }
@@ -2004,6 +2135,81 @@ fun ProactiveSettingsScreen(navController: NavController, viewModel: KavyaViewMo
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun HelpSupportScreen(navController: NavController) {
+    val scrollState = androidx.compose.foundation.rememberScrollState()
+
+    SimpleScreen(
+        title = "Help & Support",
+        navController = navController
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp)
+                .verticalScroll(scrollState),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Spacer(modifier = Modifier.height(2.dp))
+
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Kavya AI Assistant • Quick Guide",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = "Kavya is an intelligent, voice-enabled, multimodal Android assistant designed with Apple-inspired White Liquid Glass architecture.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            SettingsSectionHeader("Supported Voice Commands 🗣️")
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("• \"Hey Kavya\" / \"Wake up\": Wakes microphone listening.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("• \"Sleep Kavya\" / \"So jao\": Puts voice assistant to sleep.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("• \"Stop Kavya\" / \"Ruko\": Emergency voice stop.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("• \"Chup raho\": Temporarily silences proactive conversations.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                }
+            }
+
+            SettingsSectionHeader("Chat & Attachments 📎")
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("• Plus (+) Popup: Compact White Liquid Glass floating menu.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("• Camera: Take a live photo and analyze it with AI.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("• PDF Scanner: Scans document images and produces real PDF files.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("• Live Screen: Grants real-time MediaProjection screen awareness.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("• Document Picker: Extracts text from TXT, MD, CSV, JSON and sends to AI.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                }
+            }
+
+            SettingsSectionHeader("Memory & Obsidian Vault 🧠")
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("• Room DB: All learned facts and preferences are persistently stored.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("• Obsidian Sync: Select any Obsidian Vault folder via Storage Access Framework to sync memories as structured Markdown notes.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                }
+            }
+
+            SettingsSectionHeader("System & Version")
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Kavya AI • Version 2.5.0", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                    Text("Engine: White Liquid Glass + Jetpack Compose", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Text("Branch: main (Clean Architecture)", style = MaterialTheme.typography.bodySmall, color = TextTertiary)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
         }
     }
 }

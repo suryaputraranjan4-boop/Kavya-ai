@@ -414,6 +414,14 @@ fun KavyaSideMenu(
                                 navigateTo(navController, drawerState, scope, "debug_dashboard")
                             }
                         )
+                        DrawerItemWhiteGlass(
+                            icon = Icons.Default.Help,
+                            label = "Help & Support",
+                            isSelected = currentRoute == "help_support",
+                            onClick = {
+                                navigateTo(navController, drawerState, scope, "help_support")
+                            }
+                        )
                     }
                 }
             }

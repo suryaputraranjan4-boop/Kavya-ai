@@ -147,6 +147,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     // Universal Agent & Memory Engines
     val memoryEngine = MemoryEngine(application)
+    val obsidianVaultManager = com.example.memory.obsidian.ObsidianVaultManager(application)
     val okfRepository: OkfMemoryRepository get() = memoryEngine.okfRepository
     val okfTools: OkfMemoryTools get() = memoryEngine.okfTools
     val mapsJobManager: MapsScraperJobManager = MapsScraperJobManager.getInstance(application)
@@ -533,6 +534,22 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 title = "New Chat",
                 timestamp = System.currentTimeMillis()
             ))
+        }
+    }
+
+    fun syncMemoriesToObsidian() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val all = memoryDao.getAllMemories()
+            obsidianVaultManager.syncMemoriesToVault(all)
+        }
+    }
+
+    fun importMemoriesFromObsidian() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val imported = obsidianVaultManager.importMemoriesFromVault()
+            for (mem in imported) {
+                memoryDao.insertMemory(mem)
+            }
         }
     }
 

@@ -759,6 +759,20 @@ object AppPreferences {
 
     fun getKavyaState(context: Context): String = getPrefs(context).getString(KEY_KAVYA_STATE, "ACTIVE") ?: "ACTIVE"
     fun setKavyaState(context: Context, state: String) = getPrefs(context).edit().putString(KEY_KAVYA_STATE, state).apply()
+
+    // Obsidian Vault Preferences
+    private const val KEY_OBSIDIAN_VAULT_URI = "key_obsidian_vault_uri"
+    private const val KEY_OBSIDIAN_LAST_SYNC_TS = "key_obsidian_last_sync_ts"
+    private const val KEY_OBSIDIAN_AUTO_SYNC = "key_obsidian_auto_sync"
+
+    fun getObsidianVaultUri(context: Context): String? = getPrefs(context).getString(KEY_OBSIDIAN_VAULT_URI, null)
+    fun setObsidianVaultUri(context: Context, uri: String?) = getPrefs(context).edit().putString(KEY_OBSIDIAN_VAULT_URI, uri).apply()
+
+    fun getObsidianLastSyncTs(context: Context): Long = getPrefs(context).getLong(KEY_OBSIDIAN_LAST_SYNC_TS, 0L)
+    fun setObsidianLastSyncTs(context: Context, ts: Long) = getPrefs(context).edit().putLong(KEY_OBSIDIAN_LAST_SYNC_TS, ts).apply()
+
+    fun isObsidianAutoSyncEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_OBSIDIAN_AUTO_SYNC, true)
+    fun setObsidianAutoSyncEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_OBSIDIAN_AUTO_SYNC, enabled).apply()
 }
 
 /**

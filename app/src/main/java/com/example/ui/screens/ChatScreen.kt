@@ -52,6 +52,12 @@ import com.example.utils.InstalledApp
 import com.example.viewmodel.ChatMessage
 import com.example.viewmodel.KavyaViewModel
 
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalDensity
+import android.provider.OpenableColumns
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
@@ -72,7 +78,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
         if (bitmap != null) {
-            viewModel.sendMessage("Attached photo from Camera (${bitmap.width}x${bitmap.height})")
+            viewModel.sendMessage("[Photo Attachment: ${bitmap.width}x${bitmap.height} px] I have captured this photo with my camera. Please inspect and analyze it.")
         }
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
@@ -103,7 +109,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                     pdfDocument.writeTo(out)
                 }
                 pdfDocument.close()
-                viewModel.sendMessage("Scanned document to PDF: $fileName (${file.length()} bytes)")
+                viewModel.sendMessage("[Scanned PDF Document: $fileName (${file.length()} bytes)] The scanned PDF document is ready and attached.")
                 Toast.makeText(context, "Document scanned: $fileName", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 viewModel.sendMessage("PDF scan failed: ${e.localizedMessage}")
@@ -125,8 +131,21 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            val name = uri.lastPathSegment ?: "image"
-            viewModel.sendMessage("Attached image from Gallery: $name")
+            try {
+                var displayName = "image.jpg"
+                var fileSize = 0L
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
+                        if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
+                    }
+                }
+                viewModel.sendMessage("[Gallery Image Attached: $displayName (${fileSize / 1024} KB)] Please analyze this image from my gallery.")
+            } catch (e: Exception) {
+                viewModel.sendMessage("[Gallery Image Attached: ${uri.lastPathSegment ?: "image"}]")
+            }
         }
     }
 
@@ -135,18 +154,55 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            val name = uri.lastPathSegment ?: "document.pdf"
-            viewModel.sendMessage("Attached PDF File: $name")
+            try {
+                var displayName = "document.pdf"
+                var fileSize = 0L
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
+                        if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
+                    }
+                }
+                viewModel.sendMessage("[PDF Document Attached: $displayName (${fileSize / 1024} KB)] Please inspect and extract key insights from this PDF.")
+            } catch (e: Exception) {
+                viewModel.sendMessage("[PDF Document Attached: ${uri.lastPathSegment ?: "document.pdf"}]")
+            }
         }
     }
 
-    // Option 6: Documents Picker
+    // Option 6: Documents Picker with real text extraction
     val docFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            val name = uri.lastPathSegment ?: "document"
-            viewModel.sendMessage("Attached Document: $name")
+            try {
+                var displayName = "document"
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
+                    }
+                }
+                val mimeType = context.contentResolver.getType(uri) ?: ""
+                val isText = mimeType.startsWith("text/") || 
+                        displayName.endsWith(".txt", true) || 
+                        displayName.endsWith(".md", true) || 
+                        displayName.endsWith(".csv", true) || 
+                        displayName.endsWith(".json", true) || 
+                        displayName.endsWith(".xml", true)
+
+                if (isText) {
+                    val rawText = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                    val snippet = if (rawText.length > 2500) rawText.take(2500) + "\n...[truncated for length]" else rawText
+                    viewModel.sendMessage("[Document Attached: $displayName]\n\nDocument Contents:\n$snippet\n\nPlease review and explain this document.")
+                } else {
+                    viewModel.sendMessage("[Document Attached: $displayName ($mimeType)] Please review this document.")
+                }
+            } catch (e: Exception) {
+                viewModel.sendMessage("[Document Attached: ${uri.lastPathSegment ?: "document"}]")
+            }
         }
     }
 
@@ -235,182 +291,34 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
             )
         },
         bottomBar = {
-            Column(
+            ChatBar(
+                onSend = { viewModel.sendMessage(it) },
+                onPlusClick = { showAttachmentPopup = !showAttachmentPopup },
+                onMicClick = {
+                    if (isMicListening) {
+                        viewModel.stopListening()
+                    } else {
+                        viewModel.startListening()
+                    }
+                },
+                isMicListening = isMicListening,
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
                     .navigationBarsPadding()
                     .imePadding()
-            ) {
-                // White Liquid Glass Compact Attachment Popup
-                AnimatedVisibility(
-                    visible = showAttachmentPopup,
-                    enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(expandFrom = Alignment.Bottom),
-                    exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically(shrinkTowards = Alignment.Bottom)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.BottomStart
-                    ) {
-                        Surface(
-                            modifier = Modifier
-                                .widthIn(max = 310.dp)
-                                .shadow(
-                                    elevation = 16.dp,
-                                    shape = RoundedCornerShape(22.dp),
-                                    spotColor = Color(0x38000000),
-                                    ambientColor = Color(0x1A000000)
-                                )
-                                .border(
-                                    border = BorderStroke(
-                                        1.2.dp,
-                                        Brush.linearGradient(
-                                            listOf(
-                                                Color.White,
-                                                Color(0xCCFFFFFF),
-                                                Color(0x80FFFFFF),
-                                                Color.White
-                                            )
-                                        )
-                                    ),
-                                    shape = RoundedCornerShape(22.dp)
-                                ),
-                            color = Color(0xF9FFFFFF),
-                            shape = RoundedCornerShape(22.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = "ATTACH & SHARE",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            letterSpacing = 1.2.sp,
-                                            color = Color(0xFF64748B)
-                                        ),
-                                        modifier = Modifier.padding(start = 4.dp)
-                                    )
-                                    IconButton(
-                                        onClick = { showAttachmentPopup = false },
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Close attachments",
-                                            tint = Color(0xFF64748B),
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(6.dp))
-
-                                // Row 1: Camera, PDF Scanner, Live Screen
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceEvenly
-                                ) {
-                                    AttachmentOptionItem(
-                                        icon = Icons.Default.PhotoCamera,
-                                        label = "Camera",
-                                        onClick = {
-                                            showAttachmentPopup = false
-                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                                                cameraLauncher.launch(null)
-                                            } else {
-                                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                            }
-                                        }
-                                    )
-                                    AttachmentOptionItem(
-                                        icon = Icons.Default.DocumentScanner,
-                                        label = "PDF Scanner",
-                                        onClick = {
-                                            showAttachmentPopup = false
-                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                                                pdfScanLauncher.launch(null)
-                                            } else {
-                                                pdfScanPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                            }
-                                        }
-                                    )
-                                    AttachmentOptionItem(
-                                        icon = Icons.Default.ScreenShare,
-                                        label = "Live Screen",
-                                        onClick = {
-                                            showAttachmentPopup = false
-                                            showScreenShareSheet = true
-                                        }
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                // Row 2: Gallery, PDF Files, Documents
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceEvenly
-                                ) {
-                                    AttachmentOptionItem(
-                                        icon = Icons.Default.PhotoLibrary,
-                                        label = "Gallery",
-                                        onClick = {
-                                            showAttachmentPopup = false
-                                            galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                        }
-                                    )
-                                    AttachmentOptionItem(
-                                        icon = Icons.Default.PictureAsPdf,
-                                        label = "PDF Files",
-                                        onClick = {
-                                            showAttachmentPopup = false
-                                            pdfFileLauncher.launch(arrayOf("application/pdf"))
-                                        }
-                                    )
-                                    AttachmentOptionItem(
-                                        icon = Icons.Default.FolderOpen,
-                                        label = "Documents",
-                                        onClick = {
-                                            showAttachmentPopup = false
-                                            docFileLauncher.launch(arrayOf("*/*"))
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                ChatBar(
-                    onSend = { viewModel.sendMessage(it) },
-                    onPlusClick = { showAttachmentPopup = !showAttachmentPopup },
-                    onMicClick = {
-                        if (isMicListening) {
-                            viewModel.stopListening()
-                        } else {
-                            viewModel.startListening()
-                        }
-                    },
-                    isMicListening = isMicListening,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                )
-            }
+            )
         }
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Screen Share Active Ribbon Banner
-            AnimatedVisibility(visible = isScreenSharing) {
+            Column(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                // Screen Share Active Ribbon Banner
+                AnimatedVisibility(visible = isScreenSharing) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -467,6 +375,157 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                 item { Spacer(modifier = Modifier.height(16.dp)) }
             }
         }
+
+        // Floating White Liquid Glass Popup anchored near Plus button
+        if (showAttachmentPopup) {
+            Popup(
+                alignment = Alignment.BottomStart,
+                offset = IntOffset(
+                    x = with(LocalDensity.current) { 16.dp.roundToPx() },
+                    y = with(LocalDensity.current) { (-6).dp.roundToPx() }
+                ),
+                onDismissRequest = { showAttachmentPopup = false },
+                properties = PopupProperties(
+                    focusable = true,
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                )
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .width(285.dp)
+                        .shadow(
+                            elevation = 18.dp,
+                            shape = RoundedCornerShape(22.dp),
+                            spotColor = Color(0x38000000),
+                            ambientColor = Color(0x1A000000)
+                        )
+                        .border(
+                            border = BorderStroke(
+                                1.2.dp,
+                                Brush.linearGradient(
+                                    listOf(
+                                        Color.White,
+                                        Color(0xCCFFFFFF),
+                                        Color(0x80FFFFFF),
+                                        Color.White
+                                    )
+                                )
+                            ),
+                            shape = RoundedCornerShape(22.dp)
+                        ),
+                    color = Color(0xF9FFFFFF),
+                    shape = RoundedCornerShape(22.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "ATTACH & SHARE",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 1.2.sp,
+                                    color = Color(0xFF64748B)
+                                ),
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                            IconButton(
+                                onClick = { showAttachmentPopup = false },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Close attachments",
+                                    tint = Color(0xFF64748B),
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        // Row 1: Camera, PDF Scanner, Live Screen
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            AttachmentOptionItem(
+                                icon = Icons.Default.PhotoCamera,
+                                label = "Camera",
+                                onClick = {
+                                    showAttachmentPopup = false
+                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                        cameraLauncher.launch(null)
+                                    } else {
+                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                }
+                            )
+                            AttachmentOptionItem(
+                                icon = Icons.Default.DocumentScanner,
+                                label = "PDF Scanner",
+                                onClick = {
+                                    showAttachmentPopup = false
+                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                        pdfScanLauncher.launch(null)
+                                    } else {
+                                        pdfScanPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                }
+                            )
+                            AttachmentOptionItem(
+                                icon = Icons.Default.ScreenShare,
+                                label = "Live Screen",
+                                onClick = {
+                                    showAttachmentPopup = false
+                                    showScreenShareSheet = true
+                                }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Row 2: Gallery, PDF Files, Documents
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            AttachmentOptionItem(
+                                icon = Icons.Default.PhotoLibrary,
+                                label = "Gallery",
+                                onClick = {
+                                    showAttachmentPopup = false
+                                    galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                }
+                            )
+                            AttachmentOptionItem(
+                                icon = Icons.Default.PictureAsPdf,
+                                label = "PDF Files",
+                                onClick = {
+                                    showAttachmentPopup = false
+                                    pdfFileLauncher.launch(arrayOf("application/pdf"))
+                                }
+                            )
+                            AttachmentOptionItem(
+                                icon = Icons.Default.FolderOpen,
+                                label = "Documents",
+                                onClick = {
+                                    showAttachmentPopup = false
+                                    docFileLauncher.launch(arrayOf("*/*"))
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 
         if (showScreenShareSheet) {
             ScreenShareSheet(

@@ -52,10 +52,10 @@ fun AppNavGraph(
         composable("privacy") { PrivacyScreen(navController, viewModel) }
         composable("automation_debug") { AutomationDebugPanelScreen(navController, viewModel) }
         composable("advanced") { AdvancedScreen(navController) }
-        composable("ai_provider_settings") { AiApiHubScreen(navController) }
         composable("ai_api_hub") { AiApiHubScreen(navController) }
         composable("proactive_settings") { ProactiveSettingsScreen(navController, viewModel) }
         composable("debug_dashboard") { DebugDashboardScreen() }
         composable("visual_action_control") { VisualActionControlScreen(navController, viewModel) }
+        composable("help_support") { HelpSupportScreen(navController) }
     }
 }
