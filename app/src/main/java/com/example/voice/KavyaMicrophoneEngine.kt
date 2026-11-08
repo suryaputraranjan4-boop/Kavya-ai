@@ -161,8 +161,13 @@ class KavyaMicrophoneEngine : Service() {
     private fun startEngine() {
         handler.post {
             if (!hasAudioPermission()) {
+                desired = false
+                cancelRetry()
                 stateFlow.value = EngineState.MIC_ERROR
-                Log.e(TAG, "RECORD_AUDIO permission is missing")
+                partialFlow.value = ""
+                amplitudeFlow.value = 0f
+                Log.e(TAG, "RECORD_AUDIO permission is missing; stopping microphone service")
+                stopSelf()
                 return@post
             }
 
@@ -203,8 +208,17 @@ class KavyaMicrophoneEngine : Service() {
                     RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                 )
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
+                val configuredLanguage = AppPreferences.getLanguage(this@KavyaMicrophoneEngine)
+                    .trim()
+                    .lowercase(Locale.ROOT)
+                val recognitionLocale = when (configuredLanguage) {
+                    "hi", "hi-in", "hindi" -> "hi-IN"
+                    "en", "en-in", "english" -> "en-IN"
+                    "auto", "system", "" -> Locale.getDefault().toLanguageTag()
+                    else -> configuredLanguage
+                }
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, recognitionLocale)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, recognitionLocale)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
