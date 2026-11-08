@@ -91,6 +91,8 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val globalState by com.example.state.KavyaStateManager.state.collectAsState()
     var showScreenShareSheet by remember { mutableStateOf(false) }
     var showAttachmentPopup by remember { mutableStateOf(false) }
+    var scannedPages by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
+    var showScanReview by remember { mutableStateOf(false) }
     val isScreenSharing by viewModel.isScreenSharing.collectAsState()
     val latestCaption by viewModel.latestKavyaCaption.collectAsState()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
@@ -123,25 +125,8 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
         if (bitmap != null) {
-            try {
-                val pdfDocument = PdfDocument()
-                val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, 1).create()
-                val page = pdfDocument.startPage(pageInfo)
-                page.canvas.drawBitmap(bitmap, 0f, 0f, null)
-                pdfDocument.finishPage(page)
-
-                val fileName = "scanned_doc_${System.currentTimeMillis()}.pdf"
-                val file = File(context.cacheDir, fileName)
-                FileOutputStream(file).use { out ->
-                    pdfDocument.writeTo(out)
-                }
-                pdfDocument.close()
-                viewModel.sendMessage("[Scanned PDF Document: $fileName (${file.length()} bytes)] The scanned PDF document is ready and attached.")
-                Toast.makeText(context, "Document scanned: $fileName", Toast.LENGTH_SHORT).show()
-                navController.navigate("chat")
-            } catch (e: Exception) {
-                viewModel.sendMessage("PDF scan failed: ${e.localizedMessage}")
-            }
+            scannedPages = scannedPages + bitmap
+            showScanReview = true
         }
     }
     val pdfScanPermissionLauncher = rememberLauncherForActivityResult(
@@ -779,6 +764,53 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
             }
         }
+    }
+
+    if (showScanReview) {
+        AlertDialog(
+            onDismissRequest = { showScanReview = false },
+            title = { Text("PDF Scanner • ${scannedPages.size} page(s)") },
+            text = { Text("Page captured. Add another page or finish to create and analyze a multi-page PDF.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showScanReview = false
+                    pdfScanLauncher.launch(null)
+                }) { Text("Add page") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        scannedPages.forEach { it.recycle() }
+                        scannedPages = emptyList()
+                        showScanReview = false
+                    }) { Text("Discard") }
+                    TextButton(onClick = {
+                        val pages = scannedPages.toList()
+                        showScanReview = false
+                        scannedPages = emptyList()
+                        try {
+                            val document = PdfDocument()
+                            pages.forEachIndexed { index, bitmap ->
+                                val info = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, index + 1).create()
+                                val page = document.startPage(info)
+                                page.canvas.drawBitmap(bitmap, 0f, 0f, null)
+                                document.finishPage(page)
+                            }
+                            val file = File(context.cacheDir, "scanned_doc_${System.currentTimeMillis()}.pdf")
+                            FileOutputStream(file).use { document.writeTo(it) }
+                            document.close()
+                            pages.forEach { it.recycle() }
+                            viewModel.analyzePdf(file, file.name)
+                            Toast.makeText(context, "Created ${pages.size}-page PDF", Toast.LENGTH_SHORT).show()
+                            navController.navigate("chat")
+                        } catch (e: Exception) {
+                            pages.forEach { if (!it.isRecycled) it.recycle() }
+                            Toast.makeText(context, "PDF scan failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                        }
+                    }) { Text("Finish") }
+                }
+            }
+        )
     }
 
     if (showScreenShareSheet) {
