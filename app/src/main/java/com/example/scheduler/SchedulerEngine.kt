@@ -27,6 +27,8 @@ class SchedulerEngine(
         private const val TAG = "KavyaSchedulerEngine"
         const val ACTION_TRIGGER_SCHEDULE = "com.example.action.TRIGGER_SCHEDULED_TASK"
         const val EXTRA_SCHEDULE_ID = "extra_schedule_id"
+        const val ACTION_ALARM_SNOOZE = "com.example.action.ALARM_SNOOZE"
+        const val ACTION_ALARM_DISMISS = "com.example.action.ALARM_DISMISS"
     }
 
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
@@ -121,11 +123,15 @@ class SchedulerEngine(
         return calendar.timeInMillis
     }
 
+    fun scheduleExactAlarm(schedule: ScheduledTaskEntity) {
+        scheduleSystemAlarm(schedule)
+    }
+
     private fun scheduleSystemAlarm(schedule: ScheduledTaskEntity) {
         if (alarmManager == null || schedule.nextRunTimestamp <= System.currentTimeMillis()) return
 
-        val intent = Intent(ACTION_TRIGGER_SCHEDULE).apply {
-            setPackage(context.packageName)
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = ACTION_TRIGGER_SCHEDULE
             putExtra(EXTRA_SCHEDULE_ID, schedule.id)
         }
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -141,29 +147,48 @@ class SchedulerEngine(
         )
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    schedule.nextRunTimestamp,
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setExact(
-                    AlarmManager.RTC_WAKEUP,
-                    schedule.nextRunTimestamp,
-                    pendingIntent
-                )
+            val showIntent = Intent(context, com.example.MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Exact alarm permission not granted, falling back to inexact alarm: ${e.message}")
-            alarmManager.set(AlarmManager.RTC_WAKEUP, schedule.nextRunTimestamp, pendingIntent)
+            val showPendingIntent = PendingIntent.getActivity(
+                context,
+                schedule.id.hashCode(),
+                showIntent,
+                flags
+            )
+            val alarmClockInfo = AlarmManager.AlarmClockInfo(
+                schedule.nextRunTimestamp,
+                showPendingIntent
+            )
+            alarmManager.setAlarmClock(alarmClockInfo, pendingIntent)
+            Log.i(TAG, "Scheduled alarm clock for ${schedule.title} at ${schedule.nextRunTimestamp}")
+        } catch (e: Exception) {
+            Log.w(TAG, "setAlarmClock not permitted, falling back to setExactAndAllowWhileIdle: ${e.message}")
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        schedule.nextRunTimestamp,
+                        pendingIntent
+                    )
+                } else {
+                    alarmManager.setExact(
+                        AlarmManager.RTC_WAKEUP,
+                        schedule.nextRunTimestamp,
+                        pendingIntent
+                    )
+                }
+            } catch (secEx: SecurityException) {
+                Log.w(TAG, "Exact alarm permission not granted, falling back to inexact alarm: ${secEx.message}")
+                alarmManager.set(AlarmManager.RTC_WAKEUP, schedule.nextRunTimestamp, pendingIntent)
+            }
         }
     }
 
     private fun cancelSystemAlarm(scheduleId: String) {
         if (alarmManager == null) return
-        val intent = Intent(ACTION_TRIGGER_SCHEDULE).apply {
-            setPackage(context.packageName)
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = ACTION_TRIGGER_SCHEDULE
             putExtra(EXTRA_SCHEDULE_ID, scheduleId)
         }
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

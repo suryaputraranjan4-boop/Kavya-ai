@@ -11,7 +11,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.util.UUID
 
+import org.robolectric.annotation.Config
+
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33])
 class FileAgentTest {
 
     @Test

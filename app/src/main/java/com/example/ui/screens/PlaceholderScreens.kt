@@ -8,11 +8,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -814,6 +816,8 @@ fun FavouritesScreen(navController: NavController, viewModel: KavyaViewModel) {
 
 @Composable
 fun RoutinesScreen(navController: NavController, viewModel: KavyaViewModel? = null) {
+    val coroutineScope = rememberCoroutineScope()
+    val schedules = viewModel?.schedulerEngine?.allSchedulesFlow?.collectAsStateWithLifecycle(initialValue = emptyList())?.value ?: emptyList()
     SimpleScreen("Quick Automations", navController) {
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
@@ -884,6 +888,122 @@ fun RoutinesScreen(navController: NavController, viewModel: KavyaViewModel? = nu
                             Text("Launch device camera", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = TextTertiary)
                         }
                         Icon(Icons.Default.PlayArrow, contentDescription = null, tint = PrimaryLight)
+                    }
+                }
+            }
+
+            // --- Section: Offline Alarms & Reminders ---
+            item {
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    "Offline Alarms & Reminders ⏰",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = TextPrimary
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    "Backed by native AlarmManager & Room. Works 100% offline across reboots.",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    color = TextSecondary
+                )
+            }
+
+            if (schedules.isEmpty()) {
+                item {
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        backgroundColor = SurfaceGlass.copy(alpha = 0.5f)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(Icons.Default.Alarm, contentDescription = null, tint = TextTertiary, modifier = Modifier.size(28.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text("No active alarms or reminders", style = MaterialTheme.typography.bodySmall, color = TextTertiary)
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            viewModel?.schedulerEngine?.createSchedule("Morning Alarm", "Wake up call", "DAILY", 7, 0)
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Primary.copy(alpha = 0.8f))
+                                ) {
+                                    Text("+ 7:00 AM Daily", style = MaterialTheme.typography.labelSmall)
+                                }
+                                Button(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            viewModel?.schedulerEngine?.createSchedule("Reminder", "Check tasks", "ONE_TIME", 9, 30)
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan.copy(alpha = 0.8f))
+                                ) {
+                                    Text("+ 9:30 AM Once", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                items(items = schedules, key = { it.id }) { schedule ->
+                    val timeStr = String.format(java.util.Locale.ROOT, "%02d:%02d", schedule.hour, schedule.minute)
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        backgroundColor = SurfaceGlass.copy(alpha = if (schedule.isActive) 0.85f else 0.45f)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier.size(40.dp).clip(CircleShape).background(
+                                    if (schedule.isActive) Primary.copy(alpha = 0.16f) else TextTertiary.copy(alpha = 0.1f)
+                                ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Alarm,
+                                    contentDescription = null,
+                                    tint = if (schedule.isActive) Primary else TextTertiary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    timeStr,
+                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = if (schedule.isActive) TextPrimary else TextTertiary
+                                )
+                                Text(
+                                    "${schedule.scheduleType} • ${schedule.title}",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                    color = if (schedule.isActive) TextSecondary else TextTertiary
+                                )
+                            }
+                            Switch(
+                                checked = schedule.isActive,
+                                onCheckedChange = { active ->
+                                    coroutineScope.launch {
+                                        viewModel?.schedulerEngine?.toggleActive(schedule.id, active)
+                                    }
+                                }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            IconButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        viewModel?.schedulerEngine?.deleteSchedule(schedule.id)
+                                    }
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete alarm", tint = Error.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+                            }
+                        }
                     }
                 }
             }

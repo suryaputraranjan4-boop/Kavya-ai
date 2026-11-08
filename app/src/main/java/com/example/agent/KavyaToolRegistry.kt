@@ -69,7 +69,9 @@ object KavyaToolRegistry {
         ToolDefinition("memory_show", "Retrieves a specific memory item by ID or key from OKF Memory.", mapOf("id" to "Memory ID or title key")),
         ToolDefinition("memory_update", "Updates an existing memory item in OKF Memory.", mapOf("id" to "Memory ID or key", "content" to "New content")),
         ToolDefinition("memory_delete", "Archives or deletes a memory item from OKF Memory.", mapOf("id" to "Memory ID or key")),
-        ToolDefinition("memory_list", "Lists stored knowledge units in OKF Memory.", mapOf("category" to "Optional category filter", "limit" to "Maximum count"))
+        ToolDefinition("memory_list", "Lists stored knowledge units in OKF Memory.", mapOf("category" to "Optional category filter", "limit" to "Maximum count")),
+        ToolDefinition("set_alarm", "Sets an offline alarm or reminder for a specific time.", mapOf("time" to "Time string e.g. 07:30 or 7:00 AM", "title" to "Optional title or label for the alarm")),
+        ToolDefinition("list_alarms", "Lists all scheduled offline alarms and reminders.", emptyMap())
     )
 
     /**
@@ -302,6 +304,40 @@ object KavyaToolRegistry {
                     val tools = OkfMemoryTools(OkfMemoryRepository.getInstance(context))
                     val result = tools.memoryList(category, status, limit)
                     ToolExecutionResult(name, true, result)
+                }
+
+                "set_alarm" -> {
+                    val rawTime = parameters["time"] ?: parameters["at"] ?: ""
+                    val title = parameters["title"] ?: parameters["label"] ?: "Alarm"
+                    val timeRegex = Regex("(?i)(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?")
+                    val match = timeRegex.find(rawTime)
+                    if (match == null) {
+                        ToolExecutionResult(name, false, "", "Invalid time format: '$rawTime'. Please provide e.g. '07:30' or '7:00 AM'.")
+                    } else {
+                        val h = match.groupValues[1].toIntOrNull() ?: 8
+                        val m = match.groupValues[2].toIntOrNull() ?: 0
+                        val ampm = match.groupValues[3].lowercase(java.util.Locale.ROOT)
+                        val hour = if (ampm == "pm" && h < 12) h + 12 else if (ampm == "am" && h == 12) 0 else h
+                        val scheduler = com.example.scheduler.SchedulerEngine(context)
+                        val schedule = scheduler.createSchedule(title, title, "ONE_TIME", hour, m)
+                        val timeStr = String.format(java.util.Locale.ROOT, "%02d:%02d", hour, m)
+                        ToolExecutionResult(name, true, "Alarm scheduled for $timeStr: \"$title\" (ID: ${schedule.id})")
+                    }
+                }
+
+                "list_alarms" -> {
+                    val db = com.example.data.AppDatabase.getDatabase(context)
+                    val active = db.taskDao().getActiveScheduledTasks()
+                    if (active.isEmpty()) {
+                        ToolExecutionResult(name, true, "No active alarms or scheduled reminders.")
+                    } else {
+                        val sb = StringBuilder("Active Alarms & Reminders (${active.size}):\n")
+                        active.forEach { item ->
+                            val timeStr = String.format(java.util.Locale.ROOT, "%02d:%02d", item.hour, item.minute)
+                            sb.append("• $timeStr [${item.scheduleType}]: ${item.title}\n")
+                        }
+                        ToolExecutionResult(name, true, sb.toString().trim())
+                    }
                 }
 
                 else -> ToolExecutionResult(name, false, "", "Unknown tool: $name")

@@ -278,19 +278,15 @@ class SchedulingSkill : KavyaSkill {
             minute = m
         }
 
-        val type = if (isDaily) "DAILY" else if (isTomorrow) "ONE_TIME" else "ONE_TIME"
-        val schedule = ScheduledTaskEntity(
-            id = UUID.randomUUID().toString(),
+        val type = if (isDaily) "DAILY" else "ONE_TIME"
+        val schedulerEngine = com.example.scheduler.SchedulerEngine(context)
+        val schedule = schedulerEngine.createSchedule(
             title = prompt.take(30),
             promptOrAction = prompt,
             scheduleType = type,
             hour = hour,
-            minute = minute,
-            isActive = true
+            minute = minute
         )
-
-        val db = AppDatabase.getDatabase(context)
-        db.taskDao().insertScheduledTask(schedule)
 
         val timeStr = String.format(java.util.Locale.ROOT, "%02d:%02d", hour, minute)
         val confirmation = if (isDaily) {
