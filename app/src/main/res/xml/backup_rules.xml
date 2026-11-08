@@ -2,5 +2,6 @@
 <full-backup-content>
     <exclude domain="sharedpref" path="kavya_secure_prefs.xml" />
     <exclude domain="sharedpref" path="kavya_encrypted_prefs.xml" />
+    <exclude domain="sharedpref" path="kavya_encrypted_vault.xml" />
     <exclude domain="database" path="kavya_database" />
 </full-backup-content>
