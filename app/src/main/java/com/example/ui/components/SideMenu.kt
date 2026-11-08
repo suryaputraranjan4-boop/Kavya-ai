@@ -67,8 +67,8 @@ private object WhiteLiquidGlassTokens {
     val TextPrimary = Color(0xFFFFFFFF)
     val TextSecondary = Color(0xF2FFFFFF)
     val TextMuted = Color(0xCCFFFFFF)
-    val IconColor = Color(0xFF1E293B)        // Slate 800
-    val IconActive = Color(0xFF020617)       // Slate 950
+    val IconColor = Color(0xF2FFFFFF)
+    val IconActive = Color(0xFFFFFFFF)
     
     // Status Indicator
     val StatusOnline = Color(0xFF10B981)     // Crisp Emerald Green
