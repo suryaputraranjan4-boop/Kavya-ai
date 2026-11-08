@@ -232,8 +232,10 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     val rawText = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
                         val buffer = CharArray(20000)
                         val output = StringBuilder()
-                        var count: Int
-                        while (output.length < 100000 && reader.read(buffer, 0, minOf(buffer.size, 100000 - output.length).coerceAtLeast(1)).also { count = it } > 0) {
+                        while (output.length < 100000) {
+                            val remaining = 100000 - output.length
+                            val count = reader.read(buffer, 0, minOf(buffer.size, remaining))
+                            if (count <= 0) break
                             output.append(buffer, 0, count)
                         }
                         output.toString()
