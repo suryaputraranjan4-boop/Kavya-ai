@@ -257,7 +257,7 @@ class OpenRouterProvider : AIProvider {
                 response.close()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed fetching real OpenRouter models, using verified catalogue: ${e.message}")
+            Log.w(TAG, "Failed fetching OpenRouter models; using verified catalogue (${e.javaClass.simpleName}).")
         }
         return@withContext cachedModels.toList()
     }

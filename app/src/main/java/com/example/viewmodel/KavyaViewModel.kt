@@ -240,7 +240,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     sendMessage(dueTask.promptOrAction)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Error executing due schedules: ${e.message}")
+                Log.w(TAG, "Error executing due schedules (${e.javaClass.simpleName}).")
             }
         }
     }
@@ -397,7 +397,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             val clean = response.replace("<ACTION:[^>]+>".toRegex(), "").trim()
             if (clean.isNotBlank()) clean else null
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to generate dynamic proactive speech: ${e.message}")
+            Log.w(TAG, "Failed to generate dynamic proactive speech (${e.javaClass.simpleName}).")
             null
         }
     }
@@ -1454,7 +1454,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Streaming chat exception: ${e.message}")
+                        Log.w(TAG, "Streaming chat failed (${e.javaClass.simpleName}).")
                     }
 
                     // Flush any remaining partial sentence in sentenceBuffer
@@ -1477,7 +1477,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                 isProactiveMode = false
                             )
                         } catch (e: Exception) {
-                            Log.w(TAG, "Non-streaming chat fallback exception: ${e.message}")
+                            Log.w(TAG, "Non-streaming chat fallback failed (${e.javaClass.simpleName}).")
                         }
                     }
 
@@ -1720,7 +1720,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 
             } catch (e: Exception) {
                 val safeError = "अभी connection में थोड़ी problem आ रही है। कृपया थोड़ी देर में फिर try करें।"
-                Log.w(TAG, "Agent turn failed: ${e.message}", e)
+                Log.w(TAG, "Agent turn failed (${e.javaClass.simpleName}).")
                 _messages.value = _messages.value.map {
                     if (it.id == loadingMsgId) it.copy(text = safeError, isLoading = false, isError = true) else it
                 }

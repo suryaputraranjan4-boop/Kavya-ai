@@ -30,7 +30,7 @@ class KavyaAccessibilityService : AccessibilityService() {
         return try {
             rootInActiveWindow
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to query rootInActiveWindow: ${e.message}")
+            Log.w(TAG, "Failed to query the active accessibility window (${e.javaClass.simpleName}).")
             null
         }
     }

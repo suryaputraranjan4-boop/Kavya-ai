@@ -221,7 +221,7 @@ class HuggingFaceProvider : AIProvider {
                 response.close()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Hugging Face model discovery failed, using verified cache: ${e.message}")
+            Log.w(TAG, "Hugging Face model discovery failed; using verified cache (${e.javaClass.simpleName}).")
         }
         return@withContext cachedDiscoveredModels.toList()
     }
@@ -415,7 +415,7 @@ class HuggingFaceProvider : AIProvider {
                     list.add(HfClassificationItem(label, score))
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Classification parse error: ${e.message}")
+                Log.w(TAG, "Classification response parsing failed (${e.javaClass.simpleName}).")
             }
         }
         return@withContext list
@@ -450,7 +450,7 @@ class HuggingFaceProvider : AIProvider {
                     list.add(HfDetectedObject(label, score, box))
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Object detection parse error: ${e.message}")
+                Log.w(TAG, "Object detection response parsing failed (${e.javaClass.simpleName}).")
             }
         }
         return@withContext list
@@ -495,7 +495,7 @@ class HuggingFaceProvider : AIProvider {
                     return@withContext floats
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Embeddings parse error: ${e.message}")
+                Log.w(TAG, "Embeddings response parsing failed (${e.javaClass.simpleName}).")
             }
         }
         return@withContext FloatArray(0)

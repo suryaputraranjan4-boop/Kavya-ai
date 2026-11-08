@@ -400,7 +400,7 @@ class CommandRouter(private val context: Context) {
                     return CommandExecutionResult("Main YouTube open kar rahi hoon aur '$query' search kar rahi hoon...", true)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Direct YouTube intent failed, falling back to browser: ${e.message}")
+                Log.w(TAG, "Direct YouTube intent failed; falling back to browser.")
                 try {
                     val browserYt = Intent(Intent.ACTION_VIEW, ytUri).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -412,7 +412,7 @@ class CommandRouter(private val context: Context) {
                     }
                     return CommandExecutionResult("Main YouTube open kar rahi hoon aur '$query' search kar rahi hoon...", true)
                 } catch (e2: Exception) {
-                    Log.e(TAG, "YouTube browser fallback failed: ${e2.message}")
+                    Log.e(TAG, "YouTube browser fallback failed.")
                 }
             }
         }
@@ -436,7 +436,7 @@ class CommandRouter(private val context: Context) {
                     return CommandExecutionResult("Main Play Store open kar rahi hoon aur '$query' search kar rahi hoon...", true)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Play Store search failed: ${e.message}")
+                Log.w(TAG, "Play Store search failed.")
             }
         }
 
@@ -458,7 +458,7 @@ class CommandRouter(private val context: Context) {
                     return CommandExecutionResult("Main Google Maps open kar rahi hoon aur '$query' search kar rahi hoon...", true)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Maps search failed: ${e.message}")
+                Log.w(TAG, "Maps search failed.")
             }
         }
 
@@ -484,7 +484,7 @@ class CommandRouter(private val context: Context) {
                     return CommandExecutionResult("Main Music open kar rahi hoon aur '$query' play kar rahi hoon...", true)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Media intent failed: ${e.message}")
+                Log.w(TAG, "Media intent failed.")
             }
         }
 
@@ -779,7 +779,7 @@ class CommandRouter(private val context: Context) {
                     verification = "PASS"
                 )
                 lastDiagnostic = diag
-                Log.d(TAG, "Successfully launched and verified ${app.appName} ($fgAfter)")
+                Log.d(TAG, "App launch and foreground verification succeeded.")
                 val isHindiOrHinglish = requestedName.any { it in '\u0900'..'\u097F' } ||
                     requestedName.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("jao") }
                 val successMsg = if (isHindiOrHinglish) "${app.appName} खुल गया।" else "Opened ${app.appName}."
@@ -796,7 +796,7 @@ class CommandRouter(private val context: Context) {
                     verification = "FAIL - Foreground verification failed (active: $fgAfter, expected: ${app.packageName})"
                 )
                 lastDiagnostic = diag
-                Log.e(TAG, "Foreground verification mismatch: expected ${app.packageName}, got $fgAfter")
+                Log.e(TAG, "Foreground verification mismatch.")
                 val isHindiOrHinglish = requestedName.any { it in '\u0900'..'\u097F' } ||
                     requestedName.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("jao") }
                 val failMsg = if (isHindiOrHinglish) "${app.appName} open नहीं हुआ।" else "Failed to open ${app.appName}."
@@ -889,7 +889,7 @@ class CommandRouter(private val context: Context) {
                 return CommandExecutionResult("Main Google par '$cleanQuery' search kar rahi hoon...", true)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "ACTION_WEB_SEARCH failed: ${e.message}")
+            Log.w(TAG, "ACTION_WEB_SEARCH failed.")
         }
 
         // 2. Try Chrome directly if installed
@@ -904,7 +904,7 @@ class CommandRouter(private val context: Context) {
                 return CommandExecutionResult("Main Google par '$cleanQuery' search kar rahi hoon...", true)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Chrome direct launch failed: ${e.message}")
+            Log.w(TAG, "Chrome direct launch failed.")
         }
 
         // 3. Fallback to standard web browser
@@ -915,7 +915,7 @@ class CommandRouter(private val context: Context) {
             context.startActivity(browserIntent)
             CommandExecutionResult("Main Google par '$cleanQuery' search kar rahi hoon...", true)
         } catch (e: Exception) {
-            Log.e(TAG, "Search fallback failed: ${e.message}")
+            Log.e(TAG, "Search fallback failed.")
             CommandExecutionResult("Could not launch browser: ${e.message}", false)
         }
     }
