@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
 
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfDocument
 import android.provider.OpenableColumns
 import android.widget.Toast
@@ -103,7 +104,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
         if (bitmap != null) {
-            viewModel.sendMessage("[Photo Attachment: ${bitmap.width}x${bitmap.height} px] I have captured this photo with my camera. Please inspect and analyze it.")
+            viewModel.analyzeImage(bitmap, "Camera photo")
             navController.navigate("chat")
         }
     }
@@ -169,7 +170,20 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
                     }
                 }
-                viewModel.sendMessage("[Gallery Image Attached: $displayName (${fileSize / 1024} KB)] Please analyze this image from my gallery.")
+                val decoded = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                    ?: throw IllegalArgumentException("Unable to read the selected image.")
+                val maxDimension = 1600
+                val largest = maxOf(decoded.width, decoded.height)
+                val analysisBitmap = if (largest > maxDimension) {
+                    val scale = maxDimension.toFloat() / largest.toFloat()
+                    Bitmap.createScaledBitmap(
+                        decoded,
+                        (decoded.width * scale).toInt().coerceAtLeast(1),
+                        (decoded.height * scale).toInt().coerceAtLeast(1),
+                        true
+                    ).also { if (it !== decoded) decoded.recycle() }
+                } else decoded
+                viewModel.analyzeImage(analysisBitmap, displayName)
                 navController.navigate("chat")
             } catch (e: Exception) {
                 viewModel.sendMessage("[Gallery Image Attached: ${uri.lastPathSegment ?: "image"}]")
