@@ -221,7 +221,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
     suspend fun analyzeVisualUI(bitmap: android.graphics.Bitmap, prompt: String): String {
         try {
-            val key = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
+            val key = if (context != null) {
+                val secureKey = com.example.security.SecureStorage.getSecret(context, "gemini_api_key")
+                if (secureKey.isNotBlank()) secureKey else com.example.utils.AppPreferences.getEffectiveApiKey(context)
+            } else BuildConfig.GEMINI_API_KEY
             if (key.isBlank()) return "Error: Gemini API key missing."
             
             val byteArrayOutputStream = java.io.ByteArrayOutputStream()
