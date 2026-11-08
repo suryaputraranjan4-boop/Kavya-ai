@@ -26,6 +26,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -45,26 +47,26 @@ import kotlinx.coroutines.launch
  * STRICT ENFORCEMENT: Absolutely no purple, pink, magenta, or violet tints.
  */
 private object WhiteLiquidGlassTokens {
-    val GlassSurface = Color(0x2EFFFFFF)
-    val GlassSurfaceSubtle = Color(0x1FFFFFFF)
-    val GlassSelected = Color(0x140F172A)
-    val GlassHover = Color(0x0A0F172A)
-    val Separator = Color(0x140F172A)
+    val GlassSurface = Color(0x99FFFFFF)
+    val GlassSurfaceSubtle = Color(0x66FFFFFF)
+    val GlassSelected = Color(0x33FFFFFF)
+    val GlassHover = Color(0x1FFFFFFF)
+    val Separator = Color(0x40FFFFFF)
     
     val GlossyWhiteBorder = Brush.linearGradient(
         listOf(
-            Color(0x66FFFFFF),
-            Color(0x40FFFFFF),
-            Color(0x26FFFFFF),
-            Color(0x40FFFFFF)
+            Color(0xE6FFFFFF),
+            Color(0xB3FFFFFF),
+            Color(0x80FFFFFF),
+            Color(0xB3FFFFFF)
         )
     )
-    val SubtleBorder = Color(0x1F000000)
+    val SubtleBorder = Color(0x66FFFFFF)
     
     // Near-black typography & slate iconography
-    val TextPrimary = Color(0xFF0F172A)      // Slate 900
-    val TextSecondary = Color(0xFF334155)    // Slate 700
-    val TextMuted = Color(0xFF64748B)        // Slate 500
+    val TextPrimary = Color(0xFFFFFFFF)
+    val TextSecondary = Color(0xF2FFFFFF)
+    val TextMuted = Color(0xCCFFFFFF)
     val IconColor = Color(0xFF1E293B)        // Slate 800
     val IconActive = Color(0xFF020617)       // Slate 950
     
@@ -151,11 +153,11 @@ fun KavyaSideMenu(
                                 letterSpacing = 3.5.sp,
                                 brush = Brush.linearGradient(
                                     listOf(
-                                        Color(0xFF0F172A),
-                                        Color(0xFF475569),
-                                        Color(0xFF1E293B),
-                                        Color(0xFF64748B),
-                                        Color(0xFF0F172A)
+                                        Color.White,
+                                        Color(0xFFEAF2FF),
+                                        Color.White,
+                                        Color(0xFFDCE8F8),
+                                        Color.White
                                     )
                                 )
                             )
@@ -450,14 +452,16 @@ fun KavyaSideMenu(
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = WhiteLiquidGlassTokens.TextPrimary
+                            color = WhiteLiquidGlassTokens.TextPrimary,
+                            shadow = Shadow(Color(0xCC000000), Offset(0f, 1f), 3f)
                         )
                     )
                     Text(
                         text = "Liquid Glass Architecture",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 9.sp,
-                            color = WhiteLiquidGlassTokens.TextMuted
+                            color = WhiteLiquidGlassTokens.TextMuted,
+                            shadow = Shadow(Color(0xCC000000), Offset(0f, 1f), 3f)
                         )
                     )
                 }
@@ -467,8 +471,8 @@ fun KavyaSideMenu(
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
-                        .background(Color(0x1FFFFFFF))
-                        .border(1.dp, Color(0x26FFFFFF), CircleShape)
+                        .background(Color(0x33000000))
+                        .border(1.dp, Color(0x66FFFFFF), CircleShape)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
@@ -511,7 +515,8 @@ private fun MenuSectionHeader(
                 fontSize = 10.sp,
                 fontWeight = FontWeight.ExtraBold,
                 letterSpacing = 1.5.sp,
-                color = WhiteLiquidGlassTokens.TextMuted
+                color = WhiteLiquidGlassTokens.TextMuted,
+                                shadow = Shadow(Color(0xCC000000), Offset(0f, 1f), 3f)
             )
         )
         Icon(
@@ -558,7 +563,7 @@ private fun DrawerItemWhiteGlass(
             .background(backgroundColor)
             .border(
                 width = if (isSelected) 1.dp else 0.dp,
-                color = if (isSelected) Color(0x1F000000) else Color.Transparent,
+                color = if (isSelected) Color(0x66FFFFFF) else Color.Transparent,
                 shape = RoundedCornerShape(12.dp)
             )
             .clickable(onClick = onClick)
@@ -591,7 +596,8 @@ private fun DrawerItemWhiteGlass(
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontSize = 14.sp,
                 fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                color = textColor
+                color = textColor,
+                shadow = Shadow(Color(0xCC000000), Offset(0f, 1f), 3f)
             )
         )
     }
