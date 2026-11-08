@@ -26,6 +26,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.pdf.PdfDocument
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import java.io.File
+import java.io.FileOutputStream
 import com.example.ui.components.ChatBar
 import com.example.ui.components.GlassCard
 import com.example.ui.components.ScreenShareSheet
@@ -46,9 +61,94 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
     val isScreenSharing by viewModel.isScreenSharing.collectAsState()
     val voiceState by viewModel.voiceState.collectAsState()
 
+    val context = LocalContext.current
     var showHistory by remember { mutableStateOf(false) }
     var showScreenShareSheet by remember { mutableStateOf(false) }
+    var showAttachmentPopup by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
+
+    // Option 1: Camera
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        if (bitmap != null) {
+            viewModel.sendMessage("Attached photo from Camera (${bitmap.width}x${bitmap.height})")
+        }
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            cameraLauncher.launch(null)
+        } else {
+            Toast.makeText(context, "Camera permission required to capture photos", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Option 2: PDF Scanner (Real document scanner creating PDF)
+    val pdfScanLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        if (bitmap != null) {
+            try {
+                val pdfDocument = PdfDocument()
+                val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, 1).create()
+                val page = pdfDocument.startPage(pageInfo)
+                page.canvas.drawBitmap(bitmap, 0f, 0f, null)
+                pdfDocument.finishPage(page)
+
+                val fileName = "scanned_doc_${System.currentTimeMillis()}.pdf"
+                val file = File(context.cacheDir, fileName)
+                FileOutputStream(file).use { out ->
+                    pdfDocument.writeTo(out)
+                }
+                pdfDocument.close()
+                viewModel.sendMessage("Scanned document to PDF: $fileName (${file.length()} bytes)")
+                Toast.makeText(context, "Document scanned: $fileName", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                viewModel.sendMessage("PDF scan failed: ${e.localizedMessage}")
+            }
+        }
+    }
+    val pdfScanPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            pdfScanLauncher.launch(null)
+        } else {
+            Toast.makeText(context, "Camera permission required for PDF scanning", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Option 4: Gallery Photo Picker
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            val name = uri.lastPathSegment ?: "image"
+            viewModel.sendMessage("Attached image from Gallery: $name")
+        }
+    }
+
+    // Option 5: PDF Files Picker
+    val pdfFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val name = uri.lastPathSegment ?: "document.pdf"
+            viewModel.sendMessage("Attached PDF File: $name")
+        }
+    }
+
+    // Option 6: Documents Picker
+    val docFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val name = uri.lastPathSegment ?: "document"
+            viewModel.sendMessage("Attached Document: $name")
+        }
+    }
 
     val micEngineState by com.example.voice.KavyaMicrophoneEngine.engineState.collectAsState()
     val isMicListening = micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ACTIVE ||
@@ -135,22 +235,173 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
             )
         },
         bottomBar = {
-            ChatBar(
-                onSend = { viewModel.sendMessage(it) },
-                onPlusClick = { showScreenShareSheet = true },
-                onMicClick = {
-                    if (isMicListening) {
-                        viewModel.stopListening()
-                    } else {
-                        viewModel.startListening()
-                    }
-                },
-                isMicListening = isMicListening,
+            Column(
                 modifier = Modifier
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .fillMaxWidth()
                     .navigationBarsPadding()
                     .imePadding()
-            )
+            ) {
+                // White Liquid Glass Compact Attachment Popup
+                AnimatedVisibility(
+                    visible = showAttachmentPopup,
+                    enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(expandFrom = Alignment.Bottom),
+                    exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically(shrinkTowards = Alignment.Bottom)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.BottomStart
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .widthIn(max = 310.dp)
+                                .shadow(
+                                    elevation = 16.dp,
+                                    shape = RoundedCornerShape(22.dp),
+                                    spotColor = Color(0x38000000),
+                                    ambientColor = Color(0x1A000000)
+                                )
+                                .border(
+                                    border = BorderStroke(
+                                        1.2.dp,
+                                        Brush.linearGradient(
+                                            listOf(
+                                                Color.White,
+                                                Color(0xCCFFFFFF),
+                                                Color(0x80FFFFFF),
+                                                Color.White
+                                            )
+                                        )
+                                    ),
+                                    shape = RoundedCornerShape(22.dp)
+                                ),
+                            color = Color(0xF9FFFFFF),
+                            shape = RoundedCornerShape(22.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "ATTACH & SHARE",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            letterSpacing = 1.2.sp,
+                                            color = Color(0xFF64748B)
+                                        ),
+                                        modifier = Modifier.padding(start = 4.dp)
+                                    )
+                                    IconButton(
+                                        onClick = { showAttachmentPopup = false },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Close attachments",
+                                            tint = Color(0xFF64748B),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                // Row 1: Camera, PDF Scanner, Live Screen
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceEvenly
+                                ) {
+                                    AttachmentOptionItem(
+                                        icon = Icons.Default.PhotoCamera,
+                                        label = "Camera",
+                                        onClick = {
+                                            showAttachmentPopup = false
+                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                                cameraLauncher.launch(null)
+                                            } else {
+                                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                            }
+                                        }
+                                    )
+                                    AttachmentOptionItem(
+                                        icon = Icons.Default.DocumentScanner,
+                                        label = "PDF Scanner",
+                                        onClick = {
+                                            showAttachmentPopup = false
+                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                                pdfScanLauncher.launch(null)
+                                            } else {
+                                                pdfScanPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                            }
+                                        }
+                                    )
+                                    AttachmentOptionItem(
+                                        icon = Icons.Default.ScreenShare,
+                                        label = "Live Screen",
+                                        onClick = {
+                                            showAttachmentPopup = false
+                                            showScreenShareSheet = true
+                                        }
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                // Row 2: Gallery, PDF Files, Documents
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceEvenly
+                                ) {
+                                    AttachmentOptionItem(
+                                        icon = Icons.Default.PhotoLibrary,
+                                        label = "Gallery",
+                                        onClick = {
+                                            showAttachmentPopup = false
+                                            galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                        }
+                                    )
+                                    AttachmentOptionItem(
+                                        icon = Icons.Default.PictureAsPdf,
+                                        label = "PDF Files",
+                                        onClick = {
+                                            showAttachmentPopup = false
+                                            pdfFileLauncher.launch(arrayOf("application/pdf"))
+                                        }
+                                    )
+                                    AttachmentOptionItem(
+                                        icon = Icons.Default.FolderOpen,
+                                        label = "Documents",
+                                        onClick = {
+                                            showAttachmentPopup = false
+                                            docFileLauncher.launch(arrayOf("*/*"))
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                ChatBar(
+                    onSend = { viewModel.sendMessage(it) },
+                    onPlusClick = { showAttachmentPopup = !showAttachmentPopup },
+                    onMicClick = {
+                        if (isMicListening) {
+                            viewModel.stopListening()
+                        } else {
+                            viewModel.startListening()
+                        }
+                    },
+                    isMicListening = isMicListening,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+            }
         }
     ) { padding ->
         Column(
@@ -501,3 +752,47 @@ fun MessageBubble(
         }
     }
 }
+
+@Composable
+private fun AttachmentOptionItem(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(82.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+                .border(1.dp, Color(0x1F000000), CircleShape)
+                .shadow(2.dp, CircleShape, spotColor = Color(0x1A000000)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = Color(0xFF1E293B),
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFF0F172A)
+            ),
+            maxLines = 1
+        )
+    }
+}
+

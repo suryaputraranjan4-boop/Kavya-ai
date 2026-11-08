@@ -55,11 +55,16 @@ class MainActivity : ComponentActivity() {
         CompositionLocalProvider(LocalDrawerState provides drawerState) {
             ModalNavigationDrawer(
                 drawerState = drawerState,
+                scrimColor = androidx.compose.ui.graphics.Color(0x38000000),
                 drawerContent = {
                     ModalDrawerSheet(
-                        drawerContainerColor = SurfaceGlass,
-                        drawerContentColor = TextPrimary,
-                        modifier = Modifier.width(300.dp)
+                        drawerContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                        drawerTonalElevation = 0.dp,
+                        windowInsets = WindowInsets(0),
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(0.80f)
+                            .widthIn(max = 330.dp)
                     ) {
                         KavyaSideMenu(
                             navController = navController,
