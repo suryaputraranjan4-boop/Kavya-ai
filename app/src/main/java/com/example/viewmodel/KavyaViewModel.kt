@@ -642,7 +642,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val pageResults = mutableListOf<String>()
                 val descriptor = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
-                android.graphics.pdf.PdfRenderer(descriptor).use { renderer ->
+                descriptor.use { fileDescriptor ->
+                    android.graphics.pdf.PdfRenderer(fileDescriptor).use { renderer ->
+                    if (renderer.pageCount == 0) throw IllegalArgumentException("PDF contains no pages.")
                     val pageLimit = minOf(renderer.pageCount, 20)
                     for (index in 0 until pageLimit) {
                         renderer.openPage(index).use { page ->
@@ -665,8 +667,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     if (renderer.pageCount > pageLimit) {
                         pageResults.add("Only the first " + pageLimit + " of " + renderer.pageCount + " pages were analyzed to protect device memory and request limits.")
                     }
+                    }
                 }
-                descriptor.close()
                 val answer = pageResults.joinToString("\n\n").ifBlank { "No readable PDF pages were found." }
                 val assistantId = UUID.randomUUID().toString()
                 _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false)
