@@ -282,8 +282,13 @@ class KavyaMicrophoneEngine : Service() {
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> schedule(BUSY_RETRY_MS)
 
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
+                    Log.e(TAG, "Microphone permission was revoked; stopping the microphone service")
+                    desired = false
+                    cancelRetry()
+                    partialFlow.value = ""
+                    amplitudeFlow.value = 0f
                     stateFlow.value = EngineState.MIC_ERROR
-                    Log.e(TAG, "Microphone permission was revoked")
+                    stopSelf()
                 }
 
                 else -> scheduleRetry()
