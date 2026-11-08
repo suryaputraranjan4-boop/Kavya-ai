@@ -208,7 +208,12 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
                     }
                 }
-                viewModel.sendMessage("[PDF Document Attached: $displayName (${fileSize / 1024} KB)] Please inspect and extract key insights from this PDF.")
+                val pdfCopy = File(context.cacheDir, "selected_pdf_${System.currentTimeMillis()}.pdf")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(pdfCopy).use { output -> input.copyTo(output) }
+                } ?: throw IllegalArgumentException("Unable to open selected PDF.")
+                if (pdfCopy.length() <= 0L) throw IllegalArgumentException("Selected PDF is empty.")
+                viewModel.analyzePdf(pdfCopy, displayName)
                 navController.navigate("chat")
             } catch (e: Exception) {
                 viewModel.sendMessage("[PDF Document Attached: ${uri.lastPathSegment ?: "document.pdf"}]")
