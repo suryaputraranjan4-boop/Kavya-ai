@@ -176,6 +176,12 @@ fun AiApiHubScreen(navController: NavController) {
     var sleepSensitivity by remember { mutableStateOf(AppPreferences.getSleepSensitivity(context)) }
     var kavyaState by remember { mutableStateOf(AppPreferences.getKavyaState(context)) }
 
+    // Chatterbox Hindi voice-generation backend
+    var chatterboxUrl by remember { mutableStateOf(AppPreferences.getChatterboxBackendUrl(context)) }
+    var chatterboxToken by remember { mutableStateOf(AppPreferences.getChatterboxAuthToken(context)) }
+    var isChatterboxTesting by remember { mutableStateOf(false) }
+    var chatterboxStatus by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -255,6 +261,90 @@ fun AiApiHubScreen(navController: NavController) {
                                 "Configure your real API keys below. Kavya connects directly to real official endpoints. You can also add more custom APIs anytime.",
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, lineHeight = 16.sp),
                                 color = TextSecondary
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Chatterbox Hindi voice generation
+            item {
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
+                    borderColor = AccentCyan.copy(alpha = 0.35f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            "Chatterbox Hindi Voice",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary
+                        )
+                        Text(
+                            "Connect a reachable Chatterbox server. The Android app sends text to this server for speech generation; the model weights are not executed locally by this screen.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        OutlinedTextField(
+                            value = chatterboxUrl,
+                            onValueChange = { chatterboxUrl = it },
+                            label = { Text("Backend URL") },
+                            placeholder = { Text("https://your-server:8000") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = chatterboxToken,
+                            onValueChange = { chatterboxToken = it },
+                            label = { Text("Access token (optional)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    AppPreferences.setChatterboxBackendUrl(context, chatterboxUrl)
+                                    AppPreferences.setChatterboxAuthToken(context, chatterboxToken)
+                                    coroutineScope.launch {
+                                        isChatterboxTesting = true
+                                        chatterboxStatus = com.example.ai.ChatterboxTtsClient(context).checkHealth()
+                                        isChatterboxTesting = false
+                                    }
+                                },
+                                enabled = !isChatterboxTesting && chatterboxUrl.isNotBlank(),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                if (isChatterboxTesting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                Text("Test server")
+                            }
+                            Button(
+                                onClick = {
+                                    AppPreferences.setChatterboxBackendUrl(context, chatterboxUrl)
+                                    AppPreferences.setChatterboxAuthToken(context, chatterboxToken)
+                                    chatterboxStatus = true to "Chatterbox server settings saved."
+                                },
+                                enabled = chatterboxUrl.startsWith("http://") || chatterboxUrl.startsWith("https://"),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Save")
+                            }
+                        }
+                        chatterboxStatus?.let { result ->
+                            Text(
+                                result.second,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (result.first) SuccessGreenGlow else Error
                             )
                         }
                     }
