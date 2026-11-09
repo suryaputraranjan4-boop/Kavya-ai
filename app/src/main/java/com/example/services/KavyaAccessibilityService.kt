@@ -8,6 +8,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.Locale
+import kotlin.coroutines.resume
 
 class KavyaAccessibilityService : AccessibilityService() {
 
@@ -432,6 +433,88 @@ class KavyaAccessibilityService : AccessibilityService() {
         }
         walk(node, 0)
         return sb.toString().trim()
+    }
+
+    /**
+     * Dispatches a real Android accessibility gesture and waits for the system callback.
+     * A true return means onCompleted was received, not merely that dispatchGesture accepted it.
+     */
+    suspend fun dispatchGestureAndAwait(
+        gesture: android.accessibilityservice.GestureDescription,
+        timeoutMs: Long = 5000L
+    ): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs.coerceIn(250L, 10000L)) {
+                kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+                    val accepted = dispatchGesture(
+                        gesture,
+                        object : AccessibilityService.GestureResultCallback() {
+                            override fun onCompleted(
+                                gestureDescription: android.accessibilityservice.GestureDescription
+                            ) {
+                                if (continuation.isActive) continuation.resume(true)
+                            }
+
+                            override fun onCancelled(
+                                gestureDescription: android.accessibilityservice.GestureDescription
+                            ) {
+                                if (continuation.isActive) continuation.resume(false)
+                            }
+                        },
+                        null
+                    )
+                    if (!accepted && continuation.isActive) continuation.resume(false)
+                }
+            } ?: false
+        }
+    }
+
+    suspend fun clickNodeAndAwait(node: AccessibilityNodeInfo?): Boolean =
+        performNodeActionAndAwait(node, AccessibilityNodeInfo.ACTION_CLICK, 80L)
+
+    suspend fun longClickNodeAndAwait(node: AccessibilityNodeInfo?): Boolean =
+        performNodeActionAndAwait(node, AccessibilityNodeInfo.ACTION_LONG_CLICK, 700L)
+
+    private suspend fun performNodeActionAndAwait(
+        node: AccessibilityNodeInfo?,
+        action: Int,
+        fallbackDurationMs: Long
+    ): Boolean {
+        if (node == null) return false
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth < 3) {
+            val supportsAction = when (action) {
+                AccessibilityNodeInfo.ACTION_CLICK ->
+                    current.isClickable || current.actionList.any { it.id == action }
+                AccessibilityNodeInfo.ACTION_LONG_CLICK ->
+                    current.isLongClickable || current.actionList.any { it.id == action }
+                else -> false
+            }
+            if (supportsAction && current.performAction(action)) return true
+
+            val bounds = Rect()
+            current.getBoundsInScreen(bounds)
+            val isGiant = bounds.width() > 1000 && bounds.height() > 1800
+            if (!isGiant && bounds.width() > 0 && bounds.height() > 0) {
+                val path = android.graphics.Path().apply {
+                    moveTo(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                    lineTo(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                }
+                val gesture = android.accessibilityservice.GestureDescription.Builder()
+                    .addStroke(
+                        android.accessibilityservice.GestureDescription.StrokeDescription(
+                            path, 0L, fallbackDurationMs
+                        )
+                    )
+                    .build()
+                return dispatchGestureAndAwait(gesture)
+            }
+            current = current.parent
+            depth++
+        }
+        return false
     }
 
     fun clickByCoordinates(x: Float, y: Float): Boolean {
