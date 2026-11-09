@@ -1,5 +1,7 @@
 package com.example.ai.providers
 
+import kotlinx.coroutines.CancellationException
+
 import android.content.Context
 import android.util.Log
 import com.example.ai.ClassifiedTaskCategory
@@ -88,6 +90,8 @@ class AgentOrchestrator(
         var primaryResult: AIProviderResult
         try {
             primaryResult = primaryProvider.generate(prompt, systemInstruction, context)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             primaryResult = AIProviderResult(
                 success = false,
@@ -142,7 +146,9 @@ class AgentOrchestrator(
                 } else {
                     onEventLog?.invoke("FALLBACK FAILED: ${fallback.displayName} failed: ${fallbackResult.error}")
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 onEventLog?.invoke("FALLBACK EXCEPTION: ${fallback.displayName}: ${e.message}")
             }
         }
@@ -176,6 +182,8 @@ class AgentOrchestrator(
             } else {
                 null
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "OpenRouter partner consultation failed: ${e.message}")
             null
@@ -199,6 +207,8 @@ class AgentOrchestrator(
             } else {
                 null
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Hugging Face specialist failed: ${e.message}")
             null
@@ -216,6 +226,8 @@ class AgentOrchestrator(
             } else {
                 null
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Public API fetch failed: ${e.message}")
             null
