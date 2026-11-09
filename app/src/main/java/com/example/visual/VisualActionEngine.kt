@@ -255,6 +255,23 @@ class VisualActionEngine(private val context: Context) {
 
             val (verified, verifyReason) = actionVerifier.verifyAction(plannedAction, hierarchySummary)
 
+            if (actionSuccess && !verified) {
+                val unverifiedMessage = "Action was dispatched but could not be verified: $verifyReason. It was not repeated to avoid duplicate taps or submissions."
+                updateStatus(false, "Unverified", unverifiedMessage, plannedAction.confidence)
+                KavyaStateManager.updateTaskState(TaskState.FAILED, unverifiedMessage)
+                return VisualActionExecutionResult(
+                    success = false,
+                    actionType = plannedAction.type,
+                    target = plannedAction.target,
+                    executionMethod = actionDetail,
+                    message = unverifiedMessage,
+                    confidence = plannedAction.confidence,
+                    latencyMs = actionLatency,
+                    verificationPassed = false,
+                    error = verifyReason
+                )
+            }
+
             if (actionSuccess && verified) {
                 memory.completedSteps.add("${plannedAction.type} on ${plannedAction.target}")
                 val successMessage = "Action completed and verified: $actionDetail"
