@@ -20,9 +20,9 @@ Kavya is an intelligent, autonomous on-device and cloud-powered AI assistant for
       ┌───────────────────────▼┐  ┌──────────▼────────┐  ┌──▼──────────────▼────────┐
       │   Cloud AI Providers   │  │  Offline Engine   │  │   Perception & Hardware  │
       │ ────────────────────── │  │ ───────────────── │  │ ──────────────────────── │
-      │ • Gemini 2.5 Flash/Pro │  │ • LiteRT-LM       │  │ • ScreenCaptureService   │
+      │ • Gemini 3.8 Flash / 3.1 Pro Preview │  │ • LiteRT-LM       │  │ • ScreenCaptureService   │
       │ • OpenRouter           │  │ • MediaPipe Task  │  │ • VisionPipeline         │
-      │ • Hugging Face         │  │ • GGUF (LlamaCpp) │  │ • GeminiAudioPlayer      │
+      │ • Hugging Face         │  │ • GGUF (llama.cpp native runtime; arm64-v8a build) │  │ • GeminiAudioPlayer      │
       └────────────────────────┘  └───────────────────┘  └──────────────────────────┘
                                              │
                         ┌────────────────────▼─────────────────────────────────────┐
@@ -58,7 +58,7 @@ Kavya integrates multiple tiers of intelligence:
 
 | Provider | Role | Models | Verification & Status |
 | :--- | :--- | :--- | :--- |
-| **Gemini** | Primary Brain & Vision | `gemini-2.5-flash`, `gemini-2.5-pro` | Cloud API via HTTPS · Verified live requests |
+| **Gemini** | Primary Brain & Vision | `gemini-3.8-flash`, `gemini-3.1-pro-preview` | Cloud API via HTTPS · Model IDs centralized in `GeminiModelRegistry` |
 | **OpenRouter** | Secondary Partner | `openrouter/free`, `llama-3.3-70b`, `mistral-7b` | Cloud API with secure Bearer auth |
 | **Hugging Face** | Specialized Resource | DistilBERT, RoBERTa Sentiment/SQuAD2, ViT | Inference API endpoints |
 | **LiteRT-LM / MediaPipe** | Offline Reasoning | `.litertlm` (FlatBuffer `TFL3`), `.task` (ZIP) | On-device inference, 100% private |
@@ -68,7 +68,7 @@ Kavya integrates multiple tiers of intelligence:
 
 ## Security & Secrets Management
 
-- **API Keys**: All user-entered keys (Gemini, OpenRouter, Hugging Face) are stored in the device's hardware-backed **Android KeyStore** using AES-256-GCM encryption (`SecureStorage.kt`). Keys are masked in the UI and never written to cleartext logs.
+- **API Keys**: All user-entered keys (Gemini, OpenRouter, Hugging Face) are stored in the device's **Android KeyStore** using AES-256-GCM encryption (`SecureStorage.kt`). Keys are masked in the UI and never written to cleartext logs.
 - **Environment Configuration**: Pre-packaged placeholder strings (e.g. `MY_GEMINI_API_KEY`) are rejected by `AppPreferences.isPlaceholderKey()`.
 - **Network Security**: Cleartext HTTP traffic is disabled globally. Local developer services (Docker Maps Scraper) are strictly scoped to `10.0.2.2` (Android emulator loopback) and `127.0.0.1`.
 
@@ -120,7 +120,7 @@ The repository includes GitHub Actions workflows configured with strict security
 
 - **`.github/workflows/android-tests.yml`**:
   - Automatically runs on all pushes and pull requests to `main` and feature branches.
-  - Executes unit tests (`gradle :app:testDebugUnitTest`), Kotlin source compilation (`gradle :app:compileDebugKotlin`), and a debug APK build (`gradle :app:assembleDebug`).
+  - Executes unit tests (`gradle :app:testDebugUnitTest`), Kotlin source compilation (`gradle :app:compileDebugKotlin`), Android lint (`gradle :app:lintDebug`), and a debug APK build (`gradle :app:assembleDebug`).
   - Does not upload an APK artifact; the debug APK is only produced in the workflow workspace.
 
 - **`.github/workflows/build-apk.yml`**:
