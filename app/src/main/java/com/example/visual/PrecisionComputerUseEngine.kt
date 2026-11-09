@@ -37,7 +37,8 @@ import kotlinx.coroutines.delay
  * Enforces:
  * 1. REAL Android interaction mechanisms via Accessibility APIs and Gesture Descriptions.
  * 2. NO fake animations, NO simulated tap messages.
- * 3. NO "tap successful" unless the action was actually dispatched and verified.
+ * 3. Dispatch success and resulting UI-state verification are reported separately.
+ *    VisualActionEngine performs the independent hierarchy-based verification.
  */
 class PrecisionComputerUseEngine(
     private val context: Context,
