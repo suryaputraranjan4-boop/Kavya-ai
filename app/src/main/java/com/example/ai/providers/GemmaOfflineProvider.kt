@@ -24,13 +24,15 @@ class GemmaOfflineProvider : AIProvider {
         val modelFile = GemmaModelManager.getModelFile(context)
         if (modelFile == null || !modelFile.exists()) return false
         val info = GemmaModelManager.inspectModel(modelFile)
-        return info.isSupported && Gemma4E4BEngine.getInstance().isReady()
+        // Configuration means a compatible model is installed. Runtime readiness is
+        // checked separately by generate(), which initializes the selected model lazily.
+        return info.isSupported
     }
 
     override suspend fun validateCredentials(context: Context): Pair<Boolean, String> {
         val modelFile = GemmaModelManager.getModelFile(context)
         if (modelFile == null || !modelFile.exists()) {
-            return Pair(false, "Local selected local model model file not found. Please import a compatible model in Settings.")
+            return Pair(false, "No local model file was found. Please import a compatible model in Settings.")
         }
 
         val info = GemmaModelManager.inspectModel(modelFile)
@@ -47,7 +49,7 @@ class GemmaOfflineProvider : AIProvider {
             }
         }
 
-        return Pair(true, "selected local model is loaded and responding offline.")
+        return Pair(true, "The selected local model is loaded and responding offline.")
     }
 
     override suspend fun getModels(context: Context): List<ProviderModelInfo> {
