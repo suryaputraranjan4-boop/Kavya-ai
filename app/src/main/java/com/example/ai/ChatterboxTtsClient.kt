@@ -167,36 +167,33 @@ class ChatterboxTtsClient(private val context: Context) {
                         if (response.code == 401 || response.code == 403 || response.code == 429) {
                             return@withContext ChatterboxResult.Error(lastError, isBackendUnavailable = false)
                         }
-                        continue
-                    }
-
-                    val body = response.body ?: run {
-                        lastError = "Chatterbox returned an empty response."
-                        continue
-                    }
-
-                    if (contentType.contains("application/json", ignoreCase = true)) {
-                        val jsonText = body.string()
-                        val json = JSONObject(jsonText)
-                        val encoded = json.optString("audio")
-                            .ifEmpty { json.optString("audio_base64") }
-                            .ifEmpty { json.optString("audio_content") }
-                            .substringAfter("base64,", json.optString("audio"))
-                        if (encoded.isNotBlank()) {
-                            val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
-                            if (bytes.isNotEmpty()) {
-                                return@withContext ChatterboxResult.Success(bytes, json.optInt("sample_rate", 24000))
-                            }
-                        }
-                        lastError = json.optString("detail")
-                            .ifBlank { json.optString("message", "Chatterbox response did not contain audio data.") }
-                    } else if (contentType.startsWith("audio/", ignoreCase = true) ||
-                        contentType.contains("octet-stream", ignoreCase = true)) {
-                        val bytes = body.bytes()
-                        if (bytes.isNotEmpty()) return@withContext ChatterboxResult.Success(bytes, 24000)
-                        lastError = "Chatterbox returned an empty audio file."
                     } else {
-                        lastError = "Unexpected Chatterbox response type: ${contentType.ifBlank { "unknown" }}."
+                        val body = response.body
+                        if (body == null) {
+                            lastError = "Chatterbox returned an empty response."
+                        } else if (contentType.contains("application/json", ignoreCase = true)) {
+                            val jsonText = body.string()
+                            val json = JSONObject(jsonText)
+                            val encoded = json.optString("audio")
+                                .ifEmpty { json.optString("audio_base64") }
+                                .ifEmpty { json.optString("audio_content") }
+                            val base64Audio = encoded.substringAfter("base64,", encoded)
+                            if (base64Audio.isNotBlank()) {
+                                val bytes = android.util.Base64.decode(base64Audio, android.util.Base64.DEFAULT)
+                                if (bytes.isNotEmpty()) {
+                                    return@withContext ChatterboxResult.Success(bytes, json.optInt("sample_rate", 24000))
+                                }
+                            }
+                            lastError = json.optString("detail")
+                                .ifBlank { json.optString("message", "Chatterbox response did not contain audio data.") }
+                        } else if (contentType.startsWith("audio/", ignoreCase = true) ||
+                            contentType.contains("octet-stream", ignoreCase = true)) {
+                            val bytes = body.bytes()
+                            if (bytes.isNotEmpty()) return@withContext ChatterboxResult.Success(bytes, 24000)
+                            lastError = "Chatterbox returned an empty audio file."
+                        } else {
+                            lastError = "Unexpected Chatterbox response type: ${contentType.ifBlank { "unknown" }}."
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -204,7 +201,6 @@ class ChatterboxTtsClient(private val context: Context) {
                 Log.w(TAG, "Attempt to $url failed: ${e.javaClass.simpleName}")
             }
         }
-
         return@withContext ChatterboxResult.Error(lastError, isBackendUnavailable = !backendReached)
     }
 }
