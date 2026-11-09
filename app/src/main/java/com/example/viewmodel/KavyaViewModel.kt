@@ -1,5 +1,7 @@
 package com.example.viewmodel
 
+import kotlinx.coroutines.CancellationException
+
 import android.app.Application
 import android.content.Context
 import android.content.Intent
@@ -239,7 +241,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 schedulerEngine.executeDueSchedules { dueTask ->
                     sendMessage(dueTask.promptOrAction)
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "Error executing due schedules (${e.javaClass.simpleName}).")
             }
         }
@@ -396,6 +400,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             
             val clean = response.replace("<ACTION:[^>]+>".toRegex(), "").trim()
             if (clean.isNotBlank()) clean else null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Failed to generate dynamic proactive speech (${e.javaClass.simpleName}).")
             null
@@ -627,7 +633,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = answer.startsWith("Visual parsing failed:") || answer.startsWith("Error:"))
                 chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
                 _latestKavyaCaption.value = answer
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 val answer = "Image analysis failed: " + (e.localizedMessage ?: "Unknown error")
                 val assistantId = UUID.randomUUID().toString()
                 _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
@@ -699,7 +707,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false)
                 chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
                 _latestKavyaCaption.value = "PDF analysis complete."
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 val answer = "PDF analysis failed: " + (e.localizedMessage ?: "Unable to render this PDF.")
                 val assistantId = UUID.randomUUID().toString()
                 _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
@@ -1478,7 +1488,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                             }
                         }
-                    } catch (e: Exception) {
+                    } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                         Log.w(TAG, "Streaming chat failed (${e.javaClass.simpleName}).")
                     }
 
@@ -1501,7 +1513,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                 memoryContext = memoryBlock,
                                 isProactiveMode = false
                             )
-                        } catch (e: Exception) {
+                        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                             Log.w(TAG, "Non-streaming chat fallback failed (${e.javaClass.simpleName}).")
                         }
                     }
@@ -1743,7 +1757,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     processAgentLoop(chatId, null, "Action executed successfully. Inspect the new screen and decide the next step.", recursionDepth + 1)
                 }
                 
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 val safeError = "अभी connection में थोड़ी problem आ रही है। कृपया थोड़ी देर में फिर try करें।"
                 Log.w(TAG, "Agent turn failed (${e.javaClass.simpleName}).")
                 _messages.value = _messages.value.map {
