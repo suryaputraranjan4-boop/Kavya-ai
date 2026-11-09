@@ -12,6 +12,7 @@ import com.example.ai.Part
 import com.example.ai.Content
 import com.example.ai.RetrofitClient
 import com.example.services.KavyaAccessibilityService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -480,6 +481,8 @@ object AppPreferences {
                 429 -> Pair(true, "Valid API Key (rate limited, but active).")
                 else -> Pair(false, "Verification error: HTTP ${e.code()}")
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Pair(false, "Connection failed: ${e.localizedMessage ?: "Please check your network and API key"}")
         }
@@ -531,6 +534,8 @@ object AppPreferences {
                 else -> parsedMsg ?: "HTTP ${e.code()}"
             }
             Pair(false, "OpenRouter connection failed: $reason")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Pair(false, "OpenRouter connection failed. Please check your API key and internet connection.")
         }
@@ -566,6 +571,8 @@ object AppPreferences {
                 429 -> Pair(true, "Hugging Face connected (Rate limited, but active).")
                 else -> Pair(false, "Hugging Face returned status $code.")
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Pair(false, "Hugging Face connection failed: ${e.message ?: "Network error"}")
         }
@@ -587,6 +594,8 @@ object AppPreferences {
             } else {
                 Pair(false, "Public API test returned HTTP $code.")
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Pair(false, "Public API connection test failed: ${e.message ?: "Network error"}")
         }
@@ -751,6 +760,8 @@ object AppPreferences {
             } else {
                 Pair(false, "Server returned HTTP $code (${latency}ms)")
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Pair(false, "Connection failed: ${e.localizedMessage ?: e.message}")
         }
