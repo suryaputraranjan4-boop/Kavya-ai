@@ -6,7 +6,11 @@ import com.example.ai.RetrofitClient
 import com.example.security.SecureStorage
 import com.example.utils.AppPreferences
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -77,6 +81,7 @@ class HuggingFaceProvider : AIProvider {
         const val PROVIDER_ID = "huggingface"
         private const val API_BASE = "https://router.huggingface.co/hf-inference/models"
         private const val HUB_API_BASE = "https://huggingface.co/api"
+        private const val CHAT_API_BASE = "https://router.huggingface.co/v1"
 
         // Default specialized verified models per task
         const val MODEL_TEXT_GEN = "meta-llama/Llama-3.2-1B-Instruct"
@@ -106,6 +111,9 @@ class HuggingFaceProvider : AIProvider {
     override val isPrimaryOrchestrator: Boolean = false
 
     private val cachedDiscoveredModels = CopyOnWriteArrayList<ProviderModelInfo>(DEFAULT_VERIFIED_MODELS)
+    private val cachedChatModels = CopyOnWriteArrayList<ProviderModelInfo>(
+        listOf(DEFAULT_VERIFIED_MODELS.first())
+    )
 
     override fun isConfigured(context: Context): Boolean {
         val key = getToken(context)
@@ -174,12 +182,58 @@ class HuggingFaceProvider : AIProvider {
      * Requirement 5: Model Discovery.
      * Queries Hugging Face API to discover available models and their pipeline tags.
      */
-    override suspend fun getModels(context: Context): List<ProviderModelInfo> = discoverModels(null, context)
+    /**
+     * Lists chat-completion models from the same router used by generate()/streamGenerate().
+     * This avoids presenting masked-language or vision-only models as conversational LLMs.
+     */
+    override suspend fun getModels(context: Context): List<ProviderModelInfo> = withContext(Dispatchers.IO) {
+        val token = getToken(context)
+        if (token.isBlank()) return@withContext cachedChatModels.toList()
+
+        try {
+            val request = Request.Builder()
+                .url("$CHAT_API_BASE/models")
+                .addHeader("Authorization", "Bearer ${token.trim()}")
+                .get()
+                .build()
+
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val data = JSONObject(response.body?.string().orEmpty()).optJSONArray("data")
+                    ?: return@use null
+                val discovered = mutableListOf<ProviderModelInfo>()
+                for (index in 0 until data.length()) {
+                    val item = data.optJSONObject(index) ?: continue
+                    val id = item.optString("id").trim()
+                    if (id.isBlank()) continue
+                    discovered.add(
+                        ProviderModelInfo(
+                            id = id,
+                            name = item.optString("name", id),
+                            provider = ProviderType.HUGGINGFACE,
+                            supportedTasks = listOf("chat", "text-generation", "reasoning"),
+                            contextLength = item.optInt("context_length", 0),
+                            description = "Chat model served through Hugging Face Inference Providers; availability and pricing vary.",
+                            isFree = false
+                        )
+                    )
+                }
+                if (discovered.isNotEmpty()) {
+                    cachedChatModels.clear()
+                    cachedChatModels.addAll(discovered)
+                    return@withContext discovered
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Hugging Face chat model discovery failed (${e.javaClass.simpleName}).")
+        }
+        cachedChatModels.toList()
+    }
 
     suspend fun discoverModels(pipelineTag: String? = null, context: Context): List<ProviderModelInfo> = withContext(Dispatchers.IO) {
         val token = getToken(context)
         val tagParam = if (!pipelineTag.isNullOrBlank()) "&pipeline_tag=$pipelineTag" else ""
-        val url = "$HUB_API_BASE/models?limit=25&sort=downloads&direction=-1$tagParam"
+        val url = "$HUB_API_BASE/models?inference_provider=hf-inference&limit=25&sort=downloads&direction=-1$tagParam"
 
         val requestBuilder = Request.Builder().url(url)
         if (token.isNotBlank()) {
@@ -207,8 +261,8 @@ class HuggingFaceProvider : AIProvider {
                             name = id.substringAfterLast("/"),
                             provider = ProviderType.HUGGINGFACE,
                             supportedTasks = listOf(tag),
-                            description = "Hugging Face model ($tag)",
-                            isFree = true
+                            description = "Available through the hf-inference provider ($tag); token required and usage may be metered.",
+                            isFree = false
                         )
                     )
                 }
@@ -501,14 +555,183 @@ class HuggingFaceProvider : AIProvider {
         return@withContext FloatArray(0)
     }
 
+    private fun selectedChatModel(context: Context): String {
+        val configured = AppPreferences.getHuggingFaceModel(context).trim()
+        // This was the old default, but DistilBERT is not a chat-generation model.
+        return if (configured.isBlank() || configured.equals("distilbert-base-uncased", true)) {
+            MODEL_TEXT_GEN
+        } else {
+            configured
+        }
+    }
+
+    private fun extractAssistantContent(message: JSONObject): String {
+        val content = message.opt("content")
+        return when (content) {
+            is String -> content.trim()
+            is JSONArray -> buildString {
+                for (index in 0 until content.length()) {
+                    val part = content.optJSONObject(index) ?: continue
+                    val text = part.optString("text")
+                    if (text.isNotBlank()) append(text)
+                }
+            }.trim()
+            else -> ""
+        }
+    }
+
     override suspend fun generate(
         prompt: String,
         systemInstruction: String?,
         context: Context
     ): AIProviderResult = withContext(Dispatchers.IO) {
-        val configuredModel = AppPreferences.getHuggingFaceModel(context).ifBlank { MODEL_TEXT_GEN }
-        return@withContext textGeneration(model = configuredModel, prompt = prompt, context = context)
+        val token = getToken(context)
+        val model = selectedChatModel(context)
+        if (token.isBlank()) {
+            return@withContext AIProviderResult(
+                success = false,
+                text = "This provider is not configured. Missing Hugging Face token.",
+                providerId = providerId,
+                model = model,
+                error = "Missing Hugging Face token."
+            )
+        }
+
+        val messages = JSONArray()
+        if (!systemInstruction.isNullOrBlank()) {
+            messages.put(JSONObject().put("role", "system").put("content", systemInstruction))
+        }
+        messages.put(JSONObject().put("role", "user").put("content", prompt))
+        val payload = JSONObject()
+            .put("model", model)
+            .put("messages", messages)
+            .put("temperature", 0.7)
+            .put("max_tokens", 512)
+        val startTime = System.currentTimeMillis()
+
+        try {
+            val request = Request.Builder()
+                .url("$CHAT_API_BASE/chat/completions")
+                .addHeader("Authorization", "Bearer ${token.trim()}")
+                .addHeader("Content-Type", "application/json")
+                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                val latency = System.currentTimeMillis() - startTime
+                if (!response.isSuccessful) {
+                    val error = handleError(response.code, body)
+                    return@withContext AIProviderResult(
+                        success = false, text = error, rawJson = body,
+                        providerId = providerId, model = model, error = error, latencyMs = latency
+                    )
+                }
+                val choice = JSONObject(body).optJSONArray("choices")?.optJSONObject(0)
+                val message = choice?.optJSONObject("message")
+                val answer = message?.let(::extractAssistantContent).orEmpty()
+                if (answer.isBlank()) {
+                    return@withContext AIProviderResult(
+                        success = false,
+                        text = "Hugging Face returned no assistant text for model $model.",
+                        rawJson = body,
+                        providerId = providerId,
+                        model = model,
+                        error = "Empty chat completion.",
+                        latencyMs = latency
+                    )
+                }
+                return@withContext AIProviderResult(
+                    success = true,
+                    text = answer,
+                    rawJson = body,
+                    providerId = providerId,
+                    model = model,
+                    latencyMs = latency
+                )
+            }
+        } catch (e: Exception) {
+            val error = handleError(-1, e.localizedMessage)
+            return@withContext AIProviderResult(
+                success = false, text = error, providerId = providerId,
+                model = model, error = e.message, latencyMs = System.currentTimeMillis() - startTime
+            )
+        }
     }
+
+    override fun streamGenerate(
+        prompt: String,
+        systemInstruction: String?,
+        context: Context,
+        modelOverride: String?
+    ): Flow<String> = flow {
+        val token = getToken(context)
+        if (token.isBlank()) {
+            emit("This provider is not configured. Missing Hugging Face token.")
+            return@flow
+        }
+
+        val model = modelOverride?.trim()?.takeIf { it.isNotEmpty() } ?: selectedChatModel(context)
+        val messages = JSONArray()
+        if (!systemInstruction.isNullOrBlank()) {
+            messages.put(JSONObject().put("role", "system").put("content", systemInstruction))
+        }
+        messages.put(JSONObject().put("role", "user").put("content", prompt))
+        val payload = JSONObject()
+            .put("model", model)
+            .put("messages", messages)
+            .put("temperature", 0.7)
+            .put("max_tokens", 512)
+            .put("stream", true)
+
+        try {
+            val request = Request.Builder()
+                .url("$CHAT_API_BASE/chat/completions")
+                .addHeader("Authorization", "Bearer ${token.trim()}")
+                .addHeader("Content-Type", "application/json")
+                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    emit(handleError(response.code, response.body?.string()))
+                    return@use
+                }
+                val body = response.body ?: run {
+                    emit("Hugging Face returned an empty streaming response.")
+                    return@use
+                }
+                body.charStream().buffered().use { reader ->
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        val data = line.trim()
+                        if (!data.startsWith("data:")) continue
+                        val chunk = data.removePrefix("data:").trim()
+                        if (chunk == "[DONE]") break
+                        try {
+                            val choice = JSONObject(chunk).optJSONArray("choices")?.optJSONObject(0)
+                            val delta = choice?.optJSONObject("delta")
+                            val text = delta?.opt("content")
+                            when (text) {
+                                is String -> if (text.isNotEmpty()) emit(text)
+                                is JSONArray -> {
+                                    for (index in 0 until text.length()) {
+                                        val part = text.optJSONObject(index) ?: continue
+                                        val value = part.optString("text")
+                                        if (value.isNotEmpty()) emit(value)
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // Ignore keep-alive and non-content SSE events.
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            emit(handleError(-1, e.localizedMessage))
+        }
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Specialized legacy task execution bridge for backward compatibility with existing UI.
