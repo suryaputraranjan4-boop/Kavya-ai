@@ -29,9 +29,24 @@ class GeminiProvider : AIProvider {
         const val PROVIDER_ID = "gemini"
 
         val VERIFIED_MODELS = listOf(
-            ProviderModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision", "fast"), 1048576, "Latest low-latency high-throughput Google Gemini model", true),
-            ProviderModelInfo("gemini-1.5-flash", "Gemini 1.5 Flash", ProviderType.GEMINI, listOf("reasoning", "general", "vision"), 1048576, "Stable multimodal 1M context model", true),
-            ProviderModelInfo("gemini-1.5-pro", "Gemini 1.5 Pro", ProviderType.GEMINI, listOf("reasoning", "coding", "analysis"), 2097152, "State of the art reasoning model", false)
+            ProviderModelInfo(
+                GeminiModelRegistry.DEFAULT_AGENT_MODEL,
+                "Gemini 3.8 Flash",
+                ProviderType.GEMINI,
+                listOf("reasoning", "general", "vision", "fast"),
+                1048576,
+                "Current default multimodal Flash model",
+                true
+            ),
+            ProviderModelInfo(
+                GeminiModelRegistry.PRO_REASONING_MODEL,
+                "Gemini 3.1 Pro Preview",
+                ProviderType.GEMINI,
+                listOf("reasoning", "coding", "analysis", "vision"),
+                1048576,
+                "Preview model for higher-complexity reasoning",
+                false
+            )
         )
     }
 
@@ -74,20 +89,17 @@ class GeminiProvider : AIProvider {
                 success = false,
                 text = "This provider is not configured. Missing Gemini API key.",
                 providerId = providerId,
-                model = "gemini-2.5-flash",
+                model = GeminiModelRegistry.DEFAULT_AGENT_MODEL,
                 error = "This provider is not configured."
             )
         }
 
-        val models = listOf(
-            "gemini-2.5-flash",
-            "gemini-1.5-flash"
-        )
+        val models = GeminiModelRegistry.CHAT_MODEL_TIERS
 
         val contents = listOf(Content(role = "user", parts = listOf(Part(text = prompt))))
         val request = GenerateContentRequest(
             contents = contents,
-            generationConfig = GenerationConfig(temperature = 0.7f),
+            generationConfig = GenerationConfig(temperature = null, topP = null, topK = null),
             systemInstruction = if (!systemInstruction.isNullOrBlank()) {
                 Content(parts = listOf(Part(text = systemInstruction)))
             } else null
@@ -155,7 +167,7 @@ class GeminiProvider : AIProvider {
             return@flow
         }
 
-        val targetModel = modelOverride?.ifBlank { null } ?: "gemini-2.5-flash"
+        val targetModel = modelOverride?.ifBlank { null } ?: GeminiModelRegistry.DEFAULT_AGENT_MODEL
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$targetModel:streamGenerateContent?key=$apiKey&alt=sse"
 
         val contentsArray = JSONArray().apply {
