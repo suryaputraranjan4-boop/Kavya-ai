@@ -21,9 +21,16 @@ class IntentRouter(private val registry: ApiRegistry? = null) {
                     // Very simple parameter extraction for demo
                     val extractedParams = mutableMapOf<String, String>()
                     if (api.category == ApiCategory.WEATHER) {
-                        val inIndex = lowerInput.indexOf("in ")
-                        if (inIndex != -1 && inIndex + 3 < lowerInput.length) {
-                            extractedParams["location"] = lowerInput.substring(inIndex + 3).trim().split(" ")[0].trim('?', '.')
+                        val locationMatch = Regex(
+                            """\\b(?:in|for|at)\\s+(.+?)(?=\\s+(?:today|tomorrow|tonight|now|currently|current|forecast)\\b|[?.!,]|$)""",
+                            RegexOption.IGNORE_CASE
+                        ).find(userInput)
+                        val location = locationMatch?.groupValues?.getOrNull(1)
+                            ?.trim()
+                            ?.trimEnd('.', '?', '!', ',')
+                            .orEmpty()
+                        if (location.isNotBlank()) {
+                            extractedParams["location"] = location
                         }
                     }
                     return IntentMatch(
