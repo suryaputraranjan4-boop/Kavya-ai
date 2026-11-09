@@ -781,9 +781,9 @@ object AppPreferences {
     private const val KEY_SPEECH_ENGINE = "key_speech_engine"
 
     fun getChatterboxBackendUrl(context: Context): String {
-        // 10.0.2.2 is emulator-only and silently fails on physical Android phones.
-        // Require a real reachable server URL instead of pretending a backend exists.
-        return getPrefs(context).getString(KEY_CHATTERBOX_BACKEND_URL, "") ?: ""
+        // 10.0.2.2 is emulator-only and cannot reach a server from a physical phone.
+        val saved = getPrefs(context).getString(KEY_CHATTERBOX_BACKEND_URL, "").orEmpty()
+        return saved.takeUnless { it.contains("10.0.2.2") } ?: ""
     }
 
     fun setChatterboxBackendUrl(context: Context, url: String) {
