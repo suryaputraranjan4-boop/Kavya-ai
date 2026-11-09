@@ -11,7 +11,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
 /**
@@ -132,7 +131,8 @@ class ChatterboxTtsClient(private val context: Context) {
                 put("reference_audio", refBase64)
                 put("audio_prompt", refBase64)
                 val extension = referenceAudioPath?.let { File(it).extension.lowercase() }.orEmpty()
-                put("reference_audio_format", extension.ifBlank { "auto" })
+                val audioFormat = extension.takeIf { it in setOf("wav", "mp3", "m4a", "3gp", "ogg", "flac") } ?: "auto"
+                put("reference_audio_format", audioFormat)
             }
         }
 
