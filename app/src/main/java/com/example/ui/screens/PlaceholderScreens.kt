@@ -472,7 +472,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                "Exclusive Primary Speech Engine. ResembleAI V3 ~0.5B flow-matching text-to-speech & zero-shot voice cloning for Hindi.",
+                                "Hindi text-to-speech and voice conditioning through a configured Chatterbox inference server.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
@@ -497,7 +497,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                         Column {
                             Text("Official Weights & Tokenizers", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
                             Text(
-                                if (modelManager.isAllMandatoryFilesReady()) "All mandatory files downloaded & verified" else "Downloads pending or incomplete",
+                                if (modelManager.isAllMandatoryFilesReady()) "All mandatory files downloaded" else "Downloads pending or incomplete",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (modelManager.isAllMandatoryFilesReady()) SuccessGreen else AccentYellow
                             )
@@ -543,7 +543,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     when (status) {
                                         com.example.ai.DownloadItemStatus.COMPLETED -> {
-                                            StatusBadge(text = "Verified", isActive = true)
+                                            StatusBadge(text = "Downloaded", isActive = true)
                                         }
                                         com.example.ai.DownloadItemStatus.DOWNLOADING -> {
                                             IconButton(onClick = { modelManager.pauseDownload(spec.id) }) {
@@ -588,7 +588,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                     shape = RoundedCornerShape(18.dp)
                 ) {
                     Text(
-                        "Chatterbox Multilingual Hindi requires GPU flow-matching acceleration. Configure your local network server (e.g., http://10.0.2.2:8000) or remote cloud GPU endpoint.",
+                        "Speech generation runs on a separate Chatterbox inference server. Enter its reachable LAN or HTTPS URL here. The model files above are downloaded into app storage but are not loaded for on-device inference; 10.0.2.2 works only from an Android emulator, not a physical phone.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
