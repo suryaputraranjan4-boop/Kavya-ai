@@ -110,8 +110,11 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                     pdfDocument.writeTo(out)
                 }
                 pdfDocument.close()
-                viewModel.sendMessage("[Scanned PDF Document: $fileName (${file.length()} bytes)] The scanned PDF document is ready and attached.")
-                Toast.makeText(context, "Document scanned: $fileName", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    "Scan created ($fileName), but PDF bytes cannot be attached to chat yet. The model did not receive this file.",
+                    Toast.LENGTH_LONG
+                ).show()
             } catch (e: Exception) {
                 viewModel.sendMessage("PDF scan failed: ${e.localizedMessage}")
             }
@@ -143,9 +146,13 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                         if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
                     }
                 }
-                viewModel.sendMessage("[Gallery Image Attached: $displayName (${fileSize / 1024} KB)] Please analyze this image from my gallery.")
+                Toast.makeText(
+                    context,
+                    "Image selected ($displayName), but image upload is not connected to chat yet. The model did not receive this image.",
+                    Toast.LENGTH_LONG
+                ).show()
             } catch (e: Exception) {
-                viewModel.sendMessage("[Gallery Image Attached: ${uri.lastPathSegment ?: "image"}]")
+                Toast.makeText(context, "Image could not be prepared for chat. No image data was sent.", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -166,9 +173,13 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                         if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
                     }
                 }
-                viewModel.sendMessage("[PDF Document Attached: $displayName (${fileSize / 1024} KB)] Please inspect and extract key insights from this PDF.")
+                Toast.makeText(
+                    context,
+                    "PDF selected ($displayName), but PDF upload/text extraction is not connected to chat yet. The model did not receive this PDF.",
+                    Toast.LENGTH_LONG
+                ).show()
             } catch (e: Exception) {
-                viewModel.sendMessage("[PDF Document Attached: ${uri.lastPathSegment ?: "document.pdf"}]")
+                Toast.makeText(context, "PDF could not be prepared for chat. No PDF data was sent.", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -199,10 +210,14 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                     val snippet = if (rawText.length > 2500) rawText.take(2500) + "\n...[truncated for length]" else rawText
                     viewModel.sendMessage("[Document Attached: $displayName]\n\nDocument Contents:\n$snippet\n\nPlease review and explain this document.")
                 } else {
-                    viewModel.sendMessage("[Document Attached: $displayName ($mimeType)] Please review this document.")
+                    Toast.makeText(
+                        context,
+                        "Only text-based documents are extracted. This file type ($mimeType) was not uploaded or analyzed.",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             } catch (e: Exception) {
-                viewModel.sendMessage("[Document Attached: ${uri.lastPathSegment ?: "document"}]")
+                Toast.makeText(context, "Document could not be read. No document data was sent.", Toast.LENGTH_LONG).show()
             }
         }
     }
