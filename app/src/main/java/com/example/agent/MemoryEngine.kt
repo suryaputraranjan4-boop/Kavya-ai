@@ -1,5 +1,7 @@
 package com.example.agent
 
+import kotlinx.coroutines.CancellationException
+
 import android.content.Context
 import android.util.Log
 import com.example.data.AppDatabase
@@ -39,7 +41,9 @@ class MemoryEngine(private val context: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 migrateRoomRecordsToOkf()
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "Background Room -> OKF migration notice: ${e.message}")
             }
         }
@@ -185,7 +189,9 @@ class MemoryEngine(private val context: Context) {
                         importance = importance,
                         provenance = OkfProvenance(source = "EXPLICIT_USER_COMMAND", author = "User")
                     )
-                } catch (e: Exception) {
+                } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                     Log.w(TAG, "OKF sync error on remember: ${e.message}")
                 }
             }
@@ -493,6 +499,8 @@ class MemoryEngine(private val context: Context) {
                 content = updated.content,
                 importance = updated.importance
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "OKF sync error on success: ${e.message}")
         }
@@ -520,7 +528,9 @@ class MemoryEngine(private val context: Context) {
                     idOrKey = updated.key,
                     content = updated.content
                 )
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "OKF sync error on update: ${e.message}")
             }
         } else {
@@ -541,7 +551,9 @@ class MemoryEngine(private val context: Context) {
                     importance = 5,
                     provenance = OkfProvenance(source = "TASK_LEARNING", author = "Kavya Memory Engine")
                 )
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "OKF sync error on create: ${e.message}")
             }
         }
@@ -745,7 +757,9 @@ class MemoryEngine(private val context: Context) {
         if (existing != null) {
             try {
                 okfRepository.deleteKnowledge(existing.key, permanent = false)
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "OKF memory delete failed after Room delete: ${e.message}")
             }
         }
@@ -774,6 +788,8 @@ class MemoryEngine(private val context: Context) {
                 importance = cleanImportance,
                 provenance = OkfProvenance(source = "USER_EXPLICIT", author = "User")
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "OKF memory write failed; Room save will continue: ${e.message}")
         }
@@ -819,6 +835,8 @@ class MemoryEngine(private val context: Context) {
                 category = OkfCategory.fromString(memory.category),
                 importance = memory.importance
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "OKF memory update failed after Room update: ${e.message}")
         }
