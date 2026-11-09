@@ -229,12 +229,13 @@ class KavyaMicrophoneEngine : Service() {
                 }
             }
 
-            recognizer?.startListening(intent)
             sessionRunning = true
+            recognizer?.startListening(intent)
             stateFlow.value = if (sleeping) EngineState.MIC_SLEEPING else EngineState.MIC_ACTIVE
             Log.i(TAG, "Microphone recognition session started (reusing recognizer when possible)")
         } catch (t: Throwable) {
             Log.e(TAG, "Recognition start failed", t)
+            sessionRunning = false
             destroyRecognizer()
             scheduleRetry()
         }
@@ -276,6 +277,7 @@ class KavyaMicrophoneEngine : Service() {
         override fun onError(error: Int) {
             sessionRunning = false
             partialFlow.value = ""
+            if (assistantSpeaking || !desired) return
 
             when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH,
@@ -316,12 +318,13 @@ class KavyaMicrophoneEngine : Service() {
                 ?.trim()
                 .orEmpty()
 
-            if (text.isNotBlank()) handleRecognizedText(text)
+            if (text.isNotBlank() && desired && !assistantSpeaking) handleRecognizedText(text)
 
-            if (desired && !assistantSpeaking) schedule(700L)
+            if (desired && !assistantSpeaking) schedule(350L)
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
+            if (!desired || assistantSpeaking) return
             val text = partialResults
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull()
@@ -411,7 +414,7 @@ class KavyaMicrophoneEngine : Service() {
                 stopActiveSession()
                 amplitudeFlow.value = 0f
             } else if (desired) {
-                schedule(300L)
+                schedule(250L)
             }
         }
     }
