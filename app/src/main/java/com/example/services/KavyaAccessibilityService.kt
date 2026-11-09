@@ -470,6 +470,10 @@ class KavyaAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Returns true when ACTION_CLICK is accepted or its fallback gesture completes.
+     * This is dispatch acknowledgement, not proof that the app's visible state changed.
+     */
     suspend fun clickNodeAndAwait(node: AccessibilityNodeInfo?): Boolean =
         performNodeActionAndAwait(node, AccessibilityNodeInfo.ACTION_CLICK, 80L)
 
