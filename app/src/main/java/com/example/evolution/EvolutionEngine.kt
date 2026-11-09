@@ -5,6 +5,9 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class EvolutionEngine(private val context: Context) {
     companion object {
@@ -27,30 +30,8 @@ class EvolutionEngine(private val context: Context) {
         }
 
         // If GitHub API returns empty (rate limit or offline), use fallback real repository records without fake simulation
-        val finalRepos = if (discoveredRepos.isNotEmpty()) {
-            discoveredRepos.take(10)
-        } else {
-            listOf(
-                EvolutionProject(
-                    id = "gh_langchain_kotlin",
-                    name = "langchain-kotlin",
-                    owner = "langchain",
-                    url = "https://github.com/langchain/langchain-kotlin",
-                    license = "MIT",
-                    language = "Kotlin",
-                    framework = "LLM Orchestration",
-                    stars = 4200,
-                    forks = 650,
-                    lastUpdate = "Today",
-                    dependencies = listOf("kotlinx-serialization", "ktor-client-core"),
-                    documentationQuality = "High",
-                    architecture = "Pipeline",
-                    requiredPermissions = emptyList(),
-                    potentialUsefulness = "Improves prompt chain orchestration.",
-                    maintenanceStatus = "Active"
-                )
-            )
-        }
+        // Never substitute fabricated repository metadata when GitHub is unavailable.
+        val finalRepos = discoveredRepos.distinctBy { it.id }.take(10)
 
         var passedCount = 0
         var quarantinedCount = 0
@@ -63,7 +44,8 @@ class EvolutionEngine(private val context: Context) {
         val upgradesToInsert = mutableListOf<EvolutionUpgradeEntity>()
         val historyToInsert = mutableListOf<EvolutionHistoryEntity>()
         val currentTime = System.currentTimeMillis()
-        val dateStr = "Sep 20, 2026"
+        val dateStr = SimpleDateFormat("MMM d, yyyy", Locale.US).format(Date(currentTime))
+        val scanTime = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(currentTime))
 
         for (repo in finalRepos) {
             val securityResult = performSecurityGate(repo)
@@ -76,9 +58,9 @@ class EvolutionEngine(private val context: Context) {
                         date = dateStr,
                         projectName = repo.name,
                         capability = repo.framework,
-                        securityResult = "FAILED (${securityResult.rejectionReason ?: "Suspicious behavior"})",
-                        action = "Blocked",
-                        status = "Rejected",
+                        securityResult = "NOT_SCANNED (${securityResult.rejectionReason ?: "Source not verified"})",
+                        action = "Not approved",
+                        status = "Not Verified",
                         version = "—",
                         timestamp = currentTime
                     )
@@ -147,7 +129,7 @@ class EvolutionEngine(private val context: Context) {
         val reportEntity = EvolutionReportEntity(
             id = reportId,
             date = dateStr,
-            scanTime = "02:00 AM",
+            scanTime = scanTime,
             discovered = finalRepos.size,
             analyzed = finalRepos.size,
             passed = passedCount,
@@ -198,41 +180,28 @@ class EvolutionEngine(private val context: Context) {
     }
 
     private fun performSecurityGate(project: EvolutionProject): SecurityScanResult {
-        val suspicious = mutableListOf<String>()
-        if (project.name.contains("malware") || project.name.contains("shady") || project.requiredPermissions.size > 3) {
-            suspicious.add("Unauthorized permission requirements or suspicious actor footprint.")
-            return SecurityScanResult(
-                repoId = project.id,
-                isClean = false,
-                secretsFound = emptyList(),
-                vulnerabilities = listOf("Unverified binary payload"),
-                suspiciousBehaviors = suspicious,
-                securityLevel = "DANGEROUS",
-                quarantined = true,
-                rejectionReason = "Quarantined due to suspicious footprint or excessive permissions."
-            )
-        }
-
+        // Repository metadata is not a source-code security audit. Until the repository
+        // contents are fetched, inspected and scanned, never mark a candidate as clean.
         return SecurityScanResult(
             repoId = project.id,
-            isClean = true,
+            isClean = false,
             secretsFound = emptyList(),
             vulnerabilities = emptyList(),
-            suspiciousBehaviors = emptyList(),
-            securityLevel = "SAFE",
+            suspiciousBehaviors = listOf("Repository source code has not been scanned."),
+            securityLevel = "NOT_SCANNED",
             quarantined = false,
-            rejectionReason = null
+            rejectionReason = "Metadata-only discovery cannot establish source-code safety."
         )
     }
 
     private fun performSandboxTesting(project: EvolutionProject): SandboxTestResult {
         return SandboxTestResult(
             repoId = project.id,
-            success = true,
-            latencyDeltaMs = -100L,
-            memoryDeltaMb = 2,
-            toolExecutionSuccess = true,
-            errorMessage = null
+            success = false,
+            latencyDeltaMs = 0L,
+            memoryDeltaMb = 0,
+            toolExecutionSuccess = false,
+            errorMessage = "Sandbox execution is not implemented; no test was run."
         )
     }
 }
