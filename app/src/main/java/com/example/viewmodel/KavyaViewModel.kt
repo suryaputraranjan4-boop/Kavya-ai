@@ -547,8 +547,33 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     fun importMemoriesFromObsidian() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val imported = obsidianVaultManager.importMemoriesFromVault()
+                .distinctBy { it.key.trim().lowercase(java.util.Locale.ROOT) }
+            val existingByKey = memoryDao.getAllMemories()
+                .associateBy { it.key.trim().lowercase(java.util.Locale.ROOT) }
+
             for (mem in imported) {
-                memoryDao.insertMemory(mem)
+                val normalizedKey = mem.key.trim().lowercase(java.util.Locale.ROOT)
+                val existing = existingByKey[normalizedKey]
+                if (existing != null) {
+                    memoryEngine.updateMemory(
+                        existing.copy(
+                            content = mem.content,
+                            category = mem.category,
+                            importance = mem.importance.coerceIn(1, 5),
+                            lastUsedAt = maxOf(existing.lastUsedAt, mem.lastUsedAt),
+                            sourceConversation = mem.sourceConversation,
+                            confidence = mem.confidence.coerceIn(0f, 1f),
+                            userConfirmed = true
+                        )
+                    )
+                } else {
+                    memoryEngine.insertCustomMemory(
+                        key = mem.key,
+                        content = mem.content,
+                        category = mem.category,
+                        importance = mem.importance
+                    )
+                }
             }
         }
     }
