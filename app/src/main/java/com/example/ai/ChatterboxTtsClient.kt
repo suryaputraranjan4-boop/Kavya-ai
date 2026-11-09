@@ -126,9 +126,13 @@ class ChatterboxTtsClient(private val context: Context) {
             put("speed", speedMultiplier)
             put("pitch", pitchMultiplier)
             put("emotion", emotion)
+            put("response_format", "wav")
+            put("format", "wav")
             if (!refBase64.isNullOrBlank()) {
                 put("reference_audio", refBase64)
                 put("audio_prompt", refBase64)
+                val extension = referenceAudioPath?.let { File(it).extension.lowercase() }.orEmpty()
+                put("reference_audio_format", extension.ifBlank { "auto" })
             }
         }
 
@@ -139,55 +143,68 @@ class ChatterboxTtsClient(private val context: Context) {
             "$baseUrl/tts"
         )
 
-        var lastError: String = "Failed to reach Chatterbox backend at $baseUrl."
+        var lastError = "Failed to reach Chatterbox backend at $baseUrl."
+        var backendReached = false
 
         for (url in endpointsToTry) {
             try {
-                val reqBuilder = Request.Builder()
+                val request = Request.Builder()
                     .url(url)
+                    .header("Accept", "audio/wav, application/json, application/octet-stream")
+                    .apply {
+                        if (token.isNotBlank()) addHeader("Authorization", "Bearer $token")
+                    }
                     .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                    .build()
 
-                if (token.isNotBlank()) {
-                    reqBuilder.addHeader("Authorization", "Bearer $token")
-                }
+                httpClient.newCall(request).execute().use { response ->
+                    backendReached = true
+                    val contentType = response.header("Content-Type").orEmpty()
+                    if (!response.isSuccessful) {
+                        val detail = response.body?.string()?.take(500).orEmpty()
+                        lastError = "Chatterbox server returned HTTP ${response.code}${if (detail.isBlank()) "" else ": $detail"}"
+                        Log.w(TAG, "Endpoint $url returned HTTP ${response.code}")
+                        if (response.code == 401 || response.code == 403 || response.code == 429) {
+                            return@withContext ChatterboxResult.Error(lastError, isBackendUnavailable = false)
+                        }
+                        continue
+                    }
 
-                httpClient.newCall(reqBuilder.build()).execute().use { response ->
-                    val code = response.code
-                    if (response.isSuccessful) {
-                        val body = response.body ?: return@use
-                        val contentType = response.header("Content-Type") ?: ""
-                        
-                        // If JSON response containing base64 audio or direct WAV binary
-                        if (contentType.contains("application/json", ignoreCase = true)) {
-                            val jsonStr = body.string()
-                            val json = JSONObject(jsonStr)
-                            val b64Audio = json.optString("audio")
-                                .ifEmpty { json.optString("audio_base64") }
-                                .ifEmpty { json.optString("audio_content") }
-                            if (b64Audio.isNotBlank()) {
-                                val bytes = android.util.Base64.decode(b64Audio, android.util.Base64.DEFAULT)
-                                val sampleRate = json.optInt("sample_rate", 24000)
-                                return@withContext ChatterboxResult.Success(bytes, sampleRate)
-                            }
-                        } else {
-                            // Direct binary audio (e.g., audio/wav, audio/mpeg, audio/x-wav)
-                            val bytes = body.bytes()
+                    val body = response.body ?: run {
+                        lastError = "Chatterbox returned an empty response."
+                        continue
+                    }
+
+                    if (contentType.contains("application/json", ignoreCase = true)) {
+                        val jsonText = body.string()
+                        val json = JSONObject(jsonText)
+                        val encoded = json.optString("audio")
+                            .ifEmpty { json.optString("audio_base64") }
+                            .ifEmpty { json.optString("audio_content") }
+                            .substringAfter("base64,", json.optString("audio"))
+                        if (encoded.isNotBlank()) {
+                            val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
                             if (bytes.isNotEmpty()) {
-                                return@withContext ChatterboxResult.Success(bytes, 24000)
+                                return@withContext ChatterboxResult.Success(bytes, json.optInt("sample_rate", 24000))
                             }
                         }
+                        lastError = json.optString("detail")
+                            .ifBlank { json.optString("message", "Chatterbox response did not contain audio data.") }
+                    } else if (contentType.startsWith("audio/", ignoreCase = true) ||
+                        contentType.contains("octet-stream", ignoreCase = true)) {
+                        val bytes = body.bytes()
+                        if (bytes.isNotEmpty()) return@withContext ChatterboxResult.Success(bytes, 24000)
+                        lastError = "Chatterbox returned an empty audio file."
                     } else {
-                        val errorBody = response.body?.string() ?: ""
-                        lastError = "Chatterbox server returned $code: $errorBody"
-                        Log.w(TAG, "Endpoint $url returned $code: $errorBody")
+                        lastError = "Unexpected Chatterbox response type: ${contentType.ifBlank { "unknown" }}."
                     }
                 }
             } catch (e: Exception) {
-                lastError = "Connection error to $url: ${e.message}"
-                Log.w(TAG, "Attempt to $url failed: ${e.message}")
+                lastError = "Chatterbox request failed: ${e.message ?: e.javaClass.simpleName}"
+                Log.w(TAG, "Attempt to $url failed: ${e.javaClass.simpleName}")
             }
         }
 
-        return@withContext ChatterboxResult.Error(lastError, isBackendUnavailable = true)
+        return@withContext ChatterboxResult.Error(lastError, isBackendUnavailable = !backendReached)
     }
 }
