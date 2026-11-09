@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class EvolutionViewModel(application: Application) : AndroidViewModel(application) {
     private val database = com.example.data.AppDatabase.getDatabase(application)
@@ -79,26 +82,30 @@ class EvolutionViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 evolutionEngine.runDailyScan()
             } catch (e: Exception) {
-                org.json.JSONObject().toString() // handle quietly
+                android.util.Log.w("EvolutionViewModel", "Evolution scan failed (${e.javaClass.simpleName}).")
             } finally {
                 _isScanning.value = false
             }
         }
     }
 
+    private fun currentDate(): String =
+        SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date())
+
     fun approveUpgrade(upgradeId: String) {
         viewModelScope.launch {
-            evolutionDao.updateUpgradeStatus(upgradeId, "APPROVED_AND_APPLIED")
+            // Approval is recorded for manual review only. Evolution does not install code.
+            evolutionDao.updateUpgradeStatus(upgradeId, "APPROVED_FOR_MANUAL_REVIEW")
             evolutionDao.insertHistory(
                 EvolutionHistoryEntity(
                     id = java.util.UUID.randomUUID().toString(),
-                    date = "Sep 20, 2026",
-                    projectName = "Approved Upgrade",
-                    capability = "Custom Enhancement",
-                    securityResult = "PASSED",
-                    action = "User Approved & Applied",
-                    status = "Integrated",
-                    version = "v1.5",
+                    date = currentDate(),
+                    projectName = "Upgrade candidate",
+                    capability = "Manual review",
+                    securityResult = "NOT_SCANNED",
+                    action = "Manual review approved; no code applied",
+                    status = "Review only",
+                    version = "—",
                     timestamp = System.currentTimeMillis()
                 )
             )
@@ -111,11 +118,11 @@ class EvolutionViewModel(application: Application) : AndroidViewModel(applicatio
             evolutionDao.insertHistory(
                 EvolutionHistoryEntity(
                     id = java.util.UUID.randomUUID().toString(),
-                    date = "Sep 20, 2026",
-                    projectName = "Rejected Upgrade",
-                    capability = "External Module",
-                    securityResult = "REVIEWED",
-                    action = "User Rejected",
+                    date = currentDate(),
+                    projectName = "Upgrade candidate",
+                    capability = "Manual review",
+                    securityResult = "NOT_SCANNED",
+                    action = "Candidate rejected by user",
                     status = "Rejected",
                     version = "—",
                     timestamp = System.currentTimeMillis()
@@ -126,16 +133,18 @@ class EvolutionViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun rollbackLastUpgrade() {
         viewModelScope.launch {
+            // No source changes are installed by this research-only engine, so there is
+            // no applied change set to restore. Record the unavailable operation honestly.
             evolutionDao.insertHistory(
                 EvolutionHistoryEntity(
                     id = java.util.UUID.randomUUID().toString(),
-                    date = "Sep 20, 2026",
-                    projectName = "Emergency Rollback",
-                    capability = "System Stable Snapshot",
-                    securityResult = "PASSED",
-                    action = "Rollback Performed",
-                    status = "Rolled Back",
-                    version = "v1.4 (Restored)",
+                    date = currentDate(),
+                    projectName = "Evolution rollback",
+                    capability = "No installed change set",
+                    securityResult = "NOT_APPLICABLE",
+                    action = "Rollback unavailable: no code changes were installed",
+                    status = "Not performed",
+                    version = "—",
                     timestamp = System.currentTimeMillis()
                 )
             )
