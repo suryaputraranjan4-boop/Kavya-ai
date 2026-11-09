@@ -53,25 +53,45 @@ class AgentOrchestrator(
         val preferredProvider = AppPreferences.getAiProvider(context)
         val isExplicitOffline = preferredProvider == "GEMMA_OFFLINE" || AppPreferences.isOfflineFallbackEnabled(context)
 
-        // 1. Determine primary provider based on routing decision
-        val primaryProvider: AIProvider? = when (decision.provider) {
-            "GEMMA_OFFLINE" -> gemmaOfflineProvider
-            "GEMINI" -> geminiProvider
-            "OPENROUTER" -> openRouterProvider
-            "HUGGINGFACE" -> huggingFaceProvider
-            else -> {
-                if (isExplicitOffline && gemmaOfflineProvider.isConfigured(context)) gemmaOfflineProvider
-                else if (geminiProvider.isConfigured(context)) geminiProvider
-                else if (openRouterProvider.isConfigured(context)) openRouterProvider
-                else if (huggingFaceProvider.isConfigured(context)) huggingFaceProvider
-                else if (gemmaOfflineProvider.isConfigured(context)) gemmaOfflineProvider
-                else null
+        // Refuse unsupported visual tasks in explicit offline mode before any provider
+        // can be selected. This makes the privacy/network boundary independent of API keys.
+        if (isExplicitOffline && (hasImage || decision.requiresVision ||
+            decision.taskType in setOf(TaskType.VISION, TaskType.OCR, TaskType.IMAGE_AI))
+        ) {
+            val message = decision.explanation.ifBlank {
+                "This visual task is not supported by the selected local text model. Online fallback is disabled."
+            }
+            return AIProviderResult(
+                success = false,
+                text = message,
+                providerId = "gemma_offline",
+                model = "selected local model",
+                error = message
+            )
+        }
+
+        // Explicit offline selection overrides every cloud-provider routing suggestion.
+        val primaryProvider: AIProvider? = if (isExplicitOffline) {
+            gemmaOfflineProvider
+        } else {
+            when (decision.provider) {
+                "GEMMA_OFFLINE" -> gemmaOfflineProvider
+                "GEMINI" -> geminiProvider
+                "OPENROUTER" -> openRouterProvider
+                "HUGGINGFACE" -> huggingFaceProvider
+                else -> {
+                    if (geminiProvider.isConfigured(context)) geminiProvider
+                    else if (openRouterProvider.isConfigured(context)) openRouterProvider
+                    else if (huggingFaceProvider.isConfigured(context)) huggingFaceProvider
+                    else if (gemmaOfflineProvider.isConfigured(context)) gemmaOfflineProvider
+                    else null
+                }
             }
         }
 
         if (primaryProvider == null || !primaryProvider.isConfigured(context)) {
             val missingMsg = if (isExplicitOffline || decision.provider == "GEMMA_OFFLINE") {
-                "Local Gemma 4 E4B model is not installed or ready. Please import model in Settings."
+                "No supported local model is installed or ready. Import a compatible model in Settings while Offline Mode is enabled."
             } else {
                 "No compatible AI provider is currently configured. Please configure an API key or import Gemma model in Settings."
             }
@@ -80,7 +100,7 @@ class AgentOrchestrator(
                 success = false,
                 text = missingMsg,
                 providerId = if (isExplicitOffline) "gemma_offline" else "none",
-                model = if (isExplicitOffline) "Gemma 4 E4B" else "none",
+                model = if (isExplicitOffline) "selected local model" else "none",
                 error = missingMsg
             )
         }
@@ -111,12 +131,12 @@ class AgentOrchestrator(
 
         // In explicit offline mode, do NOT attempt network fallbacks
         if (isExplicitOffline || primaryProvider == gemmaOfflineProvider) {
-            val offlineError = primaryResult.error ?: "Gemma 4 E4B local model failed to generate response."
+            val offlineError = primaryResult.error ?: "Selected local model failed to generate a response."
             return AIProviderResult(
                 success = false,
                 text = offlineError,
                 providerId = gemmaOfflineProvider.providerId,
-                model = "Gemma 4 E4B",
+                model = "selected local model",
                 error = offlineError
             )
         }
