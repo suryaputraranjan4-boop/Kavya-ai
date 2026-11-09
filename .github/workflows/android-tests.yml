@@ -60,5 +60,8 @@ jobs:
       - name: Verify Source Compilation
         run: gradle :app:compileDebugKotlin --stacktrace
 
+      - name: Run Android Lint
+        run: gradle :app:lintDebug --stacktrace
+
       - name: Build Debug APK
         run: gradle :app:assembleDebug --stacktrace
