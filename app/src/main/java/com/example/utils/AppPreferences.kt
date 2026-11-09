@@ -224,7 +224,14 @@ object AppPreferences {
     }
 
     fun getHuggingFaceModel(context: Context): String {
-        return getPrefs(context).getString(KEY_HUGGINGFACE_MODEL, "distilbert-base-uncased") ?: "distilbert-base-uncased"
+        val legacyDefault = "distilbert-base-uncased"
+        val chatDefault = "meta-llama/Llama-3.2-1B-Instruct"
+        val stored = getPrefs(context).getString(KEY_HUGGINGFACE_MODEL, chatDefault).orEmpty().trim()
+        return if (stored.isBlank() || stored.equals(legacyDefault, ignoreCase = true)) {
+            chatDefault
+        } else {
+            stored
+        }
     }
 
     fun setHuggingFaceModel(context: Context, model: String) {
