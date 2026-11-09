@@ -52,8 +52,8 @@ object AutomationEventLogger {
         _logs.value = current
     }
 
-    fun voice(msg: String) = log(EventTag.VOICE, msg)
-    fun parsed(msg: String) = log(EventTag.PARSED, msg)
+    fun voice(@Suppress("UNUSED_PARAMETER") msg: String) = log(EventTag.VOICE, "Voice input received (content redacted)")
+    fun parsed(@Suppress("UNUSED_PARAMETER") msg: String) = log(EventTag.PARSED, "Request parsed (content redacted)")
     fun app(msg: String) = log(EventTag.APP, msg)
     fun screen(msg: String) = log(EventTag.SCREEN, msg)
     fun action(msg: String) = log(EventTag.ACTION, msg)
