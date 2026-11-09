@@ -310,7 +310,7 @@ fun AiApiHubScreen(navController: NavController) {
                             }
 
                             RoleBadge(
-                                label = if (selectedAiProvider == "GEMMA_OFFLINE") "ACTIVE ENGINE" else "OFFLINE READY",
+                                label = if (selectedAiProvider == "GEMMA_OFFLINE") "SELECTED" else "AVAILABLE",
                                 color = if (selectedAiProvider == "GEMMA_OFFLINE") SuccessGreenGlow else AccentCyan
                             )
 
@@ -415,7 +415,23 @@ fun AiApiHubScreen(navController: NavController) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("Offline Mode:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                                Text("YES (100% On-Device)", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = SuccessGreenGlow)
+                                val offlineStatusLabel = when {
+                                    selectedAiProvider != "GEMMA_OFFLINE" -> "NOT SELECTED"
+                                    gemmaStatus == com.example.ai.offline.GemmaModelStatus.READY ||
+                                        gemmaStatus == com.example.ai.offline.GemmaModelStatus.RUNNING -> "ACTIVE — ON DEVICE"
+                                    gemmaFile != null -> "SELECTED — MODEL NOT LOADED"
+                                    else -> "SELECTED — IMPORT MODEL"
+                                }
+                                Text(
+                                    offlineStatusLabel,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                    color = when {
+                                        selectedAiProvider != "GEMMA_OFFLINE" -> TextSecondary
+                                        gemmaStatus == com.example.ai.offline.GemmaModelStatus.READY ||
+                                            gemmaStatus == com.example.ai.offline.GemmaModelStatus.RUNNING -> SuccessGreenGlow
+                                        else -> AccentYellow
+                                    }
+                                )
                             }
 
                             Row(
