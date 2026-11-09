@@ -666,8 +666,6 @@ class HuggingFaceProvider : AIProvider {
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (cancelled: CancellationException) {
-            throw cancelled
         } catch (e: Exception) {
             val error = handleError(-1, e.localizedMessage)
             return@withContext AIProviderResult(
@@ -746,8 +744,6 @@ class HuggingFaceProvider : AIProvider {
                     }
                 }
             }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (e: Exception) {
