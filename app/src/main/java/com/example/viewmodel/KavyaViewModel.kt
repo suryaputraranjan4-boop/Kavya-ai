@@ -545,7 +545,28 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun syncMemoriesToObsidian() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val all = memoryDao.getAllMemories()
+            val all = memoryDao.getAllMemories().toMutableList()
+            val roomKeys = all.map { it.key.trim().lowercase(java.util.Locale.ROOT) }.toHashSet()
+
+            // Include active OKF knowledge that does not yet have a Room row.
+            // Room remains authoritative for keys already represented in both stores.
+            val okfOnly = okfRepository.listKnowledge(limit = Int.MAX_VALUE)
+                .filter { it.key.trim().lowercase(java.util.Locale.ROOT) !in roomKeys }
+                .map { unit ->
+                    MemoryEntity(
+                        key = unit.key,
+                        content = unit.content,
+                        category = unit.category.name,
+                        importance = unit.importance.coerceIn(1, 5),
+                        createdAt = unit.createdAt,
+                        lastUsedAt = unit.updatedAt,
+                        sourceConversation = unit.provenance.source,
+                        confidence = unit.confidence.coerceIn(0f, 1f),
+                        userConfirmed = unit.provenance.author.equals("User", ignoreCase = true)
+                    )
+                }
+
+            all.addAll(okfOnly)
             obsidianVaultManager.syncMemoriesToVault(all)
         }
     }
