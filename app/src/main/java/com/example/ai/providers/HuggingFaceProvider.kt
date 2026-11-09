@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.ai.RetrofitClient
 import com.example.security.SecureStorage
 import com.example.utils.AppPreferences
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -649,6 +650,8 @@ class HuggingFaceProvider : AIProvider {
                     latencyMs = latency
                 )
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             val error = handleError(-1, e.localizedMessage)
             return@withContext AIProviderResult(
@@ -727,6 +730,8 @@ class HuggingFaceProvider : AIProvider {
                     }
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             emit(handleError(-1, e.localizedMessage))
         }
