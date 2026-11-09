@@ -775,23 +775,20 @@ class KavyaAccessibilityService : AccessibilityService() {
             val typed = typeInNode(targetField, query)
             if (typed) {
                 kotlinx.coroutines.delay(200)
-                clickSearchOrSubmitButton()
-                return true
+                return clickSearchOrSubmitButton()
             }
         }
 
         // 4. Try typing in currently focused input
         if (typeInFocusedNode(query)) {
             kotlinx.coroutines.delay(200)
-            clickSearchOrSubmitButton()
-            return true
+            return clickSearchOrSubmitButton()
         }
 
         // 5. Try generic search text resolution
         if (typeInNodeByText("search", query)) {
             kotlinx.coroutines.delay(200)
-            clickSearchOrSubmitButton()
-            return true
+            return clickSearchOrSubmitButton()
         }
 
         return false
