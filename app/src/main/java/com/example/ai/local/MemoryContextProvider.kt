@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.example.data.AppDatabase
 import com.example.data.MemoryEntity
-import com.example.memory.okf.OkfMemoryRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -64,7 +63,7 @@ class MemoryContextProvider private constructor(private val context: Context) {
                 .take(5)
                 .map { it.first }
 
-            val memoriesToUse = if (topMemories.isNotEmpty()) topMemories else allMemories.take(3)
+            val memoriesToUse = topMemories
 
             val sb = StringBuilder()
             sb.append("\n[KAVYA PERSISTENT USER MEMORY & PREFERENCES]:\n")
