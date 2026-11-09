@@ -185,13 +185,14 @@ fun EvolutionDashboardTab(report: com.example.evolution.EvolutionReportEntity?, 
         item {
             Button(
                 onClick = { viewModel.rollbackLastUpgrade() },
+                enabled = false,
                 colors = ButtonDefaults.buttonColors(containerColor = Error.copy(alpha = 0.2f), contentColor = Error),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Undo, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Emergency Rollback Last Upgrade")
+                Text("Rollback unavailable — no code changes installed")
             }
         }
     }
