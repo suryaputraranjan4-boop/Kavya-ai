@@ -107,16 +107,13 @@ object TapEngine {
                     bounds = candidate.bounds,
                     diagnostic = "Tapped '${candidate.primaryLabel}' and verified UI change"
                 )
-            } else if (attempt < MAX_RETRIES) {
-                delay(400)
-                continue
             } else {
                 return TapResult(
                     success = false,
                     targetLabel = candidate.primaryLabel,
                     verified = false,
                     bounds = candidate.bounds,
-                    diagnostic = "Tap dispatched on '${candidate.primaryLabel}', but no UI state change was observed"
+                    diagnostic = "Tap was dispatched on '${candidate.primaryLabel}', but no UI state change was observed; it was not repeated to avoid duplicate actions"
                 )
             }
         }
