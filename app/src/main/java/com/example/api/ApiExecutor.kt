@@ -1,5 +1,7 @@
 package com.example.api
 
+import kotlinx.coroutines.CancellationException
+
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -164,6 +166,8 @@ class ApiExecutor {
         } catch (e: IOException) {
             Log.e(TAG, "Network error executing ${api.apiId} (${e.javaClass.simpleName}).")
             null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "Error executing ${api.apiId} (${e.javaClass.simpleName}).")
             null
