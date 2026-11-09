@@ -81,7 +81,7 @@ fun AiApiHubScreen(navController: NavController) {
 
     // Hugging Face State
     var hfKeyInput by remember { mutableStateOf(AppPreferences.getHuggingFaceApiKey(context)) }
-    var hfModel by remember { mutableStateOf(AppPreferences.getHuggingFaceModel(context).ifBlank { "distilbert-base-uncased" }) }
+    var hfModel by remember { mutableStateOf(AppPreferences.getHuggingFaceModel(context)) }
     var hfEnabled by remember { mutableStateOf(AppPreferences.isHuggingFaceEnabled(context)) }
     var isHfKeyVisible by remember { mutableStateOf(false) }
     var isHfEditing by remember { mutableStateOf(false) }
