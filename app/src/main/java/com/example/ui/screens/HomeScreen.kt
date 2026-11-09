@@ -171,8 +171,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 viewModel.analyzeImage(analysisBitmap, displayName)
                 navController.navigate("chat")
             } catch (e: Exception) {
-                viewModel.sendMessage("[Gallery Image Attached: ${uri.lastPathSegment ?: "image"}]")
-                navController.navigate("chat")
+                Toast.makeText(context, "Unable to read the selected image. Please try again.", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -201,8 +200,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 viewModel.analyzePdf(pdfCopy, displayName)
                 navController.navigate("chat")
             } catch (e: Exception) {
-                viewModel.sendMessage("[PDF Document Attached: ${uri.lastPathSegment ?: "document.pdf"}]")
-                navController.navigate("chat")
+                Toast.makeText(context, "Unable to read the selected PDF. Please try again.", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -248,8 +246,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
                 navController.navigate("chat")
             } catch (e: Exception) {
-                viewModel.sendMessage("[Document Attached: ${uri.lastPathSegment ?: "document"}]")
-                navController.navigate("chat")
+                Toast.makeText(context, "Unable to read the selected document. Please try again.", Toast.LENGTH_LONG).show()
             }
         }
     }
