@@ -175,14 +175,23 @@ object GemmaModelManager {
         // 3. Check LiteRT-LM / TFLite FlatBuffer magic: "TFL3" at offset 4..7 or .litertlm extension
         val isTfl3 = header[4] == 'T'.code.toByte() && header[5] == 'F'.code.toByte() && header[6] == 'L'.code.toByte() && header[7] == '3'.code.toByte()
         val isLiteRtExtension = file.extension.equals("litertlm", ignoreCase = true)
-        if (isTfl3 || isLiteRtExtension) {
+        if (isTfl3) {
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.LITERT_LM,
                 isSupported = true,
-                validationMessage = "LiteRT-LM FlatBuffer container detected; runtime will perform final validation.",
+                validationMessage = "LiteRT-LM FlatBuffer signature detected; runtime will perform final validation.",
                 quantization = "TFLite / LiteRT FlatBuffer"
+            )
+        }
+        if (isLiteRtExtension) {
+            return GemmaModelInfo(
+                file = file,
+                sizeBytes = size,
+                format = GemmaModelFormat.UNKNOWN,
+                isSupported = false,
+                validationMessage = "The .litertlm extension is present, but the required TFL3 FlatBuffer signature was not found."
             )
         }
 
