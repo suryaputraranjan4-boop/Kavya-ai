@@ -59,7 +59,7 @@ object DiagnosticEngine {
 
     fun updateLiveState(state: AgentLiveState, task: String? = null, target: String? = null) {
         _liveState.value = state
-        if (task != null) _currentTaskDescription.value = task
+        if (task != null) _currentTaskDescription.value = if (task.isBlank()) "Idle" else "Task in progress"
         if (target != null) _currentTargetApp.value = target
     }
 
@@ -76,7 +76,7 @@ object DiagnosticEngine {
     }
 
     fun recordAgentExecution(diagnostic: AgentExecutionDiagnostic) {
-        _recentDiagnostics.value = listOf(diagnostic) + _recentDiagnostics.value.take(25)
+        _recentDiagnostics.value = listOf(diagnostic.copy(prompt = "Redacted (${diagnostic.prompt.length} characters)")) + _recentDiagnostics.value.take(25)
     }
 
     fun recordAutomationDebugLog(log: AutomationDebugLog) {
