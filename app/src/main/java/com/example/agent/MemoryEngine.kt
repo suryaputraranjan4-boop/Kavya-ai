@@ -135,13 +135,23 @@ class MemoryEngine(private val context: Context) {
                 )
                 memoryDao.updateMemory(toUpdate)
                 try {
-                    okfRepository.createKnowledge(
-                        key = toUpdate.key,
-                        content = toUpdate.content,
-                        category = OkfCategory.fromString(toUpdate.category),
-                        importance = toUpdate.importance,
-                        provenance = OkfProvenance(source = "USER_CORRECTION", author = "User")
-                    )
+                    val okfExisting = okfRepository.getKnowledge(toUpdate.key)
+                    if (okfExisting != null) {
+                        okfRepository.updateKnowledge(
+                            idOrKey = okfExisting.id,
+                            content = toUpdate.content,
+                            category = OkfCategory.fromString(toUpdate.category),
+                            importance = toUpdate.importance
+                        )
+                    } else {
+                        okfRepository.createKnowledge(
+                            key = toUpdate.key,
+                            content = toUpdate.content,
+                            category = OkfCategory.fromString(toUpdate.category),
+                            importance = toUpdate.importance,
+                            provenance = OkfProvenance(source = "USER_CORRECTION", author = "User")
+                        )
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (e: Exception) {
