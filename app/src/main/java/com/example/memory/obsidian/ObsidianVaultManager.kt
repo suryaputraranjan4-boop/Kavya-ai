@@ -1,5 +1,7 @@
 package com.example.memory.obsidian
 
+import kotlinx.coroutines.CancellationException
+
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -98,6 +100,8 @@ class ObsidianVaultManager(private val context: Context) {
             _syncState.value = SyncState.Idle
             Log.i(TAG, "Successfully connected to Obsidian Vault at $treeUri")
             true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "Failed to connect to Obsidian Vault", e)
             _syncState.value = SyncState.Error("Failed to grant folder permission: ${e.localizedMessage}")
@@ -165,6 +169,8 @@ class ObsidianVaultManager(private val context: Context) {
             _syncState.value = SyncState.Success("Synced $writtenCount memories to Vault", now)
             Log.i(TAG, "Successfully synced $writtenCount memories to Obsidian Vault")
             true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "Sync to Obsidian Vault failed", e)
             _syncState.value = SyncState.Error("Sync failed: ${e.localizedMessage}")
@@ -194,7 +200,9 @@ class ObsidianVaultManager(private val context: Context) {
                         val parsed = parseMarkdownMemory(file.name?.removeSuffix(".md") ?: "Imported", content)
                         imported.add(parsed)
                     }
-                } catch (e: Exception) {
+                } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                     Log.w(TAG, "Failed to read memory file ${file.name}", e)
                 }
             }
