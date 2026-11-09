@@ -1,5 +1,7 @@
 package com.example.ai.providers
 
+import kotlinx.coroutines.CancellationException
+
 import android.content.Context
 import android.util.Log
 import com.example.ai.OpenRouterMessage
@@ -186,6 +188,8 @@ class OpenRouterProvider : AIProvider {
                 return@withContext Pair(false, "OpenRouter validation failed: ${fallbackResp.error.message}")
             }
             return@withContext Pair(true, "OpenRouter connected successfully.")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "OpenRouter validation network error (${e.javaClass.simpleName}).")
             val msg = handleError(-1, e.localizedMessage)
@@ -226,7 +230,11 @@ class OpenRouterProvider : AIProvider {
                         val desc = item.optString("description", "")
                         val ctxLen = item.optInt("context_length", 8192)
                         val pricing = item.optJSONObject("pricing")
-                        val isFree = id.endsWith(":free") || (pricing != null && pricing.optDouble("prompt", 0.0) == 0.0)
+                        val isFree = id.endsWith(":free") || (
+                            pricing != null &&
+                                pricing.optDouble("prompt", Double.NaN) == 0.0 &&
+                                pricing.optDouble("completion", Double.NaN) == 0.0
+                        )
 
                         val tasks = mutableListOf<String>()
                         if (id.contains("vision") || id.contains("vl")) tasks.add("vision")
@@ -256,6 +264,8 @@ class OpenRouterProvider : AIProvider {
             } else {
                 response.close()
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Failed fetching OpenRouter models; using verified catalogue (${e.javaClass.simpleName}).")
         }
@@ -350,6 +360,8 @@ class OpenRouterProvider : AIProvider {
                     error = errorMsg
                 )
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             val errorMsg = handleError(-1, e.localizedMessage)
             return@withContext AIProviderResult(
@@ -527,7 +539,9 @@ class OpenRouterProvider : AIProvider {
         val parsedMsg = if (!errorBody.isNullOrBlank()) {
             try {
                 JSONObject(errorBody).optJSONObject("error")?.optString("message")
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 null
             }
         } else null
