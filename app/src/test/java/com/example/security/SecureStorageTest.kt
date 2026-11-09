@@ -29,7 +29,7 @@ class SecureStorageTest {
         if (saved) {
             assertNotNull(stored)
             assertFalse(stored!!.startsWith("OBF:"))
-            assertFalse(stored.contains(secret))
+            assertFalse(stored!!.contains(secret))
             assertEquals(secret, SecureStorage.getSecret(context, "test_key"))
         } else {
             assertNull(stored)
