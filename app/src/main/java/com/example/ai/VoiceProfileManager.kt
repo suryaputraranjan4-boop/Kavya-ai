@@ -143,17 +143,32 @@ class VoiceProfileManager private constructor(private val context: Context) {
             MediaRecorder()
         }
 
-        recorder.apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AMR_WB)
-            setOutputFile(file.absolutePath)
-            prepare()
-            start()
+        try {
+            recorder.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AMR_WB)
+                setOutputFile(file.absolutePath)
+                prepare()
+                start()
+            }
+            activeRecorder = recorder
+            recordingStartTime = System.currentTimeMillis()
+            return file
+        } catch (error: Exception) {
+            try {
+                recorder.reset()
+            } catch (_: Exception) {
+            }
+            try {
+                recorder.release()
+            } catch (_: Exception) {
+            }
+            activeRecorder = null
+            currentRecordingFile = null
+            file.delete()
+            throw IllegalStateException("Unable to start voice recording. Check microphone permission and device recorder availability.", error)
         }
-        activeRecorder = recorder
-        recordingStartTime = System.currentTimeMillis()
-        return file
     }
 
     fun stopRecording(): File? {
