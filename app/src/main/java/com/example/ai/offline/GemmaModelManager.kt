@@ -270,14 +270,20 @@ object GemmaModelManager {
 
         return try {
             val targetDir = getModelDirectory(context)
-            val ext = if (!originalName.isNullOrBlank() && originalName.contains(".")) {
-                "." + originalName.substringAfterLast(".")
-            } else {
-                ".task"
+            val requestedExtension = originalName
+                ?.substringAfterLast(".", "")
+                ?.lowercase(java.util.Locale.ROOT)
+                .orEmpty()
+            val ext = when (requestedExtension) {
+                "gguf", "litertlm", "task", "zip", "bin", "tflite" -> ".$requestedExtension"
+                else -> ".bin"
             }
 
-            val safeBaseName = (originalName?.substringBeforeLast(".") ?: "local_model").replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "local_model" }
-            tempFile = File(targetDir, "import_temp_${System.currentTimeMillis()}$ext")
+            val safeBaseName = (originalName?.substringBeforeLast(".") ?: "local_model")
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                .trim('_', '.')
+                .ifBlank { "local_model" }
+            tempFile = File(targetDir, "import_temp_${java.util.UUID.randomUUID()}$ext")
             var finalFile = File(targetDir, "$safeBaseName$ext")
             var duplicateIndex = 2
             while (finalFile.exists()) {
@@ -314,21 +320,31 @@ object GemmaModelManager {
                 return false
             }
 
-            // Move temp file to final location
-            if (finalFile.exists()) {
-                finalFile.delete()
-            }
+            // The temp file lives in the same private directory. Require an atomic rename:
+            // a fallback copy could leave a half-written final model if storage runs out.
             if (!tempFile!!.renameTo(finalFile)) {
-                // Fallback copy if rename across filesystems fails
-                tempFile!!.copyTo(finalFile, overwrite = true)
-                tempFile!!.delete()
+                _status.value = GemmaModelStatus.ERROR
+                _lastError = "Unable to finalize the imported model atomically. Check free storage and try again."
+                return false
             }
             tempFile = null
 
-            val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            prefs.edit().putString(KEY_SAVED_MODEL_PATH, finalFile.absolutePath).apply()
-
             val finalInfo = inspectModel(finalFile)
+            if (!finalInfo.isSupported) {
+                finalFile.delete()
+                _status.value = GemmaModelStatus.ERROR
+                _lastError = "Imported model failed final validation: ${finalInfo.validationMessage}"
+                return false
+            }
+
+            val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            if (!prefs.edit().putString(KEY_SAVED_MODEL_PATH, finalFile.absolutePath).commit()) {
+                finalFile.delete()
+                _status.value = GemmaModelStatus.ERROR
+                _lastError = "Model was validated but its selected path could not be saved."
+                return false
+            }
+
             _cachedInfo = finalInfo
             _status.value = GemmaModelStatus.VALIDATING
 
