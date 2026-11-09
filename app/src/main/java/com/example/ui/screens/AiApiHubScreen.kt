@@ -1642,9 +1642,17 @@ fun AiApiHubScreen(navController: NavController) {
                             apiKey = newApiKey.trim(),
                             model = newApiModel.trim()
                         )
-                        AppPreferences.saveCustomApi(context, config)
+                        val saved = AppPreferences.saveCustomApi(context, config)
                         customApis = AppPreferences.getCustomApis(context)
-                        showAddApiDialog = false
+                        if (saved) {
+                            showAddApiDialog = false
+                        } else {
+                            android.widget.Toast.makeText(
+                                context,
+                                "API details could not be saved securely. Check device security storage and try again.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Primary)
                 ) {
