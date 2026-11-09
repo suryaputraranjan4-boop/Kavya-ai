@@ -208,7 +208,8 @@ class ChatterboxModelManager private constructor(private val context: Context) {
 
                 httpClient.newCall(request).execute().use { response ->
                     if (response.code == 416) {
-                        throw Exception("Server rejected the resume offset. Delete this partial file and download it again.")
+                        targetFile.delete()
+                        throw Exception("The saved partial file could not be resumed and was reset. Tap Download again to restart.")
                     }
                     if (!response.isSuccessful) {
                         throw Exception("HTTP ${response.code} ${response.message}")
