@@ -268,7 +268,9 @@ class KavyaMicrophoneEngine : Service() {
         override fun onBufferReceived(buffer: ByteArray?) = Unit
 
         override fun onEndOfSpeech() {
-            sessionRunning = false
+            // Android is still finalizing recognition after end-of-speech.
+            // Keep the session locked until onResults() or onError() arrives;
+            // otherwise another retry can call startListening() on a busy recognizer.
         }
 
         override fun onError(error: Int) {
@@ -279,7 +281,11 @@ class KavyaMicrophoneEngine : Service() {
                 SpeechRecognizer.ERROR_NO_MATCH,
                 SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> schedule(NO_MATCH_RETRY_MS)
 
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> schedule(BUSY_RETRY_MS)
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
+                    // A busy recognizer is not safe to reuse; release it before retrying.
+                    destroyRecognizer()
+                    schedule(BUSY_RETRY_MS)
+                }
 
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
                     Log.e(TAG, "Microphone permission was revoked; stopping the microphone service")
@@ -291,7 +297,12 @@ class KavyaMicrophoneEngine : Service() {
                     stopSelf()
                 }
 
-                else -> scheduleRetry()
+                else -> {
+                    // Reset the platform recognizer after any failed session to avoid
+                    // carrying a stuck/busy native recognizer into the next attempt.
+                    destroyRecognizer()
+                    scheduleRetry()
+                }
             }
         }
 
@@ -307,7 +318,7 @@ class KavyaMicrophoneEngine : Service() {
 
             if (text.isNotBlank()) handleRecognizedText(text)
 
-            if (desired && !assistantSpeaking) schedule(NO_MATCH_RETRY_MS)
+            if (desired && !assistantSpeaking) schedule(700L)
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
