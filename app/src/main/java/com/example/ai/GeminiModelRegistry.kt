@@ -9,7 +9,7 @@ package com.example.ai
  */
 object GeminiModelRegistry {
     // Primary Fast Multimodal & Agent Reasoning Model
-    const val DEFAULT_AGENT_MODEL = "gemini-3.5-flash"
+    const val DEFAULT_AGENT_MODEL = "gemini-3.8-flash"
 
     // High-complexity Planning & Code Architecture Model
     const val PRO_REASONING_MODEL = "gemini-3.1-pro-preview"
