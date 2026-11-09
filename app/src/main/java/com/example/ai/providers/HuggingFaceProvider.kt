@@ -171,6 +171,8 @@ class HuggingFaceProvider : AIProvider {
             } else {
                 return@withContext Pair(false, handleError(code, body))
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "Hugging Face token validation error (${e.javaClass.simpleName}).")
             val msg = handleError(-1, e.localizedMessage)
@@ -224,6 +226,8 @@ class HuggingFaceProvider : AIProvider {
                     return@withContext discovered
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Hugging Face chat model discovery failed (${e.javaClass.simpleName}).")
         }
@@ -274,6 +278,8 @@ class HuggingFaceProvider : AIProvider {
             } else {
                 response.close()
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Hugging Face model discovery failed; using verified cache (${e.javaClass.simpleName}).")
         }
@@ -397,6 +403,8 @@ class HuggingFaceProvider : AIProvider {
                     latencyMs = latency
                 )
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             val latency = System.currentTimeMillis() - startTime
             val msg = handleError(-1, e.localizedMessage)
@@ -468,7 +476,9 @@ class HuggingFaceProvider : AIProvider {
                     val score = item.optDouble("score", 0.0)
                     list.add(HfClassificationItem(label, score))
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "Classification response parsing failed (${e.javaClass.simpleName}).")
             }
         }
@@ -503,7 +513,9 @@ class HuggingFaceProvider : AIProvider {
                     } else null
                     list.add(HfDetectedObject(label, score, box))
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "Object detection response parsing failed (${e.javaClass.simpleName}).")
             }
         }
@@ -548,7 +560,9 @@ class HuggingFaceProvider : AIProvider {
                     }
                     return@withContext floats
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "Embeddings response parsing failed (${e.javaClass.simpleName}).")
             }
         }
@@ -652,6 +666,8 @@ class HuggingFaceProvider : AIProvider {
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             val error = handleError(-1, e.localizedMessage)
             return@withContext AIProviderResult(
@@ -732,6 +748,8 @@ class HuggingFaceProvider : AIProvider {
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             emit(handleError(-1, e.localizedMessage))
         }
@@ -778,7 +796,9 @@ class HuggingFaceProvider : AIProvider {
             try {
                 val json = JSONObject(errorBody)
                 json.optString("error", json.optJSONArray("error")?.optString(0) ?: "")
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 null
             }
         } else null
