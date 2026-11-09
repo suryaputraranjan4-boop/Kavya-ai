@@ -91,8 +91,7 @@ object TaskRouter {
         val requiresVisualInput = hasImage || classification.requiresVision ||
             classification.category in setOf(
                 ClassifiedTaskCategory.OCR,
-                ClassifiedTaskCategory.VISION,
-                ClassifiedTaskCategory.IMAGE_AI
+                ClassifiedTaskCategory.VISION
             )
 
         // Explicit offline mode is a hard network boundary. Never route a request to
@@ -102,7 +101,6 @@ object TaskRouter {
                 return TaskRoutingDecision(
                     taskType = when (classification.category) {
                         ClassifiedTaskCategory.OCR -> TaskType.OCR
-                        ClassifiedTaskCategory.IMAGE_AI -> TaskType.IMAGE_AI
                         else -> TaskType.VISION
                     },
                     provider = "NONE",
@@ -258,8 +256,7 @@ object TaskRouter {
             !classification.requiresVision &&
             classification.category !in setOf(
                 ClassifiedTaskCategory.OCR,
-                ClassifiedTaskCategory.VISION,
-                ClassifiedTaskCategory.IMAGE_AI
+                ClassifiedTaskCategory.VISION
             )
         ) {
             return TaskRoutingDecision(
