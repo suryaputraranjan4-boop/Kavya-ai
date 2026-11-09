@@ -61,31 +61,24 @@ object TaskRouter {
         val isGeminiConfigured = AppPreferences.getEffectiveApiKey(context).isNotBlank()
         val isOpenRouterConfigured = AppPreferences.getOpenRouterApiKey(context).isNotBlank()
         val isHfConfigured = AppPreferences.getHuggingFaceApiKey(context).isNotBlank()
-        val isGemmaConfigured = com.example.ai.offline.GemmaModelManager.getModelFile(context) != null
+        val localModelFile = com.example.ai.offline.GemmaModelManager.getModelFile(context)
+        val isGemmaConfigured = localModelFile?.let {
+            it.isFile && com.example.ai.offline.GemmaModelManager.inspectModel(it).isSupported
+        } == true
         val preferredProvider = AppPreferences.getAiProvider(context)
         val isExplicitOffline = preferredProvider == "GEMMA_OFFLINE" || AppPreferences.isOfflineFallbackEnabled(context)
 
-        // Offline mode route check: if offline mode is explicitly enabled or Gemma is selected provider
-        if ((isExplicitOffline || (!isGeminiConfigured && !isOpenRouterConfigured && !isHfConfigured)) && isGemmaConfigured) {
-            if (classification.category != ClassifiedTaskCategory.PHONE_CONTROL &&
-                classification.category != ClassifiedTaskCategory.PHONE_AUTOMATION
-            ) {
-                return TaskRoutingDecision(
-                    taskType = TaskType.GENERAL_REASONING,
-                    provider = "GEMMA_OFFLINE",
-                    selectedModel = "Gemma 4 E4B",
-                    explanation = "Routing task to local on-device Gemma 4 E4B AI engine (Offline)."
-                )
-            }
-        }
-
-        // 1. Phone Control & Automation -> Real Android Accessibility Engine
-        if (classification.category == ClassifiedTaskCategory.PHONE_CONTROL ||
+        val isPhoneAction = classification.category == ClassifiedTaskCategory.PHONE_CONTROL ||
             classification.category == ClassifiedTaskCategory.PHONE_AUTOMATION
-        ) {
-            val requiresVision = classification.requiresVision || prompt.contains("game", ignoreCase = true) || prompt.contains("free fire", ignoreCase = true)
-            val requiresConfirm = prompt.contains("delete", ignoreCase = true) || prompt.contains("format", ignoreCase = true) || prompt.contains("pay", ignoreCase = true)
 
+        // Device actions remain on Android Accessibility; do not route them to a cloud model.
+        if (isPhoneAction) {
+            val requiresVision = classification.requiresVision ||
+                prompt.contains("game", ignoreCase = true) ||
+                prompt.contains("free fire", ignoreCase = true)
+            val requiresConfirm = prompt.contains("delete", ignoreCase = true) ||
+                prompt.contains("format", ignoreCase = true) ||
+                prompt.contains("pay", ignoreCase = true)
             return TaskRoutingDecision(
                 taskType = if (classification.category == ClassifiedTaskCategory.PHONE_AUTOMATION) TaskType.PHONE_AUTOMATION else TaskType.PHONE_CONTROL,
                 provider = "ANDROID_ACCESSIBILITY",
@@ -94,6 +87,50 @@ object TaskRouter {
                 explanation = "Routing phone interaction to Android Accessibility Engine."
             )
         }
+
+        val requiresVisualInput = hasImage || classification.requiresVision ||
+            classification.category in setOf(
+                ClassifiedTaskCategory.OCR,
+                ClassifiedTaskCategory.VISION,
+                ClassifiedTaskCategory.IMAGE_AI
+            )
+
+        // Explicit offline mode is a hard network boundary. Never route a request to
+        // Gemini/OpenRouter/Hugging Face when a local model is missing or lacks vision.
+        if (isExplicitOffline) {
+            if (requiresVisualInput) {
+                return TaskRoutingDecision(
+                    taskType = when (classification.category) {
+                        ClassifiedTaskCategory.OCR -> TaskType.OCR
+                        ClassifiedTaskCategory.IMAGE_AI -> TaskType.IMAGE_AI
+                        else -> TaskType.VISION
+                    },
+                    provider = "NONE",
+                    requiresVision = true,
+                    explanation = "Offline mode is enabled, but the installed local text runtime cannot process image/OCR/vision input. No online provider was called."
+                )
+            }
+            if (!isGemmaConfigured) {
+                return TaskRoutingDecision(
+                    taskType = TaskType.GENERAL_REASONING,
+                    provider = "NONE",
+                    explanation = "Offline mode is enabled, but no supported local model is installed. Import a supported GGUF, LiteRT-LM, or MediaPipe Task model."
+                )
+            }
+            return TaskRoutingDecision(
+                taskType = when (classification.category) {
+                    ClassifiedTaskCategory.CODING -> TaskType.CODING
+                    ClassifiedTaskCategory.RESEARCH -> TaskType.RESEARCH
+                    else -> TaskType.GENERAL_REASONING
+                },
+                provider = "GEMMA_OFFLINE",
+                selectedModel = localModelFile?.name,
+                explanation = "Routing request to the selected local on-device model. No network fallback is allowed."
+            )
+        }
+
+        // When no online provider is configured, use a supported local model for
+        // text-only tasks. Vision tasks remain unsupported by this text runtime.
 
         // 2. OCR Tasks -> Hugging Face OCR or Gemini Vision
         if (classification.category == ClassifiedTaskCategory.OCR) {
@@ -215,12 +252,21 @@ object TaskRouter {
                 selectedModel = HuggingFaceProvider.MODEL_TEXT_GEN,
                 explanation = "Routing prompt to Hugging Face text generation."
             )
-        } else if (isGemmaConfigured) {
+        } else if (
+            isGemmaConfigured &&
+            !hasImage &&
+            !classification.requiresVision &&
+            classification.category !in setOf(
+                ClassifiedTaskCategory.OCR,
+                ClassifiedTaskCategory.VISION,
+                ClassifiedTaskCategory.IMAGE_AI
+            )
+        ) {
             return TaskRoutingDecision(
                 taskType = TaskType.GENERAL_REASONING,
                 provider = "GEMMA_OFFLINE",
-                selectedModel = "Gemma 4 E4B",
-                explanation = "Routing task to on-device Gemma 4 E4B model."
+                selectedModel = localModelFile?.name,
+                explanation = "Routing text-only task to the selected on-device local model."
             )
         }
 
