@@ -164,6 +164,13 @@ class ObsidianVaultManager(private val context: Context) {
                 }
             }
 
+            if (writtenCount != memories.size) {
+                val message = "Vault export incomplete: wrote $writtenCount of ${memories.size} memory files."
+                _syncState.value = SyncState.Error(message)
+                Log.w(TAG, message)
+                return@withContext false
+            }
+
             val now = System.currentTimeMillis()
             AppPreferences.setObsidianLastSyncTs(context, now)
             _syncState.value = SyncState.Success("Synced $writtenCount memories to Vault", now)
