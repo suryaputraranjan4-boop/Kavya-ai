@@ -2,7 +2,6 @@ package com.example.security
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -30,6 +29,7 @@ object SecureStorage {
     private const val PREFS_FILE = "kavya_encrypted_vault"
     private const val GCM_TAG_LENGTH = 128
     private const val IV_SEPARATOR = "]"
+    private const val LEGACY_OBF_PREFIX = "OBF:"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
@@ -60,22 +60,19 @@ object SecureStorage {
                 entry?.secretKey
             }
         } catch (e: Exception) {
-            // AndroidKeyStore might not be available in unit tests / Robolectric environments
-            Log.w(TAG, "AndroidKeyStore initialization fallback for test runtime: ${e.message}")
+            // Never downgrade credential protection when Android Keystore is unavailable.
+            Log.w(TAG, "AndroidKeyStore is unavailable (${e.javaClass.simpleName}).")
             null
         }
     }
 
     /**
      * Encrypts plain text using AES-256-GCM.
+     * Returns null when encryption is unavailable; plaintext fallbacks are forbidden.
      */
-    private fun encrypt(plainText: String): String {
+    private fun encrypt(plainText: String): String? {
         if (plainText.isBlank()) return ""
-        val secretKey = getOrCreateSecretKey()
-        if (secretKey == null) {
-            // Safe fallback encoding when AndroidKeyStore is unavailable (e.g. JVM unit test)
-            return "OBF:" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        }
+        val secretKey = getOrCreateSecretKey() ?: return null
 
         return try {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -86,25 +83,16 @@ object SecureStorage {
             val cipherString = Base64.encodeToString(cipherBytes, Base64.NO_WRAP)
             "$ivString$IV_SEPARATOR$cipherString"
         } catch (e: Exception) {
-            Log.e(TAG, "AES-GCM encryption error, using safe fallback", e)
-            "OBF:" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            Log.e(TAG, "AES-GCM encryption failed (${e.javaClass.simpleName}).")
+            null
         }
     }
 
     /**
-     * Decrypts encrypted payload using AES-256-GCM.
+     * Decrypts an Android Keystore AES-GCM payload.
      */
     private fun decrypt(encryptedString: String): String {
         if (encryptedString.isBlank()) return ""
-
-        if (encryptedString.startsWith("OBF:")) {
-            val raw = encryptedString.substring(4)
-            return try {
-                String(Base64.decode(raw, Base64.NO_WRAP), Charsets.UTF_8)
-            } catch (e: Exception) {
-                ""
-            }
-        }
 
         val secretKey = getOrCreateSecretKey() ?: return ""
         val parts = encryptedString.split(IV_SEPARATOR)
@@ -119,30 +107,40 @@ object SecureStorage {
             val decryptedBytes = cipher.doFinal(cipherBytes)
             String(decryptedBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            Log.e(TAG, "Decryption error", e)
+            Log.e(TAG, "Decryption failed (${e.javaClass.simpleName}).")
             ""
         }
     }
 
     /**
-     * Stores a sensitive secret key securely.
+     * Stores a sensitive secret only when Android Keystore AES-GCM encryption succeeds.
+     *
+     * @return true when the encrypted value was committed, false when encryption or
+     * persistence failed. Existing callers may safely ignore the result, but must not
+     * assume a credential was saved when false is returned.
      */
-    fun saveSecret(context: Context, key: String, value: String) {
+    fun saveSecret(context: Context, key: String, value: String): Boolean {
         val prefs = getPrefs(context)
         if (value.isBlank()) {
-            prefs.edit().remove(key).apply()
-        } else {
-            val cipher = encrypt(value.trim())
-            prefs.edit().putString(key, cipher).apply()
+            return prefs.edit().remove(key).commit()
         }
+
+        val encryptedValue = encrypt(value.trim()) ?: return false
+        return prefs.edit().putString(key, encryptedValue).commit()
     }
 
     /**
-     * Retrieves a sensitive secret key securely.
+     * Retrieves a sensitive secret. Legacy OBF values were only Base64-encoded and
+     * are deliberately discarded; users must re-enter those credentials.
      */
     fun getSecret(context: Context, key: String): String {
         val prefs = getPrefs(context)
         val encrypted = prefs.getString(key, null) ?: return ""
+        if (encrypted.startsWith(LEGACY_OBF_PREFIX)) {
+            prefs.edit().remove(key).apply()
+            Log.w(TAG, "Removed an insecure legacy credential entry.")
+            return ""
+        }
         return decrypt(encrypted)
     }
 
