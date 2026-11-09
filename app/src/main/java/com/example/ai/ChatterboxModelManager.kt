@@ -9,8 +9,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
-import java.io.FileOutputStream
-import java.io.InputStream
 import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -139,31 +137,49 @@ class ChatterboxModelManager private constructor(private val context: Context) {
         return File(getModelsDirectory(), fileName)
     }
 
+    private fun verificationMarker(file: File) = File(file.parentFile, file.name + ".verified")
+
+    private fun isVerified(spec: ChatterboxModelFileSpec, file: File): Boolean {
+        val recordedLength = verificationMarker(file).takeIf { it.isFile }
+            ?.readText()?.toLongOrNull() ?: return false
+        return file.isFile && file.length() > 0L && file.length() == recordedLength
+    }
+
     fun refreshFileStatuses() {
         val current = mutableMapOf<String, FileDownloadProgress>()
         for (spec in OFFICIAL_SPECS) {
             val file = getModelFile(spec.fileName)
-            val exists = file.exists() && file.length() > 0L
-            val isComplete = exists && (file.length() >= (spec.approximateSizeBytes * 0.95).toLong() || spec.approximateSizeBytes < 1_000_000L)
-            
+            val exists = file.isFile && file.length() > 0L
+            val complete = isVerified(spec, file)
             current[spec.id] = FileDownloadProgress(
                 fileId = spec.id,
                 fileName = spec.fileName,
-                status = if (isComplete) DownloadItemStatus.COMPLETED else if (exists) DownloadItemStatus.PAUSED else DownloadItemStatus.PENDING,
+                status = if (complete) DownloadItemStatus.COMPLETED else if (exists) DownloadItemStatus.PAUSED else DownloadItemStatus.PENDING,
                 bytesDownloaded = if (exists) file.length() else 0L,
-                totalBytes = if (exists && isComplete) file.length() else spec.approximateSizeBytes,
-                errorMessage = null
+                totalBytes = if (complete) file.length() else spec.approximateSizeBytes
             )
         }
         _fileProgressMap.value = current
     }
 
-    fun isAllMandatoryFilesReady(): Boolean {
-        for (spec in OFFICIAL_SPECS.filter { it.isMandatory }) {
-            val file = getModelFile(spec.fileName)
-            if (!file.exists() || file.length() <= 0L) return false
+    fun isAllMandatoryFilesReady(): Boolean =
+        OFFICIAL_SPECS.filter { it.isMandatory }.all { spec ->
+            isVerified(spec, getModelFile(spec.fileName))
         }
-        return true
+
+    private fun matchesExpectedSha256(spec: ChatterboxModelFileSpec, file: File): Boolean {
+        val expected = spec.sha256Expected?.takeIf { it.isNotBlank() } ?: return true
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+        return actual.equals(expected, ignoreCase = true)
     }
 
     fun startDownload(spec: ChatterboxModelFileSpec) {
@@ -171,7 +187,10 @@ class ChatterboxModelManager private constructor(private val context: Context) {
 
         val job = scope.launch {
             val targetFile = getModelFile(spec.fileName)
-            val initialBytes = if (targetFile.exists()) targetFile.length() else 0L
+            val marker = verificationMarker(targetFile)
+            targetFile.parentFile?.mkdirs()
+            marker.delete()
+            val initialBytes = if (targetFile.isFile) targetFile.length() else 0L
 
             updateFileProgress(spec.id) {
                 it.copy(
@@ -183,80 +202,77 @@ class ChatterboxModelManager private constructor(private val context: Context) {
             }
 
             try {
-                val reqBuilder = Request.Builder().url(spec.downloadUrl)
-                if (initialBytes > 0) {
-                    reqBuilder.addHeader("Range", "bytes=$initialBytes-")
-                }
+                val request = Request.Builder().url(spec.downloadUrl).apply {
+                    if (initialBytes > 0L) addHeader("Range", "bytes=$initialBytes-")
+                }.build()
 
-                httpClient.newCall(reqBuilder.build()).execute().use { response ->
-                    if (!response.isSuccessful && response.code != 416) {
+                httpClient.newCall(request).execute().use { response ->
+                    if (response.code == 416) {
+                        throw Exception("Server rejected the resume offset. Delete this partial file and download it again.")
+                    }
+                    if (!response.isSuccessful) {
                         throw Exception("HTTP ${response.code} ${response.message}")
                     }
 
                     val body = response.body ?: throw Exception("Empty response body")
-                    val isRange = response.code == 206
-                    val contentLen = body.contentLength()
-                    val total = if (isRange) initialBytes + contentLen else if (contentLen > 0) contentLen else spec.approximateSizeBytes
+                    val append = response.code == 206 && initialBytes > 0L
+                    val contentRangeTotal = response.header("Content-Range")
+                        ?.let { Regex("/(\\d+)$").find(it)?.groupValues?.getOrNull(1)?.toLongOrNull() }
+                    val contentLength = body.contentLength()
+                    val expectedTotal = contentRangeTotal
+                        ?: if (contentLength > 0L) (if (append) initialBytes else 0L) + contentLength else null
+                    var downloaded = if (append) initialBytes else 0L
+                    val displayTotal = expectedTotal ?: spec.approximateSizeBytes
 
-                    var downloaded = if (isRange) initialBytes else 0L
-                    val raf = RandomAccessFile(targetFile, "rw")
-                    if (isRange) {
-                        raf.seek(initialBytes)
-                    } else {
-                        raf.setLength(0L)
-                    }
-
-                    body.byteStream().use { input ->
-                        val buffer = ByteArray(32768)
-                        var read: Int
-                        var lastEmit = System.currentTimeMillis()
-
-                        raf.use { output ->
-                            while (input.read(buffer).also { read = it } != -1) {
+                    RandomAccessFile(targetFile, "rw").use { output ->
+                        if (append) output.seek(initialBytes) else output.setLength(0L)
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            var lastEmit = System.currentTimeMillis()
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
                                 if (!isActive) {
                                     updateFileProgress(spec.id) { it.copy(status = DownloadItemStatus.PAUSED) }
                                     return@launch
                                 }
-                                output.write(buffer, 0, read)
-                                downloaded += read
-
+                                output.write(buffer, 0, count)
+                                downloaded += count
                                 val now = System.currentTimeMillis()
-                                if (now - lastEmit > 250) {
+                                if (now - lastEmit >= 250L) {
                                     lastEmit = now
                                     updateFileProgress(spec.id) {
-                                        it.copy(bytesDownloaded = downloaded, totalBytes = total)
+                                        it.copy(bytesDownloaded = downloaded, totalBytes = displayTotal)
                                     }
                                 }
                             }
+                            output.fd.sync()
                         }
                     }
 
-                    // Verification step
                     updateFileProgress(spec.id) {
-                        it.copy(
-                            status = DownloadItemStatus.VERIFYING,
-                            bytesDownloaded = targetFile.length(),
-                            totalBytes = targetFile.length()
-                        )
+                        it.copy(status = DownloadItemStatus.VERIFYING, bytesDownloaded = targetFile.length(), totalBytes = displayTotal)
                     }
 
-                    // Check integrity if SHA is specified or minimum size is met
-                    val isValid = targetFile.length() > 0L
-                    if (isValid) {
-                        updateFileProgress(spec.id) {
-                            it.copy(status = DownloadItemStatus.COMPLETED)
-                        }
-                    } else {
-                        throw Exception("Downloaded file is empty or corrupted.")
+                    if (!targetFile.isFile || targetFile.length() == 0L) {
+                        throw Exception("Downloaded model file is empty.")
+                    }
+                    if (expectedTotal != null && targetFile.length() != expectedTotal) {
+                        throw Exception("Incomplete download: received ${targetFile.length()} of $expectedTotal bytes.")
+                    }
+                    if (!matchesExpectedSha256(spec, targetFile)) {
+                        throw Exception("SHA-256 verification failed for ${spec.fileName}.")
+                    }
+
+                    marker.writeText(targetFile.length().toString())
+                    updateFileProgress(spec.id) {
+                        it.copy(status = DownloadItemStatus.COMPLETED, bytesDownloaded = targetFile.length(), totalBytes = targetFile.length(), errorMessage = null)
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed for ${spec.fileName}: ${e.message}")
                 updateFileProgress(spec.id) {
-                    it.copy(
-                        status = DownloadItemStatus.FAILED,
-                        errorMessage = e.localizedMessage ?: "Download failed"
-                    )
+                    it.copy(status = DownloadItemStatus.FAILED, errorMessage = e.localizedMessage ?: "Download failed")
                 }
             } finally {
                 activeJobs.remove(spec.id)
@@ -264,7 +280,6 @@ class ChatterboxModelManager private constructor(private val context: Context) {
         }
         activeJobs[spec.id] = job
     }
-
     fun pauseDownload(fileId: String) {
         activeJobs[fileId]?.cancel()
         activeJobs.remove(fileId)
@@ -291,9 +306,8 @@ class ChatterboxModelManager private constructor(private val context: Context) {
         pauseDownload(fileId)
         val spec = OFFICIAL_SPECS.find { it.id == fileId } ?: return
         val file = getModelFile(spec.fileName)
-        if (file.exists()) {
-            file.delete()
-        }
+        if (file.exists()) file.delete()
+        verificationMarker(file).delete()
         refreshFileStatuses()
     }
 
