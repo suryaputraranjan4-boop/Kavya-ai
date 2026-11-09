@@ -57,6 +57,8 @@ class MediaPipeTaskRuntime : GemmaRuntime {
         } catch (e: OutOfMemoryError) {
             close()
             Result.failure(IllegalStateException("Not enough device memory to load this local model.", e))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             close()
             Result.failure(e)
@@ -72,6 +74,8 @@ class MediaPipeTaskRuntime : GemmaRuntime {
             } else {
                 Result.success(response.trim())
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -122,6 +126,8 @@ class LiteRtLmRuntime : GemmaRuntime {
                     )
                 )
                 Result.success(Unit)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
                 close()
                 Result.failure(t)
@@ -140,6 +146,8 @@ class LiteRtLmRuntime : GemmaRuntime {
                 val text = output.toString().trim()
                 if (text.isBlank()) Result.failure(IllegalStateException("LiteRT-LM returned no text."))
                 else Result.success(text)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
                 Result.failure(t)
             }
@@ -365,7 +373,18 @@ class Gemma4E4BEngine private constructor() {
                     inferenceSucceeded = false,
                     networkUsed = false
                 )
-                closeInternal()
+                // Keep the ERROR state visible after releasing the failed runtime.
+                // closeInternal() also marks the model NOT_INSTALLED, which is incorrect here.
+                try {
+                    runtime.close()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                }
+                if (activeRuntime === runtime) {
+                    activeRuntime = null
+                    activeModelPath = null
+                }
                 Result.failure(IllegalStateException("Health check failed: $err"))
             }
         }
