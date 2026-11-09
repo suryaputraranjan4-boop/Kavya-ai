@@ -173,11 +173,11 @@ fun EvolutionDashboardTab(report: com.example.evolution.EvolutionReportEntity?, 
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Capability Progress Matrix", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
                     Spacer(modifier = Modifier.height(12.dp))
-                    CapabilityBar("Memory & Context", 0.85f)
-                    CapabilityBar("Reasoning & Planning", 0.90f)
-                    CapabilityBar("Automation & UI", 0.75f)
-                    CapabilityBar("GitHub Evolution Research", 0.95f)
-                    CapabilityBar("Self-Testing & Sandbox", 0.80f)
+                    CapabilityBar("Memory & Context", null)
+                    CapabilityBar("Reasoning & Planning", null)
+                    CapabilityBar("Automation & UI", null)
+                    CapabilityBar("GitHub Evolution Research", null)
+                    CapabilityBar("Self-Testing & Sandbox", null)
                 }
             }
         }
@@ -214,15 +214,15 @@ fun StatBox(label: String, value: String) {
 }
 
 @Composable
-fun CapabilityBar(name: String, progress: Float) {
+fun CapabilityBar(name: String, progress: Float?) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(name, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-            Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium, color = PrimaryLight)
+            Text(progress?.let { "${(it * 100).toInt()}%" } ?: "Not measured", style = MaterialTheme.typography.bodyMedium, color = PrimaryLight)
         }
         Spacer(modifier = Modifier.height(4.dp))
         LinearProgressIndicator(
-            progress = { progress },
+            progress = { progress ?: 0f },
             modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
             color = PrimaryLight,
             trackColor = SurfaceVariant
@@ -263,7 +263,7 @@ fun EvolutionPendingTab(pendingUpgrades: List<com.example.evolution.EvolutionUpg
                                 Text("Diff")
                             }
                             Button(onClick = { viewModel.approveUpgrade(upgrade.id) }, colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen), modifier = Modifier.weight(1f)) {
-                                Text("Approve")
+                                Text("Approve review")
                             }
                             Button(onClick = { viewModel.rejectUpgrade(upgrade.id) }, colors = ButtonDefaults.buttonColors(containerColor = Error), modifier = Modifier.weight(1f)) {
                                 Text("Reject")
