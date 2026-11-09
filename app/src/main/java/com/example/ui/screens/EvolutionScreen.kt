@@ -150,7 +150,7 @@ fun EvolutionDashboardTab(report: com.example.evolution.EvolutionReportEntity?, 
                     Text("Today's Evolution Scan Summary", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        StatBox("Scanned", "${report?.discovered ?: 0}")
+                        StatBox("Discovered", "${report?.discovered ?: 0}")
                         StatBox("Passed", "${report?.passed ?: 0}")
                         StatBox("New Caps", "${report?.newCaps ?: 0}")
                     }
