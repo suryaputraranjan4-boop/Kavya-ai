@@ -102,6 +102,17 @@ class KavyaVoiceEngine(
 
         updateSpeakingState(true)
 
+        // ChatterboxTtsClient is a remote HTTP client, not an on-device runtime.
+        // In strict offline mode do not send voice text or reference audio to any server.
+        if (com.example.utils.AppPreferences.isOfflineFallbackEnabled(context) ||
+            com.example.utils.AppPreferences.getAiProvider(context) == "GEMMA_OFFLINE"
+        ) {
+            geminiPlayer?.notifyCaption(cleanText)
+            updateSpeakingState(false)
+            onComplete?.invoke()
+            return
+        }
+
         val job = scope.launch(Dispatchers.IO) {
             val player = geminiPlayer
             if (player == null) {
@@ -162,6 +173,14 @@ class KavyaVoiceEngine(
 
     private fun speakCleanFallback(enqueue: Boolean, onComplete: (() -> Unit)?) {
         val naturalFallback = "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
+        if (com.example.utils.AppPreferences.isOfflineFallbackEnabled(context) ||
+            com.example.utils.AppPreferences.getAiProvider(context) == "GEMMA_OFFLINE"
+        ) {
+            geminiPlayer?.notifyCaption(naturalFallback)
+            updateSpeakingState(false)
+            onComplete?.invoke()
+            return
+        }
         scope.launch(Dispatchers.IO) {
             try {
                 val activeProfile = voiceProfileManager.getActiveProfile()
