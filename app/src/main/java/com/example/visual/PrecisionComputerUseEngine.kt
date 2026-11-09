@@ -358,7 +358,17 @@ class PrecisionComputerUseEngine(
             if (success) {
                 if (submitAfter) {
                     delay(200L)
-                    service.clickSearchOrSubmitButton()
+                    if (!service.clickSearchOrSubmitButton()) {
+                        return PrecisionActionResult(
+                            success = false,
+                            actionType = "TYPE",
+                            target = target,
+                            touchX = 0f,
+                            touchY = 0f,
+                            detail = "Text was entered, but the search/submit action could not be confirmed.",
+                            verified = false
+                        )
+                    }
                 }
                 return PrecisionActionResult(
                     success = true,
@@ -376,7 +386,17 @@ class PrecisionComputerUseEngine(
         if (service.typeInFocusedNode(textToType)) {
             if (submitAfter) {
                 delay(200L)
-                service.clickSearchOrSubmitButton()
+                if (!service.clickSearchOrSubmitButton()) {
+                    return PrecisionActionResult(
+                        success = false,
+                        actionType = "TYPE",
+                        target = target,
+                        touchX = 0f,
+                        touchY = 0f,
+                        detail = "Text was entered into the focused field, but submission could not be confirmed.",
+                        verified = false
+                    )
+                }
             }
             return PrecisionActionResult(
                 success = true,
