@@ -223,8 +223,9 @@ class MemoryEngine(private val context: Context) {
         activeContext: String? = null
     ): List<MemoryEntity> = withContext(Dispatchers.IO) {
         val all = memoryDao.getAllMemories()
-        if (all.isEmpty()) return@withContext emptyList()
 
+        // Search OKF independently of Room: Obsidian/OKF imports may exist before
+        // a corresponding Room row has been created.
         // If OKF Memory is enabled, leverage local BM25 ranking
         if (AppPreferences.isOkfMemoryEnabled(context)) {
             val bm25Results = okfRepository.searchKnowledge(userQuery, topK = 6)
@@ -248,6 +249,8 @@ class MemoryEngine(private val context: Context) {
                 return@withContext matchedEntities
             }
         }
+
+        if (all.isEmpty()) return@withContext emptyList()
 
         val lowerQuery = userQuery.lowercase(Locale.ROOT)
         val tokens = lowerQuery.split(" ", ",", ".", "?", "!", "\n").filter { it.length > 2 }
@@ -738,10 +741,14 @@ class MemoryEngine(private val context: Context) {
 
     suspend fun deleteMemoryById(id: Long) = withContext(Dispatchers.IO) {
         val existing = memoryDao.getAllMemories().firstOrNull { it.id == id }
-        if (existing != null) {
-            okfRepository.deleteKnowledge(existing.key, permanent = false)
-        }
         memoryDao.deleteById(id)
+        if (existing != null) {
+            try {
+                okfRepository.deleteKnowledge(existing.key, permanent = false)
+            } catch (e: Exception) {
+                Log.w(TAG, "OKF memory delete failed after Room delete: ${e.message}")
+            }
+        }
     }
 
     suspend fun clearAll() = withContext(Dispatchers.IO) {
@@ -755,36 +762,66 @@ class MemoryEngine(private val context: Context) {
         val cleanCategory = category.trim().uppercase(Locale.ROOT)
         val cleanImportance = importance.coerceIn(1, 5)
 
-        // Search-Before-Write via OKF repository
-        okfRepository.createKnowledge(
-            key = cleanKey,
-            content = cleanContent,
-            category = OkfCategory.fromString(cleanCategory),
-            importance = cleanImportance,
-            provenance = OkfProvenance(source = "USER_EXPLICIT", author = "User")
-        )
+        if (cleanKey.isBlank() || cleanContent.isBlank()) return@withContext
 
-        val entity = MemoryEntity(
-            key = cleanKey,
-            content = cleanContent,
-            category = cleanCategory,
-            importance = cleanImportance,
-            createdAt = System.currentTimeMillis(),
-            lastUsedAt = System.currentTimeMillis(),
-            confidence = 1.0f,
-            userConfirmed = true
-        )
-        memoryDao.insertMemory(entity)
+        // Room is the primary durable store. An OKF write failure must not prevent
+        // the user's explicit memory from being saved locally.
+        try {
+            okfRepository.createKnowledge(
+                key = cleanKey,
+                content = cleanContent,
+                category = OkfCategory.fromString(cleanCategory),
+                importance = cleanImportance,
+                provenance = OkfProvenance(source = "USER_EXPLICIT", author = "User")
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "OKF memory write failed; Room save will continue: ${e.message}")
+        }
+
+        val now = System.currentTimeMillis()
+        val existing = memoryDao.getAllMemories().firstOrNull {
+            it.key.equals(cleanKey, ignoreCase = true)
+        }
+        if (existing != null) {
+            memoryDao.updateMemory(
+                existing.copy(
+                    content = cleanContent,
+                    category = cleanCategory,
+                    importance = cleanImportance,
+                    lastUsedAt = now,
+                    confidence = 1.0f,
+                    userConfirmed = true
+                )
+            )
+        } else {
+            memoryDao.insertMemory(
+                MemoryEntity(
+                    key = cleanKey,
+                    content = cleanContent,
+                    category = cleanCategory,
+                    importance = cleanImportance,
+                    createdAt = now,
+                    lastUsedAt = now,
+                    confidence = 1.0f,
+                    userConfirmed = true
+                )
+            )
+        }
     }
 
     suspend fun updateMemory(memory: MemoryEntity) = withContext(Dispatchers.IO) {
-        okfRepository.updateKnowledge(
-            idOrKey = memory.key,
-            content = memory.content,
-            category = OkfCategory.fromString(memory.category),
-            importance = memory.importance
-        )
+        // Update the primary Room row even when an optional OKF index write fails.
         memoryDao.updateMemory(memory)
+        try {
+            okfRepository.updateKnowledge(
+                idOrKey = memory.key,
+                content = memory.content,
+                category = OkfCategory.fromString(memory.category),
+                importance = memory.importance
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "OKF memory update failed after Room update: ${e.message}")
+        }
     }
 
     suspend fun autoLearnTaskProgress(userPrompt: String, aiResponse: String, isSuccess: Boolean = true) = withContext(Dispatchers.IO) {
