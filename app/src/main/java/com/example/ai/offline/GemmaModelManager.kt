@@ -144,23 +144,27 @@ object GemmaModelManager {
         // 2. Check ZIP / MediaPipe Task Bundle magic bytes: "PK\x03\x04" (0x50 0x4B 0x03 0x04)
         if (header[0] == 'P'.code.toByte() && header[1] == 'K'.code.toByte() && header[2] == 0x03.toByte() && header[3] == 0x04.toByte() &&
             (file.extension.equals("task", ignoreCase = true) || file.extension.equals("zip", ignoreCase = true))) {
-            var isValidArchive = true
             try {
                 ZipFile(file).use { zip ->
                     if (zip.size() == 0) {
                         return GemmaModelInfo(file, size, GemmaModelFormat.UNKNOWN, false, "MediaPipe Task bundle is empty.")
                     }
                 }
-            } catch (_: Exception) {
-                // In mock test environments or partial downloads, valid magic bytes indicate bundle format
-                isValidArchive = true
+            } catch (e: Exception) {
+                return GemmaModelInfo(
+                    file = file,
+                    sizeBytes = size,
+                    format = GemmaModelFormat.UNKNOWN,
+                    isSupported = false,
+                    validationMessage = "Invalid MediaPipe Task ZIP archive: ${e.localizedMessage ?: "unreadable archive"}"
+                )
             }
             return GemmaModelInfo(
                 file = file,
                 sizeBytes = size,
                 format = GemmaModelFormat.MEDIAPIPE_TASK,
                 isSupported = true,
-                validationMessage = "MediaPipe Task bundle detected; runtime will perform final validation.",
+                validationMessage = "MediaPipe Task ZIP archive detected; runtime will perform final validation.",
                 quantization = "LiteRT Task Bundle"
             )
         }
