@@ -3,6 +3,7 @@ package com.example.ai.offline
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 
 /**
  * Thin Kotlin/JNI bridge to the official llama.cpp runtime.
@@ -42,8 +43,22 @@ class LlamaCppEngine private constructor() {
             if (!modelFile.exists() || !modelFile.isFile) {
                 return@withContext Result.failure(IllegalArgumentException("GGUF model file does not exist."))
             }
-            if (!modelFile.name.endsWith(".gguf", ignoreCase = true)) {
-                return@withContext Result.failure(IllegalArgumentException("Selected file is not a GGUF model."))
+            // Detect the actual binary format instead of trusting the filename extension.
+            // SAF imports may preserve an unknown filename even when the contents are valid GGUF.
+            val hasGgufMagic = try {
+                FileInputStream(modelFile).use { input ->
+                    val magic = ByteArray(4)
+                    input.read(magic) == 4 &&
+                        magic[0] == 'G'.code.toByte() &&
+                        magic[1] == 'G'.code.toByte() &&
+                        magic[2] == 'U'.code.toByte() &&
+                        magic[3] == 'F'.code.toByte()
+                }
+            } catch (e: Exception) {
+                return@withContext Result.failure(IllegalArgumentException("Unable to inspect the selected model file.", e))
+            }
+            if (!hasGgufMagic) {
+                return@withContext Result.failure(IllegalArgumentException("Selected file does not contain a valid GGUF header."))
             }
 
             if (nativeHandle != 0L && loadedPath == modelFile.absolutePath) {
