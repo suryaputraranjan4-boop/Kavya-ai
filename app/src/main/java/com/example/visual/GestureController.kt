@@ -47,9 +47,9 @@ class GestureController {
             }
             val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceIn(150L, 1000L))
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
-            val dispatched = service.dispatchGesture(gesture, null, null)
+            val dispatched = service.dispatchGestureAndAwait(gesture)
             return if (dispatched) {
-                Pair(true, "Swiped from (${startX.toInt()}, ${startY.toInt()}) to (${endX.toInt()}, ${endY.toInt()})")
+                Pair(true, "Swipe completed from (${startX.toInt()}, ${startY.toInt()}) to (${endX.toInt()}, ${endY.toInt()})")
             } else {
                 Pair(false, "Gesture dispatch returned false")
             }
