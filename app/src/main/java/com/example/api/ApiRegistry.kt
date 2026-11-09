@@ -28,12 +28,12 @@ class ApiRegistry {
                 ApiParameter("longitude", "float", true, "Longitude")
             ),
             optionalParams = listOf(
-                ApiParameter("current_weather", "boolean", false, "Include current weather")
+                ApiParameter("current", "string", false, "Comma-separated current weather variables")
             ),
             isFree = true,
             priority = ApiPriority.P0_ESSENTIAL,
             fallbackGroupId = "weather-core",
-            description = "Free open-source weather API requiring no API key."
+            description = "Free Open-Meteo forecast API for non-commercial use; no API key required."
         )
         val frankfurter = ApiMetadata(
             apiId = "frankfurter-currency-v1",
