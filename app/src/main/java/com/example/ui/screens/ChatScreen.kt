@@ -137,13 +137,10 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         if (uri != null) {
             try {
                 var displayName = "image.jpg"
-                var fileSize = 0L
-                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                     if (cursor.moveToFirst()) {
                         val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
                         if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
-                        if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
                     }
                 }
                 Toast.makeText(
@@ -164,13 +161,10 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         if (uri != null) {
             try {
                 var displayName = "document.pdf"
-                var fileSize = 0L
-                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                     if (cursor.moveToFirst()) {
                         val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
                         if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
-                        if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
                     }
                 }
                 Toast.makeText(
