@@ -48,8 +48,6 @@ class VisualActionVerifier(
                     val (nodeAfter, _) = hierarchyAnalyzer.findMatchingNode(action.target, root)
                     if (nodeAfter == null) {
                         Pair(true, "Verified: Target '${action.target}' is no longer displayed (navigated forward)")
-                    } else if (nodeAfter.isSelected || nodeAfter.isFocused) {
-                        Pair(true, "Verified: Target '${action.target}' selection/focus state toggled")
                     } else {
                         Pair(false, "Unverified: Tap dispatched on '${action.target}' but no UI transition or state change detected")
                     }
@@ -72,23 +70,31 @@ class VisualActionVerifier(
                 }
             }
             VisualActionType.OPEN -> {
-                if (currentPkg.contains(action.target, ignoreCase = true)) {
-                    Pair(true, "Verified: Foreground application changed to '$currentPkg'")
+                if (currentPkg.contains(action.target, ignoreCase = true) || screenTransitioned) {
+                    Pair(true, "Verified: Foreground application or visible screen changed to '$currentPkg'")
                 } else {
-                    Pair(false, "Verification failed: Active package is '$currentPkg', expected '${action.target}'")
+                    Pair(false, "Verification failed: foreground app/screen did not change from '$currentPkg'")
                 }
             }
             VisualActionType.BACK, VisualActionType.HOME -> {
-                Pair(true, "Verified: System navigation action executed")
+                if (screenTransitioned) {
+                    Pair(true, "Verified: System navigation changed the visible screen")
+                } else {
+                    Pair(false, "Unverified: System navigation was dispatched but the visible screen did not change")
+                }
             }
             VisualActionType.WAIT -> {
                 Pair(true, "Verified: Wait duration elapsed")
             }
-            VisualActionType.LONG_PRESS -> {
-                Pair(true, "Verified: Long press action completed")
+            VisualActionType.LONG_PRESS, VisualActionType.CLOSE -> {
+                if (screenTransitioned) {
+                    Pair(true, "Verified: The visible UI changed after the action")
+                } else {
+                    Pair(false, "Unverified: No visible UI change followed the action")
+                }
             }
-            VisualActionType.CLOSE, VisualActionType.STOP -> {
-                Pair(true, "Verified: Task stopped")
+            VisualActionType.STOP -> {
+                Pair(true, "Verified: Automation stop command was applied")
             }
         }
     }
