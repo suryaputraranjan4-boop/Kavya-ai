@@ -1,5 +1,7 @@
 package com.example.ai.local
 
+import kotlinx.coroutines.CancellationException
+
 import android.content.Context
 import android.util.Log
 import com.example.data.AppDatabase
@@ -72,6 +74,8 @@ class MemoryContextProvider private constructor(private val context: Context) {
                 sb.append("• ").append(m.key).append(": ").append(m.content).append("\n")
             }
             return@withContext sb.toString().trim()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Error retrieving memory context: ${e.message}")
             return@withContext ""
@@ -101,6 +105,8 @@ class MemoryContextProvider private constructor(private val context: Context) {
             )
             Log.i(TAG, "Explicit memory saved locally: $key = $content")
             true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save explicit memory", e)
             false
