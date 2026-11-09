@@ -1,5 +1,7 @@
 package com.example.ai
 
+import kotlinx.coroutines.CancellationException
+
 import android.content.Context
 import android.util.Log
 import com.example.utils.AppPreferences
@@ -64,7 +66,9 @@ class ChatterboxTtsClient(private val context: Context) {
                         return@withContext Pair(true, "Chatterbox backend is online and reachable (${response.code}).")
                     }
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.d(TAG, "Health check attempt failed for $endpoint: ${e.message}")
             }
         }
@@ -196,7 +200,9 @@ class ChatterboxTtsClient(private val context: Context) {
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 lastError = "Chatterbox request failed: ${e.message ?: e.javaClass.simpleName}"
                 Log.w(TAG, "Attempt to $url failed: ${e.javaClass.simpleName}")
             }
