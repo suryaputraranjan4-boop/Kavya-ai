@@ -99,7 +99,6 @@ class GeminiProvider : AIProvider {
         val contents = listOf(Content(role = "user", parts = listOf(Part(text = prompt))))
         val request = GenerateContentRequest(
             contents = contents,
-            generationConfig = GenerationConfig(temperature = null, topP = null, topK = null),
             systemInstruction = if (!systemInstruction.isNullOrBlank()) {
                 Content(parts = listOf(Part(text = systemInstruction)))
             } else null
