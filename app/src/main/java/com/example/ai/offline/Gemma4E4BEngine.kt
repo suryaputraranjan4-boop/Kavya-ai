@@ -308,7 +308,44 @@ class Gemma4E4BEngine private constructor() {
                 else -> UnsupportedFormatRuntime(modelInfo.validationMessage)
             }
 
-            val initResult = runtime.initialize(context, modelFile)
+            val initResult = try {
+                runtime.initialize(context, modelFile)
+            } catch (cancelled: CancellationException) {
+                try {
+                    runtime.close()
+                } catch (_: Throwable) {
+                }
+                val message = "Local model loading was cancelled before initialization completed."
+                GemmaModelManager.setStatus(GemmaModelStatus.ERROR, message)
+                _diagnostics = GemmaDiagnostics(
+                    modelPath = modelFile.absolutePath,
+                    sizeBytes = modelInfo.sizeBytes,
+                    sizeFormatted = "${modelInfo.sizeBytes / (1024 * 1024)} MB",
+                    detectedFormat = modelInfo.format,
+                    runtimeSelected = runtime.runtimeName,
+                    initializationState = GemmaModelStatus.ERROR,
+                    availableMemoryMB = availRamMB,
+                    lastError = message
+                )
+                throw cancelled
+            } catch (memoryError: OutOfMemoryError) {
+                try {
+                    runtime.close()
+                } catch (_: Throwable) {
+                }
+                Result.failure(
+                    IllegalStateException(
+                        "Not enough available memory to load this local model. Unload other apps or choose a smaller quantized model.",
+                        memoryError
+                    )
+                )
+            } catch (error: Throwable) {
+                try {
+                    runtime.close()
+                } catch (_: Throwable) {
+                }
+                Result.failure(error)
+            }
             if (initResult.isFailure) {
                 val err = initResult.exceptionOrNull()?.localizedMessage ?: "Runtime initialization failed."
                 Log.e(TAG, "Runtime initialization failed", initResult.exceptionOrNull())
