@@ -141,6 +141,8 @@ class KavyaVoiceEngine(
                         Log.w(TAG, "Chatterbox speech generation failed: ${result.message}")
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 Log.w(TAG, "Chatterbox voice generation exception: ${e.message}")
             }
@@ -190,18 +192,29 @@ class KavyaVoiceEngine(
         val clean = cleanText(text)
         if (clean.isBlank()) return
         kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+            var timeoutJob: Job? = null
+            continuation.invokeOnCancellation {
+                timeoutJob?.cancel()
+                stop()
+            }
+            if (!continuation.isActive) return@suspendCancellableCoroutine
+
             speak(clean, explicitSentiment, enqueue = false) {
+                timeoutJob?.cancel()
                 if (continuation.isActive) {
                     continuation.resume(Unit) {}
                 }
             }
-            // Timeout safety fallback after 10s if network hangs
-            scope.launch {
+
+            // Stop the underlying request if the caller waits longer than the safety limit.
+            timeoutJob = scope.launch {
                 delay(10000)
                 if (continuation.isActive) {
+                    stop()
                     continuation.resume(Unit) {}
                 }
             }
+            if (!continuation.isActive) timeoutJob?.cancel()
         }
     }
 
