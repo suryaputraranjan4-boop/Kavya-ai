@@ -42,7 +42,17 @@ class ApiSystem {
         }
         
         // 2. Cache Check (Request Deduplication)
-        val requestKey = "${match.capability.name}_${match.extractedParams.hashCode()}"
+        val requestKey = buildString {
+            append(match.intentName)
+            append('|')
+            append(match.capability.name)
+            match.extractedParams.toSortedMap().forEach { (key, value) ->
+                append('|')
+                append(key)
+                append('=')
+                append(value)
+            }
+        }
         val cached = cache.getCachedResult(requestKey)
         if (cached != null) {
             Log.d(TAG, "Cache hit for $requestKey")
