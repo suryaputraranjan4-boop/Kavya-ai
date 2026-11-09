@@ -56,7 +56,7 @@ class TouchController(
             val (nodeAtCoords, rawNodeAtCoords) = hierarchyAnalyzer.findInteractiveNodeAt(tapX, tapY, root)
             if (rawNodeAtCoords != null && nodeAtCoords != null) {
                 delay(NATURAL_PRE_DELAY_MS)
-                val clicked = service.clickNode(rawNodeAtCoords)
+                val clicked = service.clickNodeAndAwait(rawNodeAtCoords)
                 if (clicked) {
                     return Pair(true, "Tapped '$target' via interactive element at (${tapX.toInt()}, ${tapY.toInt()})")
                 }
@@ -86,7 +86,7 @@ class TouchController(
                 delay(NATURAL_PRE_DELAY_MS)
 
                 // Try semantic node click first
-                val clicked = service.clickNode(rawNode)
+                val clicked = service.clickNodeAndAwait(rawNode)
                 if (clicked) {
                     return Pair(true, "Tapped '$target' via accessibility semantics")
                 }
@@ -136,7 +136,7 @@ class TouchController(
             val (nodeAtCoords, rawNodeAtCoords) = hierarchyAnalyzer.findInteractiveNodeAt(tapX, tapY, root)
             if (rawNodeAtCoords != null && nodeAtCoords != null) {
                 delay(NATURAL_PRE_DELAY_MS)
-                val longClicked = service.longClickNode(rawNodeAtCoords)
+                val longClicked = service.longClickNodeAndAwait(rawNodeAtCoords)
                 if (longClicked) {
                     return Pair(true, "Long-pressed '$target' via element at (${tapX.toInt()}, ${tapY.toInt()})")
                 }
@@ -162,7 +162,7 @@ class TouchController(
             val isGiant = nodeInfo.bounds.width() > screenWidth * 0.85 && nodeInfo.bounds.height() > screenHeight * 0.75
             if (!isGiant && nodeInfo.bounds.width() > 0 && nodeInfo.bounds.height() > 0) {
                 delay(NATURAL_PRE_DELAY_MS)
-                val longClicked = service.longClickNode(rawNode)
+                val longClicked = service.longClickNodeAndAwait(rawNode)
                 if (longClicked) {
                     return Pair(true, "Long-pressed '$target' via accessibility semantics")
                 }
@@ -179,7 +179,7 @@ class TouchController(
         return Pair(false, "Could not perform long press on '$target' precisely")
     }
 
-    private fun dispatchTapGesture(
+    private suspend fun dispatchTapGesture(
         service: KavyaAccessibilityService,
         x: Float,
         y: Float,
@@ -192,7 +192,7 @@ class TouchController(
             }
             val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
-            return service.dispatchGesture(gesture, null, null)
+            return service.dispatchGestureAndAwait(gesture)
         }
         return service.clickByCoordinates(x, y)
     }
