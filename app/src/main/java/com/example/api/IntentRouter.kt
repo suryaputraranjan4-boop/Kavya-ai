@@ -18,11 +18,11 @@ class IntentRouter(private val registry: ApiRegistry? = null) {
             val apis = registry.getAllApisSync()
             for (api in apis) {
                 if (api.tags.any { lowerInput.contains(it.lowercase(Locale.ROOT)) }) {
-                    // Very simple parameter extraction for demo
+                    // Extract multi-word location parameters without truncating city names.
                     val extractedParams = mutableMapOf<String, String>()
                     if (api.category == ApiCategory.WEATHER) {
                         val locationMatch = Regex(
-                            """\\b(?:in|for|at)\\s+(.+?)(?=\\s+(?:today|tomorrow|tonight|now|currently|current|forecast)\\b|[?.!,]|$)""",
+                            """\b(?:in|for|at)\s+(.+?)(?=\s+(?:today|tomorrow|tonight|now|currently|current|forecast)\b|[?.!,]|$)""",
                             RegexOption.IGNORE_CASE
                         ).find(userInput)
                         val location = locationMatch?.groupValues?.getOrNull(1)
