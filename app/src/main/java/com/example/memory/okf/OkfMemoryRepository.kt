@@ -1,5 +1,7 @@
 package com.example.memory.okf
 
+import kotlinx.coroutines.CancellationException
+
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -74,6 +76,8 @@ class OkfMemoryRepository private constructor(private val context: Context) {
             loadIndexAndFiles()
             _isInitialized.value = true
             Log.d(TAG, "OKF Agent Memory initialized with ${memoryMap.size} units")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing OKF Memory storage: ${e.message}", e)
         }
@@ -92,7 +96,9 @@ class OkfMemoryRepository private constructor(private val context: Context) {
                     projectConventions = if (convs.isNotEmpty()) convs else _workingMemoryFlow.value.projectConventions,
                     safetyConstraints = if (safety.isNotEmpty()) safety else _workingMemoryFlow.value.safetyConstraints
                 )
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "Failed reading working memory file: ${e.message}")
             }
         } else {
@@ -109,6 +115,8 @@ class OkfMemoryRepository private constructor(private val context: Context) {
             }
             workingMemoryFile.writeText(obj.toString(2), Charsets.UTF_8)
             _workingMemoryFlow.value = memory
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "Failed saving working memory: ${e.message}", e)
         }
@@ -143,7 +151,9 @@ class OkfMemoryRepository private constructor(private val context: Context) {
                         memoryMap[unit.id] = unit
                     }
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
                 Log.w(TAG, "Index file corrupt or unreadable, falling back to reading markdown files: ${e.message}")
             }
         }
@@ -172,6 +182,8 @@ class OkfMemoryRepository private constructor(private val context: Context) {
             val array = JSONArray()
             memoryMap.values.forEach { array.put(it.toJsonObject()) }
             indexFile.writeText(array.toString(2), Charsets.UTF_8)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.e(TAG, "Failed persisting index: ${e.message}", e)
         }
@@ -186,6 +198,8 @@ class OkfMemoryRepository private constructor(private val context: Context) {
             val array = JSONArray()
             logs.take(100).forEach { array.put(it.toJsonObject()) }
             gitLogFile.writeText(array.toString(2), Charsets.UTF_8)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Failed appending git log: ${e.message}")
         }
@@ -202,6 +216,8 @@ class OkfMemoryRepository private constructor(private val context: Context) {
                 if (obj != null) list.add(OkfCommitLog.fromJsonObject(obj))
             }
             list
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             emptyList()
         }
@@ -482,6 +498,8 @@ class OkfMemoryRepository private constructor(private val context: Context) {
                 createdAt = createdAt,
                 updatedAt = updatedAt
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "Error parsing markdown file ${file.name}: ${e.message}")
             null
