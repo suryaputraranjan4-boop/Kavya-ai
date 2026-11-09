@@ -100,6 +100,14 @@ class MemoryEngine(private val context: Context) {
                 var deletedCount = 0
                 for (match in matches) {
                     memoryDao.deleteMemory(match)
+                    // Remove the same key from OKF/BM25 so it cannot be recalled or re-imported.
+                    try {
+                        okfRepository.deleteKnowledge(match.key, permanent = true)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (e: Exception) {
+                        Log.w(TAG, "OKF memory delete failed: " + e.message)
+                    }
                     deletedCount++
                 }
                 if (deletedCount > 0) {
@@ -126,6 +134,19 @@ class MemoryEngine(private val context: Context) {
                     userConfirmed = true
                 )
                 memoryDao.updateMemory(toUpdate)
+                try {
+                    okfRepository.createKnowledge(
+                        key = toUpdate.key,
+                        content = toUpdate.content,
+                        category = OkfCategory.fromString(toUpdate.category),
+                        importance = toUpdate.importance,
+                        provenance = OkfProvenance(source = "USER_CORRECTION", author = "User")
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (e: Exception) {
+                    Log.w(TAG, "OKF memory correction sync failed: " + e.message)
+                }
             } else {
                 val newMemory = MemoryEntity(
                     key = topicKey,
@@ -143,7 +164,7 @@ class MemoryEngine(private val context: Context) {
                 saved = true,
                 confirmationText = "Update kar diya: $topicKey = $newContent",
                 affectedKey = topicKey,
-                persistedMemory = existing.firstOrNull()
+                persistedMemory = existing.firstOrNull()?.copy(content = newContent)
             )
         }
 
@@ -756,7 +777,7 @@ class MemoryEngine(private val context: Context) {
         memoryDao.deleteById(id)
         if (existing != null) {
             try {
-                okfRepository.deleteKnowledge(existing.key, permanent = false)
+                okfRepository.deleteKnowledge(existing.key, permanent = true)
             } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (e: Exception) {
