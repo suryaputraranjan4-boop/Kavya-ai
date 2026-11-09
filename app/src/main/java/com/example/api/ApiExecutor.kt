@@ -59,7 +59,17 @@ class ApiExecutor {
                 }
                 requestParams["latitude"] = coordinates.first.toString()
                 requestParams["longitude"] = coordinates.second.toString()
-                requestParams.putIfAbsent("current_weather", "true")
+                requestParams.putIfAbsent("current", "temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m")
+                requestParams.putIfAbsent("timezone", "auto")
+            }
+
+            if (api.apiId == "open-meteo-v1") {
+                requestParams.remove("current_weather")
+                requestParams.putIfAbsent(
+                    "current",
+                    "temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m"
+                )
+                requestParams.putIfAbsent("timezone", "auto")
             }
 
             val missingRequired = api.requiredParams.filter { parameter ->
@@ -186,9 +196,9 @@ class ApiExecutor {
 
         if (api.apiId == "open-meteo-v1") {
             val json = runCatching { JSONObject(rawResponse) }.getOrNull()
-            val current = json?.optJSONObject("current_weather")
+            val current = json?.optJSONObject("current")
             if (current != null) {
-                return JSONObject().put("current_weather", current).toString()
+                return JSONObject().put("current", current).toString()
             }
         }
 
