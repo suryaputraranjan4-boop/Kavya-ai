@@ -661,6 +661,19 @@ object AppPreferences {
     }
 
     fun saveCustomApi(context: Context, api: CustomApiConfig): Boolean {
+        val keyName = customApiSecretKey(api.id)
+        val credentialSaved = if (api.apiKey.isBlank()) {
+            com.example.security.SecureStorage.clearSecret(context, keyName)
+            true
+        } else {
+            val saved = com.example.security.SecureStorage.saveSecret(context, keyName, api.apiKey)
+            if (!saved) {
+                // Never put a secret back into ordinary SharedPreferences when encryption fails.
+                com.example.security.SecureStorage.clearSecret(context, keyName)
+            }
+            saved
+        }
+
         val current = getCustomApis(context).toMutableList()
         val index = current.indexOfFirst { it.id == api.id }
         if (index >= 0) {
@@ -668,38 +681,27 @@ object AppPreferences {
         } else {
             current.add(api)
         }
-        return persistCustomApis(context, current)
+        return credentialSaved && persistCustomApiMetadata(context, current)
     }
 
     fun deleteCustomApi(context: Context, id: String) {
         val current = getCustomApis(context).filterNot { it.id == id }
         com.example.security.SecureStorage.clearSecret(context, customApiSecretKey(id))
-        persistCustomApis(context, current)
+        persistCustomApiMetadata(context, current)
     }
 
     fun setCustomApiEnabled(context: Context, id: String, enabled: Boolean) {
         val current = getCustomApis(context).map {
             if (it.id == id) it.copy(isEnabled = enabled) else it
         }
-        persistCustomApis(context, current)
+        // Metadata-only updates must not re-encrypt or clear unrelated secrets.
+        persistCustomApiMetadata(context, current)
     }
 
-    private fun persistCustomApis(context: Context, list: List<CustomApiConfig>): Boolean {
-        var allCredentialsSecured = true
-        for (api in list) {
-            val keyName = customApiSecretKey(api.id)
-            if (api.apiKey.isBlank()) {
-                com.example.security.SecureStorage.clearSecret(context, keyName)
-            } else if (!com.example.security.SecureStorage.saveSecret(context, keyName, api.apiKey)) {
-                // Never put a secret back into ordinary SharedPreferences when encryption fails.
-                com.example.security.SecureStorage.clearSecret(context, keyName)
-                allCredentialsSecured = false
-            }
-        }
-        val persisted = getPrefs(context).edit()
+    private fun persistCustomApiMetadata(context: Context, list: List<CustomApiConfig>): Boolean {
+        return getPrefs(context).edit()
             .putString(KEY_CUSTOM_APIS_JSON, customApiMetadata(list).toString())
             .commit()
-        return allCredentialsSecured && persisted
     }
 
     /**
