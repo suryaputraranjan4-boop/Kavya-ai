@@ -41,7 +41,7 @@ class KavyaMicrophoneEngine : Service() {
         private const val CHANNEL_ID = "kavya_mic_channel"
 
         private const val INITIAL_RETRY_MS = 350L
-        private const val NO_MATCH_RETRY_MS = 450L
+        private const val NO_MATCH_RETRY_MS = 300L
         private const val BUSY_RETRY_MS = 1000L
         private const val MAX_RETRY_MS = 5000L
 
@@ -171,8 +171,10 @@ class KavyaMicrophoneEngine : Service() {
                 return@post
             }
 
-            desired = true
-            retryMs = INITIAL_RETRY_MS
+            if (!desired) {
+                desired = true
+                retryMs = INITIAL_RETRY_MS
+            }
             if (stateFlow.value == EngineState.MIC_OFF ||
                 stateFlow.value == EngineState.MIC_ERROR) {
                 // Starting from the UI is an explicit start/wake action.
@@ -220,6 +222,12 @@ class KavyaMicrophoneEngine : Service() {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, recognitionLocale)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, recognitionLocale)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                // Keep each Android recognition session open through ordinary pauses.
+                // SpeechRecognizer is session-based, so longer silence windows reduce
+                // the visible/audio capture churn between consecutive phrases.
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 800L)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
 
@@ -320,7 +328,7 @@ class KavyaMicrophoneEngine : Service() {
 
             if (text.isNotBlank() && desired && !assistantSpeaking) handleRecognizedText(text)
 
-            if (desired && !assistantSpeaking) schedule(350L)
+            if (desired && !assistantSpeaking) schedule(NO_MATCH_RETRY_MS)
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
@@ -536,7 +544,12 @@ class KavyaMicrophoneEngine : Service() {
             .build()
 
     override fun onDestroy() {
-        stopEngine()
+        desired = false
+        cancelRetry()
+        destroyRecognizer()
+        stateFlow.value = EngineState.MIC_OFF
+        partialFlow.value = ""
+        amplitudeFlow.value = 0f
         instance = null
         super.onDestroy()
     }
