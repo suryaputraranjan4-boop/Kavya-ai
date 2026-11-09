@@ -34,26 +34,26 @@ object GitHubApiService {
                     val item = items.optJSONObject(i) ?: continue
                     val ownerObj = item.optJSONObject("owner")
                     val licenseObj = item.optJSONObject("license")
-                    val licenseStr = licenseObj?.optString("spdx_id", "MIT")?.let { if (it.isBlank()) "MIT" else it } ?: "MIT"
+                    val licenseStr = licenseObj?.optString("spdx_id")?.takeIf { it.isNotBlank() } ?: "NOASSERTION"
 
                     projects.add(
                         EvolutionProject(
                             id = item.optLong("id", i.toLong()).toString(),
                             name = item.optString("name", "unknown"),
                             owner = ownerObj?.optString("login", "unknown") ?: "unknown",
-                            url = item.optString("html_url", ""),
+                            url = item.optString("html_url", "").takeIf { it.isNotBlank() } ?: continue,
                             license = licenseStr,
-                            language = item.optString("language", "Kotlin"),
-                            framework = item.optString("description", "Utility").take(60),
-                            stars = item.optInt("stargazers_count", 100),
-                            forks = item.optInt("forks_count", 10),
-                            lastUpdate = item.optString("updated_at", "Recently"),
-                            dependencies = listOf("kotlinx-serialization", "androidx-core"),
-                            documentationQuality = "High",
-                            architecture = "Modular",
+                            language = item.optString("language").takeIf { it.isNotBlank() && it != "null" } ?: "Unknown",
+                            framework = item.optString("description").takeIf { it.isNotBlank() && it != "null" }?.take(60) ?: "Unclassified repository",
+                            stars = item.optInt("stargazers_count", 0),
+                            forks = item.optInt("forks_count", 0),
+                            lastUpdate = item.optString("updated_at").takeIf { it.isNotBlank() && it != "null" } ?: "Unknown",
+                            dependencies = emptyList(),
+                            documentationQuality = "Unknown",
+                            architecture = "Unknown",
                             requiredPermissions = emptyList(),
-                            potentialUsefulness = item.optString("description", "Improves assistant intelligence and capabilities."),
-                            maintenanceStatus = "Active"
+                            potentialUsefulness = item.optString("description").takeIf { it.isNotBlank() && it != "null" } ?: "No repository description was supplied.",
+                            maintenanceStatus = "Unknown"
                         )
                     )
                 }
