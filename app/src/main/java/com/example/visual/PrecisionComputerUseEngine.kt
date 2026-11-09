@@ -79,7 +79,7 @@ class PrecisionComputerUseEngine(
         val (nodeAtCoords, rawNodeAtCoords) = hierarchyAnalyzer.findInteractiveNodeAt(safeX, safeY, root)
         if (rawNodeAtCoords != null && nodeAtCoords != null) {
             delay(NATURAL_PRE_DELAY_MS)
-            val clicked = service.clickNode(rawNodeAtCoords)
+            val clicked = service.clickNodeAndAwait(rawNodeAtCoords)
             if (clicked) {
                 return PrecisionActionResult(
                     success = true,
@@ -188,7 +188,7 @@ class PrecisionComputerUseEngine(
         val (nodeAtCoords, rawNodeAtCoords) = hierarchyAnalyzer.findInteractiveNodeAt(safeX, safeY, root)
         if (rawNodeAtCoords != null && nodeAtCoords != null) {
             delay(NATURAL_PRE_DELAY_MS)
-            val longClicked = service.longClickNode(rawNodeAtCoords)
+            val longClicked = service.longClickNodeAndAwait(rawNodeAtCoords)
             if (longClicked) {
                 return PrecisionActionResult(
                     success = true,
@@ -468,7 +468,7 @@ class PrecisionComputerUseEngine(
             delay(100L)
         }
 
-        return PrecisionActionResult(true, "LAUNCH", appNameOrPackage, 0f, 0f, "Dispatched launch for $appNameOrPackage", true)
+        return PrecisionActionResult(false, "LAUNCH", appNameOrPackage, 0f, 0f, "Launch was dispatched, but the target app did not become foreground within ${timeoutMs}ms", false)
     }
 
     // ==========================================
@@ -502,7 +502,7 @@ class PrecisionComputerUseEngine(
 
         if (rawNode != null && nodeInfo != null) {
             delay(NATURAL_PRE_DELAY_MS)
-            val clicked = service.clickNode(rawNode)
+            val clicked = service.clickNodeAndAwait(rawNode)
             if (clicked) {
                 val cx = nodeInfo.bounds.centerX().toFloat()
                 val cy = nodeInfo.bounds.centerY().toFloat()
@@ -569,7 +569,7 @@ class PrecisionComputerUseEngine(
     // ==========================================
     // GESTURE DISPATCH HELPERS
     // ==========================================
-    private fun dispatchTapGesture(
+    private suspend fun dispatchTapGesture(
         service: KavyaAccessibilityService,
         x: Float,
         y: Float,
@@ -582,12 +582,12 @@ class PrecisionComputerUseEngine(
             }
             val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceIn(40L, 2000L))
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
-            return service.dispatchGesture(gesture, null, null)
+            return service.dispatchGestureAndAwait(gesture)
         }
         return service.clickByCoordinates(x, y)
     }
 
-    private fun dispatchPathGesture(
+    private suspend fun dispatchPathGesture(
         service: KavyaAccessibilityService,
         x1: Float,
         y1: Float,
