@@ -133,7 +133,7 @@ class VoiceProfileManager private constructor(private val context: Context) {
     }
 
     fun startRecording(): File {
-        val file = File(getVoiceSamplesDir(), "sample_${System.currentTimeMillis()}.wav")
+        val file = File(getVoiceSamplesDir(), "sample_${System.currentTimeMillis()}.3gp")
         currentRecordingFile = file
 
         val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -159,14 +159,20 @@ class VoiceProfileManager private constructor(private val context: Context) {
     fun stopRecording(): File? {
         val recorder = activeRecorder ?: return null
         val file = currentRecordingFile
+        var saved = false
         try {
             recorder.stop()
-            recorder.release()
+            saved = file?.isFile == true && file.length() > 0L
         } catch (e: Exception) {
             Log.e(TAG, "Failed stopping recorder: ${e.message}")
         } finally {
+            try { recorder.release() } catch (_: Exception) {}
             activeRecorder = null
             currentRecordingFile = null
+        }
+        if (!saved) {
+            file?.delete()
+            return null
         }
         return file
     }
@@ -188,7 +194,7 @@ class VoiceProfileManager private constructor(private val context: Context) {
 
     fun importVoiceSample(name: String, inputStream: InputStream): VoiceProfile? {
         return try {
-            val file = File(getVoiceSamplesDir(), "imported_${System.currentTimeMillis()}.wav")
+            val file = File(getVoiceSamplesDir(), "imported_${System.currentTimeMillis()}.audio")
             FileOutputStream(file).use { out ->
                 inputStream.copyTo(out)
             }
