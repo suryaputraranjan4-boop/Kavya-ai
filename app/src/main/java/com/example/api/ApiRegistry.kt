@@ -110,7 +110,7 @@ class ApiRegistry {
                 ApiParameter("inputs", "image", true, "Image file to classify")
             ),
             optionalParams = emptyList(),
-            isFree = true,
+            isFree = false,
             priority = ApiPriority.P1_FREQUENT,
             fallbackGroupId = "hf-models",
             description = "Hosted image classification; requires an inference token and provider availability."
