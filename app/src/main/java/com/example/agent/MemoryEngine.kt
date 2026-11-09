@@ -213,13 +213,23 @@ class MemoryEngine(private val context: Context) {
             val isVerified = verify != null
             if (isVerified) {
                 try {
-                    okfRepository.createKnowledge(
-                        key = key,
-                        content = content,
-                        category = if (category == "TASK_WORKFLOW") OkfCategory.RUNBOOK else OkfCategory.PREFERENCE,
-                        importance = importance,
-                        provenance = OkfProvenance(source = "EXPLICIT_USER_COMMAND", author = "User")
-                    )
+                    val existingOkf = okfRepository.getKnowledge(key)
+                    if (existingOkf != null) {
+                        okfRepository.updateKnowledge(
+                            idOrKey = existingOkf.id,
+                            content = content,
+                            category = if (category == "TASK_WORKFLOW") OkfCategory.RUNBOOK else OkfCategory.PREFERENCE,
+                            importance = importance
+                        )
+                    } else {
+                        okfRepository.createKnowledge(
+                            key = key,
+                            content = content,
+                            category = if (category == "TASK_WORKFLOW") OkfCategory.RUNBOOK else OkfCategory.PREFERENCE,
+                            importance = importance,
+                            provenance = OkfProvenance(source = "EXPLICIT_USER_COMMAND", author = "User")
+                        )
+                    }
                 } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (e: Exception) {
