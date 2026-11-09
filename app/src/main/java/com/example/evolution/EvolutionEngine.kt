@@ -131,7 +131,7 @@ class EvolutionEngine(private val context: Context) {
             date = dateStr,
             scanTime = scanTime,
             discovered = finalRepos.size,
-            analyzed = finalRepos.size,
+            analyzed = 0,
             passed = passedCount,
             quarantined = quarantinedCount,
             rejected = rejectedCount,
