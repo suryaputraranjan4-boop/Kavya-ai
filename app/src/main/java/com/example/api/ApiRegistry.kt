@@ -84,17 +84,17 @@ class ApiRegistry {
             subcategory = ApiSubcategory.TRANSCRIPTION,
             capabilities = listOf(ApiCapability.ANALYZE),
             tags = listOf("speech", "audio", "transcription", "whisper"),
-            endpoint = "https://api-inference.huggingface.co/models/openai/whisper-large-v3",
+            endpoint = "https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3",
             method = HttpMethod.POST,
             authType = AuthType.BEARER_TOKEN,
             requiredParams = listOf(
                 ApiParameter("inputs", "audio", true, "Audio file to transcribe")
             ),
             optionalParams = emptyList(),
-            isFree = true,
+            isFree = false,
             priority = ApiPriority.P1_FREQUENT,
             fallbackGroupId = "hf-models",
-            description = "Specialized AI model for speech recognition"
+            description = "Hosted speech recognition; requires an inference token and provider availability."
         )
         val hfVision = ApiMetadata(
             apiId = "hf-vit",
@@ -103,7 +103,7 @@ class ApiRegistry {
             subcategory = ApiSubcategory.IMAGE_ANALYSIS,
             capabilities = listOf(ApiCapability.ANALYZE),
             tags = listOf("vision", "image", "classification"),
-            endpoint = "https://api-inference.huggingface.co/models/google/vit-base-patch16-224",
+            endpoint = "https://router.huggingface.co/hf-inference/models/google/vit-base-patch16-224",
             method = HttpMethod.POST,
             authType = AuthType.BEARER_TOKEN,
             requiredParams = listOf(
@@ -113,7 +113,7 @@ class ApiRegistry {
             isFree = true,
             priority = ApiPriority.P1_FREQUENT,
             fallbackGroupId = "hf-models",
-            description = "Specialized AI model for image understanding"
+            description = "Hosted image classification; requires an inference token and provider availability."
         )
         _apis[openMeteo.apiId] = openMeteo
         _apis[frankfurter.apiId] = frankfurter
