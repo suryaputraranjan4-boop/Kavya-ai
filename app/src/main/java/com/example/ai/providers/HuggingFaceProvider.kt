@@ -75,7 +75,7 @@ class HuggingFaceProvider : AIProvider {
     companion object {
         private const val TAG = "KavyaHFProvider"
         const val PROVIDER_ID = "huggingface"
-        private const val API_BASE = "https://api-inference.huggingface.co/models"
+        private const val API_BASE = "https://router.huggingface.co/hf-inference/models"
         private const val HUB_API_BASE = "https://huggingface.co/api"
 
         // Default specialized verified models per task
@@ -91,12 +91,12 @@ class HuggingFaceProvider : AIProvider {
         const val MODEL_SENTIMENT = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 
         val DEFAULT_VERIFIED_MODELS = listOf(
-            ProviderModelInfo(MODEL_TEXT_GEN, "Llama 3.2 1B Instruct", ProviderType.HUGGINGFACE, listOf("text-generation", "reasoning"), 32768, "High performance instruction model", true),
-            ProviderModelInfo(MODEL_IMAGE_ANALYSIS, "Salesforce BLIP Captioning", ProviderType.HUGGINGFACE, listOf("image-to-text", "vision"), 2048, "Visual question answering and image captioning", true),
-            ProviderModelInfo(MODEL_OCR, "Microsoft TrOCR Printed", ProviderType.HUGGINGFACE, listOf("image-to-text", "ocr"), 1024, "Transformer-based text recognition from images", true),
-            ProviderModelInfo(MODEL_OBJECT_DETECTION, "Facebook DETR ResNet-50", ProviderType.HUGGINGFACE, listOf("object-detection", "vision"), 1024, "End-to-end object detector with bounding boxes", true),
-            ProviderModelInfo(MODEL_IMAGE_CLASSIFICATION, "Google ViT Base", ProviderType.HUGGINGFACE, listOf("image-classification", "vision"), 1024, "Vision transformer for image classification", true),
-            ProviderModelInfo(MODEL_EMBEDDINGS, "Sentence-Transformers all-MiniLM", ProviderType.HUGGINGFACE, listOf("feature-extraction", "embeddings"), 512, "Fast semantic sentence embeddings", true)
+            ProviderModelInfo(MODEL_TEXT_GEN, "Llama 3.2 1B Instruct", ProviderType.HUGGINGFACE, listOf("text-generation", "reasoning"), 32768, "Hosted inference availability and pricing depend on the selected provider.", false),
+            ProviderModelInfo(MODEL_IMAGE_ANALYSIS, "Salesforce BLIP Captioning", ProviderType.HUGGINGFACE, listOf("image-to-text", "vision"), 2048, "Hosted inference availability and pricing depend on the selected provider.", false),
+            ProviderModelInfo(MODEL_OCR, "Microsoft TrOCR Printed", ProviderType.HUGGINGFACE, listOf("image-to-text", "ocr"), 1024, "Hosted inference availability and pricing depend on the selected provider.", false),
+            ProviderModelInfo(MODEL_OBJECT_DETECTION, "Facebook DETR ResNet-50", ProviderType.HUGGINGFACE, listOf("object-detection", "vision"), 1024, "Hosted inference availability and pricing depend on the selected provider.", false),
+            ProviderModelInfo(MODEL_IMAGE_CLASSIFICATION, "Google ViT Base", ProviderType.HUGGINGFACE, listOf("image-classification", "vision"), 1024, "Hosted inference availability and pricing depend on the selected provider.", false),
+            ProviderModelInfo(MODEL_EMBEDDINGS, "Sentence-Transformers all-MiniLM", ProviderType.HUGGINGFACE, listOf("feature-extraction", "embeddings"), 512, "Hosted inference availability and pricing depend on the selected provider.", false)
         )
     }
 
