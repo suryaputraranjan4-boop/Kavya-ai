@@ -408,7 +408,7 @@ class PrecisionComputerUseEngine(
                 touchX = 0f,
                 touchY = 0f,
                 detail = "Text input accepted; focused value was not read back for verification.",
-                verified = true
+                verified = false
             )
         }
 
@@ -421,7 +421,7 @@ class PrecisionComputerUseEngine(
                 touchX = 0f,
                 touchY = 0f,
                 detail = "Search submit accepted; result-screen change was not verified.",
-                verified = true
+                verified = false
             )
         }
 
