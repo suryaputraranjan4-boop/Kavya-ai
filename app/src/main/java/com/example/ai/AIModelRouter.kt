@@ -122,6 +122,7 @@ class AIModelRouter(private val context: Context) {
     ): String {
         val recentTurns = history.asSequence()
             .filter { it.text.isNotBlank() }
+            .toList()
             .takeLast(10)
             .map { message ->
                 val role = if (message.isUser) "USER" else "ASSISTANT"
