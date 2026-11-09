@@ -369,17 +369,83 @@ private fun SettingRow(
 }
 
 // -------------------------------------------------------------
-// 3. VOICE SETTINGS SCREEN
+// 3. VOICE STUDIO SCREEN (Chatterbox Hindi & Custom Voice Conditioning)
 // -------------------------------------------------------------
 @Composable
 fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel? = null) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var geminiVoice by remember { mutableStateOf(com.example.utils.AppPreferences.getGeminiVoice(context)) }
+    val coroutineScope = rememberCoroutineScope()
+
+    val modelManager = remember { com.example.ai.ChatterboxModelManager.getInstance(context) }
+    val profileManager = remember { com.example.ai.VoiceProfileManager.getInstance(context) }
+    val ttsClient = remember { com.example.ai.ChatterboxTtsClient(context) }
+
+    val fileProgressMap by modelManager.fileProgressMap.collectAsState()
+    val profiles by profileManager.profiles.collectAsState()
+    val activeProfileId = com.example.utils.AppPreferences.getActiveVoiceProfileId(context)
+
+    var backendUrl by remember { mutableStateOf(com.example.utils.AppPreferences.getChatterboxBackendUrl(context)) }
+    var backendToken by remember { mutableStateOf(com.example.utils.AppPreferences.getChatterboxAuthToken(context)) }
+    var backendHealthStatus by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    var isCheckingHealth by remember { mutableStateOf(false) }
+
     var pitch by remember { mutableStateOf(com.example.utils.AppPreferences.getVoicePitch(context)) }
     var speed by remember { mutableStateOf(com.example.utils.AppPreferences.getVoiceSpeed(context)) }
-    var selectedPersona by remember { mutableStateOf(com.example.utils.AppPreferences.getVoicePersona(context)) }
 
-    SimpleScreen("Voice & Persona", navController) {
+    // Recording state
+    var isRecording by remember { mutableStateOf(false) }
+    var recordTimeSeconds by remember { mutableStateOf(0) }
+    var recordedFile by remember { mutableStateOf<java.io.File?>(null) }
+    var showNameDialog by remember { mutableStateOf(false) }
+    var newProfileName by remember { mutableStateOf("") }
+    var renameTargetId by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
+
+    // Audio upload launcher
+    val audioPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val profile = profileManager.importVoiceSample("Uploaded Voice", stream)
+                    if (profile != null) {
+                        android.widget.Toast.makeText(context, "Voice profile imported!", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(context, "Failed to import audio: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Permission launcher for recording
+    val recordAudioPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            try {
+                profileManager.startRecording()
+                isRecording = true
+                recordTimeSeconds = 0
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(context, "Recording failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            android.widget.Toast.makeText(context, "Microphone permission required for voice cloning", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(isRecording) {
+        if (isRecording) {
+            while (isRecording) {
+                kotlinx.coroutines.delay(1000)
+                recordTimeSeconds++
+            }
+        }
+    }
+
+    SimpleScreen("Chatterbox Voice Studio", navController) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -387,25 +453,26 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
             contentPadding = PaddingValues(top = 12.dp, bottom = 40.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Header: Chatterbox Multilingual Hindi Primary Engine
             item {
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp),
                     backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
-                    borderColor = Primary.copy(alpha = 0.3f)
+                    borderColor = Primary.copy(alpha = 0.4f)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🌸", fontSize = 28.sp)
+                        Text("🎙️", fontSize = 28.sp)
                         Spacer(modifier = Modifier.width(14.dp))
                         Column {
                             Text(
-                                "Kavya Sweet Anime Voice",
+                                "Chatterbox Multilingual Hindi",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                "Powered by Gemini Neural Speech API. Sweet, adorable anime female voice with natural Hindi accent and genuine emotional inflections.",
+                                "Exclusive Primary Speech Engine. ResembleAI V3 ~0.5B flow-matching text-to-speech & zero-shot voice cloning for Hindi.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
@@ -414,189 +481,447 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                 }
             }
 
+            // SECTION 1: IN-APP MODEL DOWNLOAD & VERIFICATION MANAGER
             item {
-                Text("Gemini Neural Voice Model", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Text("Chatterbox Hindi Model Files (Hugging Face)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = geminiVoice == "Kore",
-                        onClick = {
-                            geminiVoice = "Kore"
-                            com.example.utils.AppPreferences.setGeminiVoice(context, geminiVoice)
-                            viewModel?.speakMessage("Hello! I am Kore, ready to assist you!")
-                        },
-                        label = { Text("🌸 Kore (Sweet Anime)") }
-                    )
-                        FilterChip(
-                            selected = geminiVoice == "Aoede",
-                            onClick = {
-                                geminiVoice = "Aoede"
-                                com.example.utils.AppPreferences.setGeminiVoice(context, geminiVoice)
-                                viewModel?.speakMessage("Hello! I am Aoede. I have a melodious voice!")
-                            },
-                            label = { Text("✨ Aoede (Melodious)") }
-                        )
-                        FilterChip(
-                            selected = geminiVoice == "Leda",
-                            onClick = {
-                                geminiVoice = "Leda"
-                                com.example.utils.AppPreferences.setGeminiVoice(context, geminiVoice)
-                                viewModel?.speakMessage("Hello there! I am Leda, speaking with a bright and clear voice.")
-                            },
-                            label = { Text("⚡ Leda (Bright)") }
-                        )
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Official Weights & Tokenizers", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                            Text(
+                                if (modelManager.isAllMandatoryFilesReady()) "All mandatory files downloaded & verified" else "Downloads pending or incomplete",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (modelManager.isAllMandatoryFilesReady()) SuccessGreen else AccentYellow
+                            )
+                        }
+                        Button(
+                            onClick = { modelManager.downloadAll() },
+                            colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Download All", fontSize = 12.sp)
+                        }
                     }
-                }
 
-            item {
-                Text("Companion Anime Voice Presets", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = selectedPersona.contains("Sweet") || selectedPersona.contains("Anime"),
-                        onClick = {
-                            selectedPersona = "Sweet Anime Hindi Female"
-                            pitch = 1.14f
-                            speed = 1.02f
-                            com.example.utils.AppPreferences.setVoicePersona(context, selectedPersona)
-                            viewModel?.setVoiceSettings(pitch, speed)
-                        },
-                        label = { Text("🌸 Sweet Anime") }
-                    )
-                    FilterChip(
-                        selected = selectedPersona.contains("Caring") || selectedPersona.contains("Soft"),
-                        onClick = {
-                            selectedPersona = "Soft & Caring Hindi"
-                            pitch = 1.08f
-                            speed = 0.95f
-                            com.example.utils.AppPreferences.setVoicePersona(context, selectedPersona)
-                            viewModel?.setVoiceSettings(pitch, speed)
-                        },
-                        label = { Text("💖 Soft & Caring") }
-                    )
-                    FilterChip(
-                        selected = selectedPersona.contains("Lively") || selectedPersona.contains("Energetic"),
-                        onClick = {
-                            selectedPersona = "Lively & Cheerful"
-                            pitch = 1.18f
-                            speed = 1.06f
-                            com.example.utils.AppPreferences.setVoicePersona(context, selectedPersona)
-                            viewModel?.setVoiceSettings(pitch, speed)
-                        },
-                        label = { Text("⚡ Lively") }
-                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Individual file items
+                    com.example.ai.ChatterboxModelManager.OFFICIAL_SPECS.forEach { spec ->
+                        val progress = fileProgressMap[spec.id]
+                        val status = progress?.status ?: com.example.ai.DownloadItemStatus.PENDING
+                        val bytes = progress?.bytesDownloaded ?: 0L
+                        val total = progress?.totalBytes ?: spec.approximateSizeBytes
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(spec.fileName, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = TextPrimary)
+                                    Text(
+                                        "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB / ${"%.1f".format(total / (1024.0 * 1024.0))} MB • ${spec.description}",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = TextSecondary
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    when (status) {
+                                        com.example.ai.DownloadItemStatus.COMPLETED -> {
+                                            StatusBadge(text = "Verified", isActive = true)
+                                        }
+                                        com.example.ai.DownloadItemStatus.DOWNLOADING -> {
+                                            IconButton(onClick = { modelManager.pauseDownload(spec.id) }) {
+                                                Icon(Icons.Default.Pause, contentDescription = "Pause", tint = PrimaryLight)
+                                            }
+                                        }
+                                        com.example.ai.DownloadItemStatus.PAUSED -> {
+                                            IconButton(onClick = { modelManager.startDownload(spec) }) {
+                                                Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = PrimaryLight)
+                                            }
+                                        }
+                                        else -> {
+                                            IconButton(onClick = { modelManager.startDownload(spec) }) {
+                                                Icon(Icons.Default.Download, contentDescription = "Download", tint = PrimaryLight)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (status == com.example.ai.DownloadItemStatus.DOWNLOADING) {
+                                val ratio = if (total > 0) (bytes.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+                                LinearProgressIndicator(
+                                    progress = { ratio },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp),
+                                    color = PrimaryLight,
+                                    trackColor = SurfaceElevated
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
+            // SECTION 2: CHATTERBOX BACKEND / INFERENCE RUNNER
+            item {
+                Text("Chatterbox Inference Runner & GPU Backend", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Spacer(modifier = Modifier.height(8.dp))
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text(
+                        "Chatterbox Multilingual Hindi requires GPU flow-matching acceleration. Configure your local network server (e.g., http://10.0.2.2:8000) or remote cloud GPU endpoint.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = backendUrl,
+                        onValueChange = {
+                            backendUrl = it
+                            com.example.utils.AppPreferences.setChatterboxBackendUrl(context, it)
+                        },
+                        label = { Text("Chatterbox Backend URL") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Primary,
+                            unfocusedBorderColor = GlassBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = backendToken,
+                        onValueChange = {
+                            backendToken = it
+                            com.example.utils.AppPreferences.setChatterboxAuthToken(context, it)
+                        },
+                        label = { Text("Auth Token (Optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Primary,
+                            unfocusedBorderColor = GlassBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = {
+                                isCheckingHealth = true
+                                coroutineScope.launch {
+                                    val health = ttsClient.checkHealth()
+                                    backendHealthStatus = health
+                                    isCheckingHealth = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            if (isCheckingHealth) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = PrimaryLight, strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Connecting...")
+                            } else {
+                                Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp), tint = PrimaryLight)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Test Backend Connection", color = PrimaryLight)
+                            }
+                        }
+                    }
+
+                    backendHealthStatus?.let { (ok, msg) ->
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (ok) SuccessGreen else Error
+                        )
+                    }
+                }
+            }
+
+            // SECTION 3: VOICE PROFILES & ZERO-SHOT CLONING
+            item {
+                Text("Voice Profiles & Custom Cloning", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Spacer(modifier = Modifier.height(8.dp))
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text(
+                        "Condition Chatterbox Hindi on your own voice. Uses only your own recorded audio or samples provided with explicit consent.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Record or Upload Buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                if (isRecording) {
+                                    val file = profileManager.stopRecording()
+                                    isRecording = false
+                                    if (file != null && file.exists() && file.length() > 0) {
+                                        recordedFile = file
+                                        showNameDialog = true
+                                    }
+                                } else {
+                                    recordAudioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (isRecording) Error else Primary),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(if (isRecording) Icons.Default.Stop else Icons.Default.Mic, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (isRecording) "Stop (${recordTimeSeconds}s)" else "Record Voice")
+                        }
+
+                        Button(
+                            onClick = { audioPickerLauncher.launch("audio/*") },
+                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.UploadFile, contentDescription = null, tint = PrimaryLight)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Upload Sample", color = PrimaryLight)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text("Saved Voice Profiles", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    profiles.forEach { profile ->
+                        val isSelected = profile.id == activeProfileId
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isSelected) Primary.copy(alpha = 0.15f) else Color.Transparent)
+                                .clickable {
+                                    com.example.utils.AppPreferences.setActiveVoiceProfileId(context, profile.id)
+                                }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(profile.name, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium), color = if (isSelected) PrimaryLight else TextPrimary)
+                                Text(profile.description, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isSelected) {
+                                    Icon(Icons.Default.Check, contentDescription = "Active", tint = PrimaryLight, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
+                                if (!profile.isSystemPreset) {
+                                    IconButton(
+                                        onClick = {
+                                            renameTargetId = profile.id
+                                            renameText = profile.name
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = "Rename", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    IconButton(
+                                        onClick = { profileManager.deleteProfile(profile.id) },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Error, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // SECTION 4: ACOUSTIC SLIDERS & LIVE PREVIEW
             item {
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp)
                 ) {
-                    Text("Voice Pitch Multiplier", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
+                    Text("Chatterbox Pitch Multiplier", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
                     Slider(
                         value = pitch,
                         onValueChange = {
                             pitch = it
+                            com.example.utils.AppPreferences.setVoicePitch(context, pitch)
                             viewModel?.setVoiceSettings(pitch, speed)
                         },
                         valueRange = 0.95f..1.25f,
                         colors = SliderDefaults.colors(thumbColor = Primary, activeTrackColor = Primary)
                     )
-                    Text("Pitch Multiplier: ${"%.2f".format(pitch)}x (Sweet Natural Anime Feminine Tone)", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Text("Pitch: ${"%.2f".format(pitch)}x", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    Text("Speaking Cadence & Rate", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
+                    Text("Chatterbox Speech Pace", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
                     Slider(
                         value = speed,
                         onValueChange = {
                             speed = it
+                            com.example.utils.AppPreferences.setVoiceSpeed(context, speed)
                             viewModel?.setVoiceSettings(pitch, speed)
                         },
                         valueRange = 0.80f..1.25f,
                         colors = SliderDefaults.colors(thumbColor = AccentPurple, activeTrackColor = AccentPurple)
                     )
-                    Text("Speed Multiplier: ${"%.2f".format(speed)}x", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Text("Speed: ${"%.2f".format(speed)}x", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                 }
             }
 
+            // SECTION 5: REAL CHATTERBOX HINDI SPEECH PREVIEW TESTS
             item {
-                Text("Emotion & Slang Spoken Audio Tests", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Text("Chatterbox Hindi Speech Tests", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            viewModel?.setVoiceSettings(pitch, speed)
-                            viewModel?.speakMessage("Hi! I am Kavya. This is my new sweet voice powered by Gemini Neural Speech.")
+                            viewModel?.speakMessage("नमस्ते! मैं काव्या हूँ। यह आवाज़ चैटरबॉक्स हिंदी मॉडल से तैयार की गई है।")
                         },
                         modifier = Modifier.fillMaxWidth().height(46.dp),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Primary)
                     ) {
-                        Text("🔊 Preview Voice")
+                        Icon(Icons.Default.VolumeUp, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("🔊 Test Chatterbox Hindi (General Speech)")
                     }
-                    
+
                     Button(
                         onClick = {
-                            viewModel?.setVoiceSettings(pitch, speed)
-                            viewModel?.speakMessage("[happy] Arre waah yaar! Main ekdum mast hoon. Aap bataiye aaj ka kya scene hai?")
+                            viewModel?.speakMessage("[happy] अरे वाह यार! आपका दिन कैसा चल रहा है? सब एकदम बढ़िया?")
                         },
                         modifier = Modifier.fillMaxWidth().height(46.dp),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                        colors = ButtonDefaults.buttonColors(containerColor = Primary.copy(alpha = 0.85f))
                     ) {
                         Icon(Icons.Default.Celebration, contentDescription = null, tint = Color.White)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Test [happy] (Cheerful Hindi Slang)", fontWeight = FontWeight.SemiBold, color = Color.White)
+                        Text("Test [happy] (Cheerful Hindi)")
                     }
 
                     Button(
                         onClick = {
-                            viewModel?.setVoiceSettings(pitch, speed)
-                            viewModel?.speakMessage("[sad] Arre yaar, sunkar bohot bura laga... Tension mat lo, main hamesha aapke sath hoon.")
+                            viewModel?.speakMessage("[calm] सब ठीक है, रिलैक्स कीजिए। मैं आपकी पूरी मदद करूँगी।")
                         },
                         modifier = Modifier.fillMaxWidth().height(46.dp),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Secondary)
+                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
                     ) {
-                        Icon(Icons.Default.Favorite, contentDescription = null, tint = Color.White)
+                        Icon(Icons.Default.Spa, contentDescription = null, tint = PrimaryLight)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Test [sad] (Soft & Caring Tone)", fontWeight = FontWeight.SemiBold, color = Color.White)
-                    }
-
-                    Button(
-                        onClick = {
-                            viewModel?.setVoiceSettings(pitch, speed)
-                            viewModel?.speakMessage("[excited] Yay! Arre waah yaar! Yeh toh ekdum bawaal khabar hai! Maza aa gaya!")
-                        },
-                        modifier = Modifier.fillMaxWidth().height(46.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentPurple)
-                    ) {
-                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color.White)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Test [excited] (Sparkling Anime Celebration)", fontWeight = FontWeight.SemiBold, color = Color.White)
-                    }
-
-                    Button(
-                        onClick = {
-                            viewModel?.setVoiceSettings(pitch, speed)
-                            viewModel?.speakMessage("[warm] Scene sorted hai yaar! Bindass chill karo, batao aur kya chal raha hai?")
-                        },
-                        modifier = Modifier.fillMaxWidth().height(46.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass)
-                    ) {
-                        Icon(Icons.Default.VolumeUp, contentDescription = null, tint = PrimaryLight)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Test [warm] (Chill Hinglish Vibe)", fontWeight = FontWeight.SemiBold, color = PrimaryLight)
+                        Text("Test [calm] (Soothing Hindi)", color = PrimaryLight)
                     }
                 }
             }
         }
     }
+
+    // Dialog for naming recorded profile
+    if (showNameDialog && recordedFile != null) {
+        AlertDialog(
+            onDismissRequest = { showNameDialog = false },
+            title = { Text("Save Voice Profile") },
+            text = {
+                Column {
+                    Text("Give a name to your new voice profile:")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = newProfileName,
+                        onValueChange = { newProfileName = it },
+                        placeholder = { Text("e.g. My Warm Voice") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newProfileName.isNotBlank() && recordedFile != null) {
+                        profileManager.saveVoiceProfile(newProfileName, recordedFile!!, recordTimeSeconds)
+                        showNameDialog = false
+                        newProfileName = ""
+                        recordedFile = null
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = {
+                    showNameDialog = false
+                    recordedFile?.delete()
+                    recordedFile = null
+                }) { Text("Discard") }
+            }
+        )
+    }
+
+    // Dialog for renaming profile
+    if (renameTargetId != null) {
+        AlertDialog(
+            onDismissRequest = { renameTargetId = null },
+            title = { Text("Rename Voice Profile") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val id = renameTargetId
+                    if (id != null && renameText.isNotBlank()) {
+                        profileManager.renameProfile(id, renameText)
+                        renameTargetId = null
+                    }
+                }) { Text("Rename") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { renameTargetId = null }) { Text("Cancel") }
+            }
+        )
+    }
 }
+
 
 // -------------------------------------------------------------
 // 4. SCREEN SHARE & VISION SCREEN (Dedicated Screen)

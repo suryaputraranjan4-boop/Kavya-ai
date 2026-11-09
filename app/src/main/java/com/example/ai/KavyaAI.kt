@@ -697,139 +697,24 @@ class KavyaAI(private val context: android.content.Context? = null) {
         pitchMultiplier: Float = 1.0f,
         speedMultiplier: Float = 1.0f
     ): ByteArray? = withContext(Dispatchers.IO) {
-        val apiKey = if (context != null) {
-            com.example.utils.AppPreferences.getEffectiveApiKey(context)
-        } else {
-            BuildConfig.GEMINI_API_KEY
-        }
-        if (apiKey.isBlank() || text.isBlank()) {
-            return@withContext null
-        }
-
-        // Clean spoken prompt
-        val cleanPrompt = text
-            .replace("<ACTION:[^>]+>".toRegex(), "")
-            .replace("(?i)\\[(warm|calm|confident|empathetic|thoughtful|witty|excited|focused|neutral|happy|sad|playful)\\]".toRegex(), "")
-            .replace("[*#_~`]+".toRegex(), "")
-            .trim()
-
-        if (cleanPrompt.isBlank()) return@withContext null
-
-        val speedDesc = when {
-            speedMultiplier > 1.02f -> "fast and excitedly"
-            speedMultiplier < 0.98f -> "slowly and gently"
-            else -> "at a natural, conversational pace"
-        }
-
-        val pitchDesc = when {
-            pitchMultiplier > 1.02f -> "in a higher, brighter pitch"
-            pitchMultiplier < 0.98f -> "in a slightly lower, softer pitch"
-            else -> "in a natural, comfortable pitch"
-        }
-
-        val audioInstruction = KavyaVoiceProfile.buildVoiceDirectionPrompt(
-            cleanText = cleanPrompt,
-            emotionLabel = emotionLabel,
-            speedDesc = speedDesc,
-            pitchDesc = pitchDesc
-        )
-
-        val request = GenerateContentRequest(
-            contents = listOf(
-                Content(
-                    role = "user",
-                    parts = listOf(
-                        Part(text = cleanPrompt)
-                    )
-                )
-            ),
-            generationConfig = GenerationConfig(
-                temperature = 0.6f,
-                responseModalities = listOf("AUDIO"),
-                speechConfig = SpeechConfig(
-                    voiceConfig = VoiceConfig(
-                        prebuiltVoiceConfig = PrebuiltVoiceConfig(voiceName = voiceName)
-                    )
-                )
-            ),
-            systemInstruction = Content(
-                parts = listOf(
-                    Part(text = "Persona: Kavya, sweet anime female personal assistant. Style: $emotionLabel, $speedDesc, $pitchDesc. Use natural Indian Hindi pronunciation for Hindi, preserve English technical and app names. Speak only the text.")
-                )
-            )
-        )
-
-        val maxRetries = 3
-        var lastError: Exception? = null
-        
-        for (model in AUDIO_MODEL_TIERS) {
-            var attempt = 1
-            while (attempt <= maxRetries) {
-                try {
-                    Log.d(TAG, "Requesting Gemini speech audio using model: $model with voice: $voiceName, attempt $attempt")
-                    val response = RetrofitClient.service.generateAudioContent(
-                        model = model,
-                        apiKey = apiKey,
-                        request = request
-                    )
-
-                    val parts = response.candidates?.firstOrNull()?.content?.parts
-                    val inlineData = parts?.firstOrNull { it.inlineData != null }?.inlineData
-                    
-                    if (inlineData == null) {
-                        Log.w(TAG, "No inlineData found in response parts. Total parts: ${parts?.size}")
-                        val textPart = parts?.firstOrNull { it.text != null }?.text
-                        Log.w(TAG, "Text part if any: $textPart")
-                        // If model succeeds but returns no inlineData, it probably doesn't support audio. Break out of attempt loop to try next model.
-                        break
-                    }
-                    
-                    val base64Data = inlineData?.data
-                    val mimeType = inlineData?.mimeType ?: "audio/pcm;rate=24000"
-
-                    if (!base64Data.isNullOrBlank()) {
-                        val rawBytes = Base64.decode(base64Data, Base64.DEFAULT)
-                        if (rawBytes.isNotEmpty()) {
-                            val hasWavHeader = rawBytes.size > 4 && 
-                                rawBytes[0] == 'R'.code.toByte() && 
-                                rawBytes[1] == 'I'.code.toByte() && 
-                                rawBytes[2] == 'F'.code.toByte() && 
-                                rawBytes[3] == 'F'.code.toByte()
-
-                            return@withContext if (!hasWavHeader && (mimeType.contains("pcm", ignoreCase = true) || (!mimeType.contains("wav", ignoreCase = true) && !mimeType.contains("mp3", ignoreCase = true)))) {
-                                val rateMatch = "rate=(\\d+)".toRegex().find(mimeType)
-                                val sampleRate = rateMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 24000
-                                addWavHeaderToPcm(rawBytes, sampleRate)
-                            } else {
-                                rawBytes
-                            }
-                        }
-                    }
-                    break // successful parsing but empty bytes, try next model if we must, or just break
-                } catch (e: retrofit2.HttpException) {
-                    val code = e.code()
-                    Log.w(TAG, "Gemini audio HTTP $code on model $model, attempt $attempt")
-                    if (code == 429) {
-                        Log.w(TAG, "Gemini audio rate limited (429), skipping TTS audio retries to conserve quota.")
-                        break
-                    } else if (code == 503 || code == 500) {
-                        attempt++
-                        if (attempt <= maxRetries) {
-                            val backoffMs = (500L * attempt)
-                            kotlinx.coroutines.delay(backoffMs)
-                        } else {
-                            break // Max retries reached, try next model
-                        }
-                    } else {
-                        break // Non-transient error, try next model
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Gemini audio generation failed on model $model: ${e.message}")
-                    break // Try next model
-                }
+        // Gemini TTS/audio generation has been removed from the speech generation pipeline.
+        // All speech generation is routed through Chatterbox Hindi via ChatterboxTtsClient.
+        if (text.isBlank() || context == null) return@withContext null
+        val client = ChatterboxTtsClient(context)
+        val activeProfile = VoiceProfileManager.getInstance(context).getActiveProfile()
+        when (val result = client.synthesize(
+            text = text,
+            referenceAudioPath = activeProfile.audioFilePath,
+            pitchMultiplier = pitchMultiplier,
+            speedMultiplier = speedMultiplier,
+            emotion = emotionLabel
+        )) {
+            is ChatterboxResult.Success -> result.audioBytes
+            is ChatterboxResult.Error -> {
+                Log.w(TAG, "Chatterbox speech generation failed: ${result.message}")
+                null
             }
         }
-        return@withContext null
     }
 
     private fun splitTextForTts(text: String, maxLength: Int = 160): List<String> {

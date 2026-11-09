@@ -59,6 +59,9 @@ class KavyaVoiceEngine(
                 lower.contains("network error")
     }
 
+    private val chatterboxClient = ChatterboxTtsClient(context)
+    private val voiceProfileManager = VoiceProfileManager.getInstance(context)
+
     fun speak(
         text: String,
         explicitSentiment: Sentiment? = null,
@@ -74,7 +77,7 @@ class KavyaVoiceEngine(
 
         // Suppress raw technical errors from ever being spoken aloud
         if (isTechnicalErrorString(cleanText)) {
-            Log.w(TAG, "Suppressed a technical error string from voice output.")
+            Log.w(TAG, "Suppressed technical error string from voice output: $cleanText")
             updateSpeakingState(false)
             val now = System.currentTimeMillis()
             if (now - lastErrorSpeechTimestamp > ERROR_THROTTLE_WINDOW_MS) {
@@ -109,34 +112,37 @@ class KavyaVoiceEngine(
                 return@launch
             }
 
-            val effectiveAI = kavyaAI ?: KavyaAI(context)
-            val selectedVoice = com.example.utils.AppPreferences.getGeminiVoice(context)
             var playbackStarted = false
 
             try {
                 com.example.api.QuotaManager.instance.totalVoiceRequests++
-                Log.d(TAG, "VOICE_REQUEST_STARTED: length=${cleanText.length}, voice=$selectedVoice")
-                val audioBytes = effectiveAI.generateSpeechAudio(
-                    cleanText,
-                    selectedVoice,
-                    sentiment.label,
-                    effectivePitch,
-                    effectiveSpeed
+                val activeProfile = voiceProfileManager.getActiveProfile()
+                Log.d(TAG, "CHATTERBOX_VOICE_REQUEST: length=${cleanText.length}, profile=${activeProfile.name}")
+
+                val result = chatterboxClient.synthesize(
+                    text = cleanText,
+                    referenceAudioPath = activeProfile.audioFilePath,
+                    pitchMultiplier = effectivePitch,
+                    speedMultiplier = effectiveSpeed,
+                    emotion = sentiment.label
                 )
 
-                if (audioBytes != null && audioBytes.isNotEmpty()) {
-                    Log.d(TAG, "GEMINI_VOICE_PLAYBACK_STARTED: ${audioBytes.size} bytes")
-                    player.playAudioBytes(audioBytes, text = cleanText, enqueue = enqueue) {
-                        Log.d(TAG, "VOICE_PLAYBACK_COMPLETED")
-                        updateSpeakingState(false)
-                        onComplete?.invoke()
+                when (result) {
+                    is ChatterboxResult.Success -> {
+                        Log.d(TAG, "CHATTERBOX_VOICE_PLAYBACK_STARTED: ${result.audioBytes.size} bytes (sampleRate=${result.sampleRate})")
+                        player.playAudioBytes(result.audioBytes, text = cleanText, enqueue = enqueue) {
+                            Log.d(TAG, "CHATTERBOX_VOICE_PLAYBACK_COMPLETED")
+                            updateSpeakingState(false)
+                            onComplete?.invoke()
+                        }
+                        playbackStarted = true
                     }
-                    playbackStarted = true
-                } else {
-                    Log.w(TAG, "Gemini voice returned empty audio; speech output skipped.")
+                    is ChatterboxResult.Error -> {
+                        Log.w(TAG, "Chatterbox speech generation failed: ${result.message}")
+                    }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Gemini voice generation failed (${e.javaClass.simpleName}); speech output skipped.")
+                Log.w(TAG, "Chatterbox voice generation exception: ${e.message}")
             }
 
             if (!playbackStarted) {
@@ -154,13 +160,18 @@ class KavyaVoiceEngine(
 
     private fun speakCleanFallback(enqueue: Boolean, onComplete: (() -> Unit)?) {
         val naturalFallback = "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
-        val selectedVoice = com.example.utils.AppPreferences.getGeminiVoice(context)
-        val effectiveAI = kavyaAI ?: KavyaAI(context)
         scope.launch(Dispatchers.IO) {
             try {
-                val audio = effectiveAI.generateSpeechAudio(naturalFallback, selectedVoice, "Calm and relaxed", 1.0f, 1.0f)
-                if (audio != null && audio.isNotEmpty() && geminiPlayer != null) {
-                    geminiPlayer.playAudioBytes(audio, text = naturalFallback, enqueue = enqueue) {
+                val activeProfile = voiceProfileManager.getActiveProfile()
+                val result = chatterboxClient.synthesize(
+                    text = naturalFallback,
+                    referenceAudioPath = activeProfile.audioFilePath,
+                    pitchMultiplier = 1.0f,
+                    speedMultiplier = 1.0f,
+                    emotion = "Calm and relaxed"
+                )
+                if (result is ChatterboxResult.Success && result.audioBytes.isNotEmpty() && geminiPlayer != null) {
+                    geminiPlayer.playAudioBytes(result.audioBytes, text = naturalFallback, enqueue = enqueue) {
                         updateSpeakingState(false)
                         onComplete?.invoke()
                     }

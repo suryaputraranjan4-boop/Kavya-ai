@@ -354,7 +354,7 @@ fun KavyaSideMenu(
                         )
                         DrawerItemWhiteGlass(
                             icon = Icons.Default.RecordVoiceOver,
-                            label = "Voice & Audio",
+                            label = "Voice Studio",
                             isSelected = currentRoute == "voice_settings",
                             onClick = {
                                 navigateTo(navController, drawerState, scope, "voice_settings")

@@ -773,6 +773,45 @@ object AppPreferences {
 
     fun isObsidianAutoSyncEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_OBSIDIAN_AUTO_SYNC, true)
     fun setObsidianAutoSyncEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_OBSIDIAN_AUTO_SYNC, enabled).apply()
+
+    // Chatterbox Hindi & Voice Studio Preferences
+    private const val KEY_CHATTERBOX_BACKEND_URL = "key_chatterbox_backend_url"
+    private const val KEY_CHATTERBOX_AUTH_TOKEN = "key_chatterbox_auth_token"
+    private const val KEY_ACTIVE_VOICE_PROFILE_ID = "key_active_voice_profile_id"
+    private const val KEY_SPEECH_ENGINE = "key_speech_engine"
+
+    fun getChatterboxBackendUrl(context: Context): String {
+        return getPrefs(context).getString(KEY_CHATTERBOX_BACKEND_URL, "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+    }
+
+    fun setChatterboxBackendUrl(context: Context, url: String) {
+        getPrefs(context).edit().putString(KEY_CHATTERBOX_BACKEND_URL, url.trim()).apply()
+    }
+
+    fun getChatterboxAuthToken(context: Context): String {
+        return com.example.security.SecureStorage.getSecret(context, "chatterbox_auth_token")
+    }
+
+    fun setChatterboxAuthToken(context: Context, token: String) {
+        com.example.security.SecureStorage.saveSecret(context, "chatterbox_auth_token", token.trim())
+    }
+
+    fun getActiveVoiceProfileId(context: Context): String {
+        return getPrefs(context).getString(KEY_ACTIVE_VOICE_PROFILE_ID, "default_kavya_hindi") ?: "default_kavya_hindi"
+    }
+
+    fun setActiveVoiceProfileId(context: Context, profileId: String) {
+        getPrefs(context).edit().putString(KEY_ACTIVE_VOICE_PROFILE_ID, profileId).apply()
+    }
+
+    fun getSpeechEngine(context: Context): String {
+        // Enforced to Chatterbox Hindi
+        return getPrefs(context).getString(KEY_SPEECH_ENGINE, "CHATTERBOX_HINDI") ?: "CHATTERBOX_HINDI"
+    }
+
+    fun setSpeechEngine(context: Context, engine: String) {
+        getPrefs(context).edit().putString(KEY_SPEECH_ENGINE, engine).apply()
+    }
 }
 
 /**
