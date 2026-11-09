@@ -241,7 +241,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         )
                     )
                 ),
-                generationConfig = GenerationConfig(temperature = 0.2f)
+                generationConfig = null
             )
             
             val activeModel = getAvailableModels().firstOrNull() ?: MODEL_TIERS.first()
