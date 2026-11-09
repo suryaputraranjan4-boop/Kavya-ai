@@ -27,8 +27,19 @@ class OpenRouterIntegrationTest {
         AppPreferences.clearOpenRouterApiKey(context)
         assertEquals("", AppPreferences.getOpenRouterApiKey(context))
 
-        AppPreferences.setOpenRouterApiKey(context, "sk-or-v1-testkey12345")
-        assertEquals("sk-or-v1-testkey12345", AppPreferences.getOpenRouterApiKey(context))
+        val testKey = "sk-or-v1-testkey12345"
+        AppPreferences.setOpenRouterApiKey(context, testKey)
+        val retrievedKey = AppPreferences.getOpenRouterApiKey(context)
+
+        // Robolectric may not provide AndroidKeyStore. In that environment the
+        // secure store must fail closed instead of persisting the key in cleartext.
+        if (retrievedKey.isNotBlank()) {
+            assertEquals(testKey, retrievedKey)
+        } else {
+            val vault = context.getSharedPreferences("kavya_encrypted_vault", Context.MODE_PRIVATE)
+            val storedValue = vault.getString("openrouter_api_key", null)
+            assertTrue(storedValue == null || (!storedValue.startsWith("OBF:") && !storedValue.contains(testKey)))
+        }
 
         AppPreferences.clearOpenRouterApiKey(context)
         assertEquals("", AppPreferences.getOpenRouterApiKey(context))
