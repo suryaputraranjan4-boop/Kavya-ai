@@ -356,10 +356,13 @@ class VisualActionEngine(private val context: Context) {
                 val res = precisionEngine.performAppLaunch(action.target)
                 Pair(res.success, res.detail)
             }
-            VisualActionType.CLOSE, VisualActionType.STOP -> {
+            VisualActionType.CLOSE -> {
                 val res = precisionEngine.performDismissDialog()
-                stopAutomation("Action requested stop")
-                Pair(true, "Stopped dialog or automation (${res.detail})")
+                Pair(res.success, res.detail)
+            }
+            VisualActionType.STOP -> {
+                stopAutomation("User requested automation stop")
+                Pair(true, "Automation stopped on request")
             }
         }
     }
