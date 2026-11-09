@@ -8,11 +8,13 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -391,11 +393,24 @@ class Gemma4E4BEngine private constructor() {
                 prompt
             }
 
-            val result = runtime.generate(fullPrompt)
-            GemmaModelManager.setStatus(GemmaModelStatus.READY)
+            val result = try {
+                runtime.generate(fullPrompt)
+            } catch (cancelled: CancellationException) {
+                GemmaModelManager.setStatus(
+                    if (runtime.isReady()) GemmaModelStatus.READY else GemmaModelStatus.ERROR
+                )
+                throw cancelled
+            } catch (error: Throwable) {
+                Result.failure(error)
+            }
+
+            GemmaModelManager.setStatus(
+                if (runtime.isReady()) GemmaModelStatus.READY else GemmaModelStatus.ERROR,
+                result.exceptionOrNull()?.localizedMessage
+            )
 
             if (result.isSuccess) {
-                _diagnostics = _diagnostics.copy(inferenceSucceeded = true)
+                _diagnostics = _diagnostics.copy(inferenceSucceeded = true, lastError = null)
             } else {
                 _diagnostics = _diagnostics.copy(lastError = result.exceptionOrNull()?.localizedMessage)
             }
@@ -410,27 +425,46 @@ class Gemma4E4BEngine private constructor() {
         prompt: String,
         systemInstruction: String? = null,
         context: Context
-    ): Flow<String> = callbackFlow {
-        Log.i(TAG, "LOCAL OFFLINE: local streaming inference only")
+    ): Flow<String> = flow {
+        mutex.lock()
+        try {
+            val runtime = activeRuntime
+            if (runtime == null || !runtime.isReady() || GemmaModelManager.status.value != GemmaModelStatus.READY) {
+                emit("LOCAL OFFLINE ERROR: Gemma runtime is not loaded and ready.")
+                return@flow
+            }
 
-        val runtime = activeRuntime
-        if (runtime == null || !runtime.isReady()) {
-            trySend("LOCAL OFFLINE ERROR: Gemma runtime is not loaded and ready.")
-            close()
-            return@callbackFlow
-        }
+            val fullPrompt = if (!systemInstruction.isNullOrBlank()) {
+                "SYSTEM: $systemInstruction\n\nUSER: $prompt\n\nASSISTANT:"
+            } else {
+                prompt
+            }
 
-        val fullPrompt = if (!systemInstruction.isNullOrBlank()) {
-            "SYSTEM: $systemInstruction\n\nUSER: $prompt\n\nASSISTANT:"
-        } else {
-            prompt
+            GemmaModelManager.setStatus(GemmaModelStatus.RUNNING)
+            try {
+                runtime.streamGenerate(fullPrompt).collect { token ->
+                    emit(token)
+                }
+                _diagnostics = _diagnostics.copy(inferenceSucceeded = true, lastError = null)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                val message = error.localizedMessage ?: "Local streaming inference failed."
+                _diagnostics = _diagnostics.copy(lastError = message, inferenceSucceeded = false)
+                emit("LOCAL OFFLINE ERROR: $message")
+            } finally {
+                GemmaModelManager.setStatus(
+                    if (activeRuntime === runtime && runtime.isReady()) {
+                        GemmaModelStatus.READY
+                    } else {
+                        GemmaModelStatus.ERROR
+                    },
+                    _diagnostics.lastError
+                )
+            }
+        } finally {
+            mutex.unlock()
         }
-
-        runtime.streamGenerate(fullPrompt).collect { token ->
-            trySend(token)
-        }
-        close()
-        awaitClose {}
     }.flowOn(Dispatchers.IO)
 
     /**
