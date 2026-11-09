@@ -285,6 +285,14 @@ class ChatterboxModelManager private constructor(private val context: Context) {
                 }
                 throw cancelled
             } catch (e: Exception) {
+                // Cancelling a blocking OkHttp call surfaces as IOException on some paths.
+                // Check the coroutine state so a user-requested pause is never marked FAILED.
+                if (!isActive) {
+                    updateFileProgress(spec.id) {
+                        it.copy(status = DownloadItemStatus.PAUSED, errorMessage = null)
+                    }
+                    throw CancellationException("Download paused")
+                }
                 Log.e(TAG, "Download failed for ${spec.fileName}: ${e.message}")
                 updateFileProgress(spec.id) {
                     it.copy(status = DownloadItemStatus.FAILED, errorMessage = e.localizedMessage ?: "Download failed")
