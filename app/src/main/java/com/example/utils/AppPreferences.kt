@@ -597,19 +597,52 @@ object AppPreferences {
     // ============================================================================
     private const val KEY_CUSTOM_APIS_JSON = "custom_apis_json"
 
+    private fun customApiSecretKey(id: String): String = "custom_api_key_$id"
+
+    private fun customApiMetadata(list: List<CustomApiConfig>): org.json.JSONArray {
+        val jsonArray = org.json.JSONArray()
+        for (api in list) {
+            jsonArray.put(org.json.JSONObject().apply {
+                put("id", api.id)
+                put("name", api.name)
+                put("endpointUrl", api.endpointUrl)
+                put("model", api.model)
+                put("isEnabled", api.isEnabled)
+                put("dateAdded", api.dateAdded)
+            })
+        }
+        return jsonArray
+    }
+
     fun getCustomApis(context: Context): List<CustomApiConfig> {
-        val raw = getPrefs(context).getString(KEY_CUSTOM_APIS_JSON, "[]") ?: "[]"
+        val prefs = getPrefs(context)
+        val raw = prefs.getString(KEY_CUSTOM_APIS_JSON, "[]") ?: "[]"
         val list = mutableListOf<CustomApiConfig>()
+        var containsLegacyPlaintextKeys = false
         try {
             val jsonArray = org.json.JSONArray(raw)
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
+                val id = obj.optString("id", java.util.UUID.randomUUID().toString())
+                    .ifBlank { java.util.UUID.randomUUID().toString() }
+                val secretKey = customApiSecretKey(id)
+                val legacyKey = obj.optString("apiKey", "")
+                if (legacyKey.isNotBlank()) {
+                    containsLegacyPlaintextKeys = true
+                    // One-time migration from the old plaintext JSON field to Keystore AES-GCM.
+                    if (com.example.security.SecureStorage.getSecret(context, secretKey).isBlank()) {
+                        val migrated = com.example.security.SecureStorage.saveSecret(context, secretKey, legacyKey)
+                        if (!migrated) {
+                            android.util.Log.w("AppPreferences", "Could not migrate a legacy custom API credential; it was removed from plaintext storage.")
+                        }
+                    }
+                }
                 list.add(
                     CustomApiConfig(
-                        id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+                        id = id,
                         name = obj.optString("name", "Custom API"),
                         endpointUrl = obj.optString("endpointUrl", ""),
-                        apiKey = obj.optString("apiKey", ""),
+                        apiKey = com.example.security.SecureStorage.getSecret(context, secretKey),
                         model = obj.optString("model", ""),
                         isEnabled = obj.optBoolean("isEnabled", true),
                         dateAdded = obj.optLong("dateAdded", System.currentTimeMillis())
@@ -617,12 +650,17 @@ object AppPreferences {
                 )
             }
         } catch (e: Exception) {
-            android.util.Log.e("AppPreferences", "Error reading custom APIs", e)
+            android.util.Log.e("AppPreferences", "Error reading custom APIs (${e.javaClass.simpleName}).")
+        }
+
+        // Always rewrite legacy records without the plaintext apiKey property.
+        if (containsLegacyPlaintextKeys) {
+            prefs.edit().putString(KEY_CUSTOM_APIS_JSON, customApiMetadata(list).toString()).commit()
         }
         return list
     }
 
-    fun saveCustomApi(context: Context, api: CustomApiConfig) {
+    fun saveCustomApi(context: Context, api: CustomApiConfig): Boolean {
         val current = getCustomApis(context).toMutableList()
         val index = current.indexOfFirst { it.id == api.id }
         if (index >= 0) {
@@ -630,11 +668,12 @@ object AppPreferences {
         } else {
             current.add(api)
         }
-        persistCustomApis(context, current)
+        return persistCustomApis(context, current)
     }
 
     fun deleteCustomApi(context: Context, id: String) {
         val current = getCustomApis(context).filterNot { it.id == id }
+        com.example.security.SecureStorage.clearSecret(context, customApiSecretKey(id))
         persistCustomApis(context, current)
     }
 
@@ -645,21 +684,22 @@ object AppPreferences {
         persistCustomApis(context, current)
     }
 
-    private fun persistCustomApis(context: Context, list: List<CustomApiConfig>) {
-        val jsonArray = org.json.JSONArray()
+    private fun persistCustomApis(context: Context, list: List<CustomApiConfig>): Boolean {
+        var allCredentialsSecured = true
         for (api in list) {
-            val obj = org.json.JSONObject().apply {
-                put("id", api.id)
-                put("name", api.name)
-                put("endpointUrl", api.endpointUrl)
-                put("apiKey", api.apiKey)
-                put("model", api.model)
-                put("isEnabled", api.isEnabled)
-                put("dateAdded", api.dateAdded)
+            val keyName = customApiSecretKey(api.id)
+            if (api.apiKey.isBlank()) {
+                com.example.security.SecureStorage.clearSecret(context, keyName)
+            } else if (!com.example.security.SecureStorage.saveSecret(context, keyName, api.apiKey)) {
+                // Never put a secret back into ordinary SharedPreferences when encryption fails.
+                com.example.security.SecureStorage.clearSecret(context, keyName)
+                allCredentialsSecured = false
             }
-            jsonArray.put(obj)
         }
-        getPrefs(context).edit().putString(KEY_CUSTOM_APIS_JSON, jsonArray.toString()).apply()
+        val persisted = getPrefs(context).edit()
+            .putString(KEY_CUSTOM_APIS_JSON, customApiMetadata(list).toString())
+            .commit()
+        return allCredentialsSecured && persisted
     }
 
     /**
