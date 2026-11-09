@@ -3,6 +3,9 @@ package com.example.ai.offline
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -263,6 +266,7 @@ object GemmaModelManager {
     suspend fun importModelFromUri(context: Context, uri: Uri, originalName: String? = null): Boolean = mutex.withLock {
         _status.value = GemmaModelStatus.IMPORTING
         _lastError = null
+        var tempFile: File? = null
 
         return try {
             val targetDir = getModelDirectory(context)
@@ -273,7 +277,7 @@ object GemmaModelManager {
             }
 
             val safeBaseName = (originalName?.substringBeforeLast(".") ?: "local_model").replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "local_model" }
-            val tempFile = File(targetDir, "import_temp_${System.currentTimeMillis()}$ext")
+            tempFile = File(targetDir, "import_temp_${System.currentTimeMillis()}$ext")
             var finalFile = File(targetDir, "$safeBaseName$ext")
             var duplicateIndex = 2
             while (finalFile.exists()) {
@@ -281,13 +285,16 @@ object GemmaModelManager {
             }
 
             context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                FileOutputStream(tempFile).use { outputStream ->
+                FileOutputStream(tempFile!!).use { outputStream ->
                     val buffer = ByteArray(128 * 1024)
                     var bytesRead: Int
-                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        bytesRead = inputStream.read(buffer)
+                        if (bytesRead == -1) break
                         outputStream.write(buffer, 0, bytesRead)
                     }
-                    outputStream.flush()
+                    outputStream.fd.sync()
                 }
             } ?: run {
                 _status.value = GemmaModelStatus.ERROR
@@ -296,11 +303,11 @@ object GemmaModelManager {
             }
 
             // Inspect temporary file
-            val info = inspectModel(tempFile)
+            val info = inspectModel(tempFile!!)
             _cachedInfo = info
 
             if (!info.isSupported) {
-                tempFile.delete()
+                tempFile!!.delete()
                 _status.value = GemmaModelStatus.ERROR
                 _lastError = info.validationMessage
                 Log.e(TAG, "Import rejected: ${info.validationMessage}")
@@ -311,11 +318,12 @@ object GemmaModelManager {
             if (finalFile.exists()) {
                 finalFile.delete()
             }
-            if (!tempFile.renameTo(finalFile)) {
+            if (!tempFile!!.renameTo(finalFile)) {
                 // Fallback copy if rename across filesystems fails
-                tempFile.copyTo(finalFile, overwrite = true)
-                tempFile.delete()
+                tempFile!!.copyTo(finalFile, overwrite = true)
+                tempFile!!.delete()
             }
+            tempFile = null
 
             val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             prefs.edit().putString(KEY_SAVED_MODEL_PATH, finalFile.absolutePath).apply()
@@ -326,7 +334,13 @@ object GemmaModelManager {
 
             Log.i(TAG, "Local model imported successfully: ${finalFile.absolutePath} (${finalFile.length()} bytes)")
             true
+        } catch (cancelled: CancellationException) {
+            tempFile?.delete()
+            _status.value = GemmaModelStatus.ERROR
+            _lastError = "Model import was cancelled before completion."
+            throw cancelled
         } catch (e: Exception) {
+            tempFile?.delete()
             Log.e(TAG, "Failed to import local model", e)
             _status.value = GemmaModelStatus.ERROR
             _lastError = "Import failed: ${e.localizedMessage}"
