@@ -87,8 +87,8 @@ class PrecisionComputerUseEngine(
                     target = target,
                     touchX = safeX,
                     touchY = safeY,
-                    detail = "Tapped element '${nodeAtCoords.text ?: target}' at (${safeX.toInt()}, ${safeY.toInt()})",
-                    verified = true
+                    detail = "Accessibility click accepted; resulting screen state not verified.",
+                    verified = false
                 )
             }
             // Fallback to center point of confirmed interactive element
@@ -102,8 +102,8 @@ class PrecisionComputerUseEngine(
                     target = target,
                     touchX = cx,
                     touchY = cy,
-                    detail = "Tapped element center at (${cx.toInt()}, ${cy.toInt()})",
-                    verified = true
+                    detail = "Tap gesture completed at element center; resulting screen state not verified.",
+                    verified = false
                 )
             }
         }
@@ -118,8 +118,8 @@ class PrecisionComputerUseEngine(
                 target = target,
                 touchX = safeX,
                 touchY = safeY,
-                detail = "Dispatched precise tap at (${safeX.toInt()}, ${safeY.toInt()})",
-                verified = true
+                detail = "Precise tap gesture completed; resulting screen state not verified.",
+                verified = false
             )
         } else {
             PrecisionActionResult(
@@ -152,6 +152,9 @@ class PrecisionComputerUseEngine(
 
         delay(NATURAL_PRE_DELAY_MS)
         val firstTap = dispatchTapGesture(service, safeX, safeY, TAP_DURATION_MS)
+        if (!firstTap) {
+            return PrecisionActionResult(false, "DOUBLE_TAP", target, safeX, safeY, "First tap gesture did not complete; second tap was not sent.", false)
+        }
         delay(DOUBLE_TAP_GAP_MS)
         val secondTap = dispatchTapGesture(service, safeX, safeY, TAP_DURATION_MS)
 
@@ -162,8 +165,8 @@ class PrecisionComputerUseEngine(
             target = target,
             touchX = safeX,
             touchY = safeY,
-            detail = if (ok) "Double-tapped at (${safeX.toInt()}, ${safeY.toInt()})" else "Double tap failed on second stroke",
-            verified = ok
+            detail = if (ok) "Both tap gestures completed; resulting screen state not verified." else "Second tap gesture did not complete.",
+            verified = false
         )
     }
 
@@ -196,8 +199,8 @@ class PrecisionComputerUseEngine(
                     target = target,
                     touchX = safeX,
                     touchY = safeY,
-                    detail = "Long-pressed element '${nodeAtCoords.text ?: target}'",
-                    verified = true
+                    detail = "Long-press action accepted; resulting screen state not verified.",
+                    verified = false
                 )
             }
         }
@@ -210,8 +213,8 @@ class PrecisionComputerUseEngine(
             target = target,
             touchX = safeX,
             touchY = safeY,
-            detail = if (dispatched) "Long pressed at (${safeX.toInt()}, ${safeY.toInt()}) for ${durationMs}ms" else "Long press gesture failed",
-            verified = dispatched
+            detail = if (dispatched) "Long-press gesture completed; resulting screen state not verified." else "Long-press gesture failed",
+            verified = false
         )
     }
 
@@ -240,8 +243,8 @@ class PrecisionComputerUseEngine(
             target = "Swipe (${p1.x.toInt()}, ${p1.y.toInt()}) -> (${p2.x.toInt()}, ${p2.y.toInt()})",
             touchX = p1.x,
             touchY = p1.y,
-            detail = if (ok) "Swiped to (${p2.x.toInt()}, ${p2.y.toInt()})" else "Swipe gesture failed",
-            verified = ok
+            detail = if (ok) "Swipe gesture completed; resulting screen state not verified." else "Swipe gesture failed",
+            verified = false
         )
     }
 
@@ -267,8 +270,8 @@ class PrecisionComputerUseEngine(
                 target = direction,
                 touchX = dims.width / 2f,
                 touchY = dims.height / 2f,
-                detail = "Scrolled $direction via accessibility semantics",
-                verified = true
+                detail = "Accessibility scroll accepted; scroll position not verified.",
+                verified = false
             )
         }
 
@@ -286,8 +289,8 @@ class PrecisionComputerUseEngine(
             target = direction,
             touchX = centerX,
             touchY = startY,
-            detail = if (ok) "Scrolled $direction by $deltaY px" else "Scroll gesture failed",
-            verified = ok
+            detail = if (ok) "Scroll gesture completed; scroll position not verified." else "Scroll gesture failed",
+            verified = false
         )
     }
 
@@ -317,8 +320,8 @@ class PrecisionComputerUseEngine(
             target = "Drag (${p1.x.toInt()}, ${p1.y.toInt()}) -> (${p2.x.toInt()}, ${p2.y.toInt()})",
             touchX = p1.x,
             touchY = p1.y,
-            detail = if (ok) "Dragged to (${p2.x.toInt()}, ${p2.y.toInt()})" else "Drag gesture failed",
-            verified = ok
+            detail = if (ok) "Drag gesture completed; resulting layout not verified." else "Drag gesture failed",
+            verified = false
         )
     }
 
@@ -376,8 +379,8 @@ class PrecisionComputerUseEngine(
                     target = target,
                     touchX = 0f,
                     touchY = 0f,
-                    detail = "Typed '$textToType' into target field",
-                    verified = true
+                    detail = "Text input accepted; target value was not read back for verification.",
+                    verified = false
                 )
             }
         }
@@ -404,7 +407,7 @@ class PrecisionComputerUseEngine(
                 target = target,
                 touchX = 0f,
                 touchY = 0f,
-                detail = "Typed '$textToType' into focused field",
+                detail = "Text input accepted; focused value was not read back for verification.",
                 verified = true
             )
         }
@@ -417,7 +420,7 @@ class PrecisionComputerUseEngine(
                 target = target,
                 touchX = 0f,
                 touchY = 0f,
-                detail = "Submitted search '$textToType'",
+                detail = "Search submit accepted; result-screen change was not verified.",
                 verified = true
             )
         }
@@ -440,21 +443,21 @@ class PrecisionComputerUseEngine(
         val service = getService()
             ?: return PrecisionActionResult(false, "BACK", "System", 0f, 0f, "Service not enabled", false)
         val ok = service.performGlobal(AccessibilityService.GLOBAL_ACTION_BACK)
-        return PrecisionActionResult(ok, "BACK", "System", 0f, 0f, if (ok) "Pressed Back" else "Back failed", ok)
+        return PrecisionActionResult(ok, "BACK", "System", 0f, 0f, if (ok) "Back action dispatched; navigation result not verified" else "Back action failed", false)
     }
 
     fun performHome(): PrecisionActionResult {
         val service = getService()
             ?: return PrecisionActionResult(false, "HOME", "System", 0f, 0f, "Service not enabled", false)
         val ok = service.performGlobal(AccessibilityService.GLOBAL_ACTION_HOME)
-        return PrecisionActionResult(ok, "HOME", "System", 0f, 0f, if (ok) "Pressed Home" else "Home failed", ok)
+        return PrecisionActionResult(ok, "HOME", "System", 0f, 0f, if (ok) "Home action dispatched; home screen not verified" else "Home action failed", false)
     }
 
     fun performRecentApps(): PrecisionActionResult {
         val service = getService()
             ?: return PrecisionActionResult(false, "RECENT_APPS", "System", 0f, 0f, "Service not enabled", false)
         val ok = service.performGlobal(AccessibilityService.GLOBAL_ACTION_RECENTS)
-        return PrecisionActionResult(ok, "RECENT_APPS", "System", 0f, 0f, if (ok) "Opened Recent Apps" else "Recents failed", ok)
+        return PrecisionActionResult(ok, "RECENT_APPS", "System", 0f, 0f, if (ok) "Recent Apps action dispatched; screen result not verified" else "Recent Apps action failed", false)
     }
 
     // ==========================================
@@ -507,7 +510,7 @@ class PrecisionComputerUseEngine(
             }
         }
 
-        return PrecisionActionResult(ok, "KEYBOARD", action.name, 0f, 0f, "Executed keyboard action ${action.name}", ok)
+        return PrecisionActionResult(ok, "KEYBOARD", action.name, 0f, 0f, if (ok) "Keyboard action dispatched; resulting UI state not verified." else "Keyboard action failed.", false)
     }
 
     // ==========================================
@@ -526,12 +529,12 @@ class PrecisionComputerUseEngine(
             if (clicked) {
                 val cx = nodeInfo.bounds.centerX().toFloat()
                 val cy = nodeInfo.bounds.centerY().toFloat()
-                return PrecisionActionResult(true, "SELECT", target, cx, cy, "Selected element '$target'", true)
+                return PrecisionActionResult(true, "SELECT", target, cx, cy, "Accessibility select accepted; resulting UI state not verified.", false)
             }
             val cx = nodeInfo.bounds.centerX().toFloat()
             val cy = nodeInfo.bounds.centerY().toFloat()
             val tapped = dispatchTapGesture(service, cx, cy, TAP_DURATION_MS)
-            return PrecisionActionResult(tapped, "SELECT", target, cx, cy, "Selected '$target' via center tap", tapped)
+            return PrecisionActionResult(tapped, "SELECT", target, cx, cy, "Center tap completed; resulting UI state not verified.", false)
         }
 
         return PrecisionActionResult(false, "SELECT", target, 0f, 0f, "Element '$target' not found to select", false)
@@ -552,7 +555,7 @@ class PrecisionComputerUseEngine(
             if (rawNode != null && nodeInfo != null) {
                 val clicked = service.clickNode(rawNode)
                 if (clicked) {
-                    return PrecisionActionResult(true, "OPEN_MENU", label, nodeInfo.bounds.centerX().toFloat(), nodeInfo.bounds.centerY().toFloat(), "Opened menu via '$label'", true)
+                    return PrecisionActionResult(true, "OPEN_MENU", label, nodeInfo.bounds.centerX().toFloat(), nodeInfo.bounds.centerY().toFloat(), "Menu click accepted; menu visibility not verified.", false)
                 }
             }
         }
@@ -562,7 +565,7 @@ class PrecisionComputerUseEngine(
         val cornerX = dims.width - 48f
         val cornerY = 120f
         val tapped = dispatchTapGesture(service, cornerX, cornerY, TAP_DURATION_MS)
-        return PrecisionActionResult(tapped, "OPEN_MENU", target, cornerX, cornerY, "Dispatched menu tap at ($cornerX, $cornerY)", tapped)
+        return PrecisionActionResult(tapped, "OPEN_MENU", target, cornerX, cornerY, "Menu tap gesture dispatched; menu visibility not verified.", false)
     }
 
     suspend fun performDismissDialog(): PrecisionActionResult {
@@ -576,14 +579,14 @@ class PrecisionComputerUseEngine(
             val (_, rawNode) = hierarchyAnalyzer.findMatchingNode(label, root)
             if (rawNode != null) {
                 if (service.clickNode(rawNode)) {
-                    return PrecisionActionResult(true, "DISMISS_DIALOG", label, 0f, 0f, "Dismissed dialog via '$label'", true)
+                    return PrecisionActionResult(true, "DISMISS_DIALOG", label, 0f, 0f, "Dismiss action accepted; dialog closure not verified.", false)
                 }
             }
         }
 
         // Fallback: Back gesture dismisses dialogs cleanly
         val backOk = service.performGlobal(AccessibilityService.GLOBAL_ACTION_BACK)
-        return PrecisionActionResult(backOk, "DISMISS_DIALOG", "Back gesture", 0f, 0f, "Dismissed dialog via Back", backOk)
+        return PrecisionActionResult(backOk, "DISMISS_DIALOG", "Back gesture", 0f, 0f, if (backOk) "Back action dispatched; dialog closure not verified." else "Back action failed.", false)
     }
 
     // ==========================================
@@ -622,7 +625,7 @@ class PrecisionComputerUseEngine(
             }
             val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceIn(100L, 3000L))
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
-            return service.dispatchGesture(gesture, null, null)
+            return service.dispatchGestureAndAwait(gesture)
         }
         return false
     }
