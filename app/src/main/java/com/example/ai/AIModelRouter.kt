@@ -66,7 +66,8 @@ class AIModelRouter(private val context: Context) {
                 }
             }
             val sysInstruction = SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
-            val genResult = localEngine.generate(prompt, sysInstruction)
+            val localPrompt = buildOfflineConversationPrompt(prompt, history)
+            val genResult = localEngine.generate(localPrompt, sysInstruction)
             return@withContext genResult.getOrElse {
                 "LOCAL OFFLINE ERROR: ${it.localizedMessage ?: "Generation failed."}"
             }
@@ -102,7 +103,7 @@ class AIModelRouter(private val context: Context) {
                     return kotlinx.coroutines.flow.flowOf("LOCAL OFFLINE ERROR: $error")
                 }
             }
-            localEngine.streamGenerate(prompt, sysInstruction, context)
+            localEngine.streamGenerate(buildOfflineConversationPrompt(prompt, history), sysInstruction, context)
         } else {
             Log.d(TAG, "Routing streamChat request to ONLINE Gemini model")
             onlineEngine.streamChat(
@@ -112,6 +113,30 @@ class AIModelRouter(private val context: Context) {
                 memoryContext = memoryContext,
                 isProactiveMode = isProactiveMode
             )
+        }
+    }
+
+    private fun buildOfflineConversationPrompt(
+        prompt: String,
+        history: List<MessageEntity>
+    ): String {
+        val recentTurns = history.asSequence()
+            .filter { it.text.isNotBlank() }
+            .takeLast(10)
+            .map { message ->
+                val role = if (message.isUser) "USER" else "ASSISTANT"
+                val text = message.text.trim().takeLast(2000)
+                "$role: $text"
+            }
+            .toList()
+
+        if (recentTurns.isEmpty()) return prompt
+        return buildString {
+            appendLine("RECENT CONVERSATION:")
+            recentTurns.forEach(::appendLine)
+            appendLine()
+            appendLine("CURRENT USER MESSAGE:")
+            append(prompt)
         }
     }
 
