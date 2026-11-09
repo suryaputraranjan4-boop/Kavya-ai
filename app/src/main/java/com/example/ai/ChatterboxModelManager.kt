@@ -13,6 +13,7 @@ import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
 
 enum class DownloadItemStatus {
     PENDING,
@@ -206,7 +207,12 @@ class ChatterboxModelManager private constructor(private val context: Context) {
                     if (initialBytes > 0L) addHeader("Range", "bytes=$initialBytes-")
                 }.build()
 
-                httpClient.newCall(request).execute().use { response ->
+                val call = httpClient.newCall(request)
+                val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
+                    if (cause is CancellationException) call.cancel()
+                }
+                try {
+                    call.execute().use { response ->
                     if (response.code == 416) {
                         targetFile.delete()
                         throw Exception("The saved partial file could not be resumed and was reset. Tap Download again to restart.")
@@ -269,7 +275,15 @@ class ChatterboxModelManager private constructor(private val context: Context) {
                     updateFileProgress(spec.id) {
                         it.copy(status = DownloadItemStatus.COMPLETED, bytesDownloaded = targetFile.length(), totalBytes = targetFile.length(), errorMessage = null)
                     }
+                    }
+                } finally {
+                    cancellationHandle?.dispose()
                 }
+            } catch (cancelled: CancellationException) {
+                updateFileProgress(spec.id) {
+                    it.copy(status = DownloadItemStatus.PAUSED, errorMessage = null)
+                }
+                throw cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed for ${spec.fileName}: ${e.message}")
                 updateFileProgress(spec.id) {
