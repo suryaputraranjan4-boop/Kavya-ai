@@ -142,6 +142,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     val liveOutputTranscript = liveVoiceClient.outputTranscript
     val liveVoiceError = liveVoiceClient.lastError
     private var liveStartedMicService = false
+    private var autoSpeakBeforeLive: Boolean? = null
     private val database = AppDatabase.getDatabase(application)
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
@@ -379,6 +380,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        if (autoSpeakBeforeLive == null) autoSpeakBeforeLive = _autoSpeak.value
+        _autoSpeak.value = false
+        voiceEngine.stop()
+
         val mic = com.example.agent.MicrophoneEngine.getInstance(app)
         liveStartedMicService = !mic.isRecording
         if (liveStartedMicService) {
@@ -403,6 +408,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             com.example.voice.KavyaMicrophoneEngine.stopService(getApplication())
         }
         liveStartedMicService = false
+        autoSpeakBeforeLive?.let { _autoSpeak.value = it }
+        autoSpeakBeforeLive = null
     }
 
     private fun appendLiveVoiceMessage(text: String, isUser: Boolean) {
