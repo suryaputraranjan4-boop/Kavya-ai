@@ -53,6 +53,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     })
     private val synthesisMutex = Mutex()
     private var activeSpeechJob: Job? = null
+    private val activeSpeechJobs = java.util.Collections.synchronizedSet(mutableSetOf<Job>())
 
     @Volatile var isSpeaking: Boolean = false
         private set
@@ -85,7 +86,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         if (!enqueue) stop()
 
         Log.d(TAG, "Routing speech through " + engine.displayName)
-        activeSpeechJob = scope.launch(Dispatchers.IO) {
+        val speechJob = scope.launch(Dispatchers.IO) {
             var playbackQueued = false
             try {
                 synthesisMutex.withLock {
@@ -134,6 +135,9 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                 }
             }
         }
+        activeSpeechJob = speechJob
+        activeSpeechJobs.add(speechJob)
+        speechJob.invokeOnCompletion { activeSpeechJobs.remove(speechJob) }
     }
 
     fun previewEngine(
@@ -145,7 +149,8 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     }
 
     fun stop() {
-        activeSpeechJob?.cancel()
+        val jobs = synchronized(activeSpeechJobs) { activeSpeechJobs.toList().also { activeSpeechJobs.clear() } }
+        jobs.forEach { it.cancel() }
         activeSpeechJob = null
         player.stop()
         updateSpeakingState(false)
