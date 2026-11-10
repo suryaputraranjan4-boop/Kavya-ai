@@ -2068,6 +2068,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         stopLiveConversation()
+        liveVoiceClient.release()
         com.example.agent.MicrophoneEngine.getInstance(getApplication()).setBargeInListener(null)
         voiceEngine.stop()
         proactiveController.shutdown()
