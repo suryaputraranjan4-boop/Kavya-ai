@@ -176,9 +176,13 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                 val totalBytes = MODEL_SPECS.sumOf { if (it.expectedSizeBytes > 0L) it.expectedSizeBytes else 4_000L }
                 var completedBytes = MODEL_SPECS.sumOf { spec ->
                     val f = File(modelDir, spec.fileName)
-                    if (f.isFile && f.length() > 0L &&
-                        (spec.expectedSizeBytes == 0L || f.length() == spec.expectedSizeBytes)
-                    ) f.length() else 0L
+                    val partial = File(modelDir, spec.fileName + ".part")
+                    when {
+                        f.isFile && f.length() > 0L &&
+                            (spec.expectedSizeBytes == 0L || f.length() == spec.expectedSizeBytes) -> f.length()
+                        partial.isFile -> partial.length()
+                        else -> 0L
+                    }
                 }
                 for (spec in MODEL_SPECS) {
                     if (paused) {
@@ -223,22 +227,40 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
         }
     }
 
+    /**
+     * Downloads atomically and resumes a paused partial file with HTTP Range when supported.
+     * A server that ignores Range (200 instead of 206) safely restarts the partial from byte 0.
+     */
     private suspend fun downloadOne(spec: TtsModelFileSpec, target: File, onProgress: (Long) -> Unit): Boolean =
         withContext(Dispatchers.IO) {
             val parent = target.parentFile ?: return@withContext false
             if (!parent.exists() && !parent.mkdirs()) return@withContext false
             val partial = File(parent, target.name + ".part")
+            val existingBytes = if (partial.isFile) partial.length() else 0L
             try {
-                val request = Request.Builder().url(HF_BASE_URL + spec.remotePath).get().build()
-                val call = client.newCall(request)
+                val requestBuilder = Request.Builder().url(HF_BASE_URL + spec.remotePath).get()
+                if (existingBytes > 0L) requestBuilder.header("Range", "bytes=$existingBytes-")
+                val call = client.newCall(requestBuilder.build())
                 activeCall = call
                 call.execute().use { response ->
-                    if (!response.isSuccessful) return@withContext false
+                    if (!response.isSuccessful || (response.code != 200 && response.code != 206)) {
+                        return@withContext false
+                    }
+                    val append = existingBytes > 0L && response.code == 206
+                    if (response.code == 206) {
+                        val contentRange = response.header("Content-Range").orEmpty()
+                        if (!append || !contentRange.startsWith("bytes $existingBytes-")) {
+                            partial.delete()
+                            return@withContext false
+                        }
+                    }
                     val body = response.body ?: return@withContext false
-                    if (spec.expectedSizeBytes > 0L && body.contentLength() > 0L &&
-                        body.contentLength() != spec.expectedSizeBytes
-                    ) return@withContext false
-                    FileOutputStream(partial).use { output ->
+                    val contentLength = body.contentLength()
+                    if (spec.expectedSizeBytes > 0L && contentLength > 0L) {
+                        val expectedResponseBytes = if (append) spec.expectedSizeBytes - existingBytes else spec.expectedSizeBytes
+                        if (contentLength != expectedResponseBytes) return@withContext false
+                    }
+                    FileOutputStream(partial, append).use { output ->
                         body.byteStream().use { input ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
@@ -252,21 +274,25 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                         }
                     }
                 }
+                if (paused) return@withContext false
                 if (!partial.isFile || partial.length() <= 0L ||
                     (spec.expectedSizeBytes > 0L && partial.length() != spec.expectedSizeBytes)
                 ) return@withContext false
-                if (spec.sha256 != null && sha256(partial) != spec.sha256) return@withContext false
+                if (spec.sha256 != null && sha256(partial) != spec.sha256) {
+                    partial.delete()
+                    return@withContext false
+                }
                 if (target.exists() && !target.delete()) return@withContext false
                 if (!partial.renameTo(target)) return@withContext false
                 true
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
-                Log.w(TAG, "Download failed for " + spec.fileName, e)
+                Log.w(TAG, "Download interrupted for " + spec.fileName + "; partial data retained for resume", e)
                 false
             } finally {
-                if (partial.exists()) partial.delete()
                 activeCall = null
+                // Keep .part on pause/network interruption; successful rename removes it.
             }
         }
 
