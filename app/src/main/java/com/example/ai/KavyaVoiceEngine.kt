@@ -114,7 +114,7 @@ class KavyaVoiceEngine(
     }
 
     private fun speakCleanFallback(enqueue: Boolean, onComplete: (() -> Unit)?) {
-        val naturalFallback = "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
+        val naturalFallback = "अभी नेटवर्क में थोड़ी समस्या है। कृपया कुछ देर बाद फिर प्रयास करें।"
         updateSpeakingState(true)
         com.example.ai.tts.VoiceEngineManager.getInstance(context).speak(
             text = naturalFallback,
