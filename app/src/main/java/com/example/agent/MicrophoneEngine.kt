@@ -236,6 +236,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                     recordingJob?.cancel()
                     recordingJob = null
                     // Release a stale handle before attempting a fresh initialization.
+                    releaseAudioEffects()
                     audioRecord?.let { stale ->
                         try {
                             if (stale.recordingState == AudioRecord.RECORDSTATE_RECORDING) stale.stop()
@@ -278,6 +279,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 recordingJob = null
 
                 try {
+                    releaseAudioEffects()
                     audioRecord?.let { record ->
                         if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                             record.stop()
@@ -287,7 +289,6 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 } catch (e: Exception) {
                     Log.e(TAG, "Error stopping AudioRecord", e)
                 } finally {
-                    releaseAudioEffects()
                     audioRecord = null
                     pcmProcessor.reset()
                     _engineState.value = State.IDLE
