@@ -125,17 +125,15 @@ object HindiTextNormalizer {
             var digits = token.removePrefix("₹").removeSuffix("%").replace(",", "").trim()
             val spoken = if (digits.contains(".")) {
                 val parts = digits.split(".", limit = 2)
-                val whole = parts[0].toLongOrNull()?.let { cardinal(it) } ?: digits
+                val whole = parts[0].toLongOrNull()?.let { numberToHindi(it) } ?: speakDigits(parts[0])
                 val fraction = parts[1].mapNotNull { it.digitToIntOrNull() }.joinToString(" ") { units[it] }
                 if (fraction.isBlank()) whole else whole + " दशमलव " + fraction
             } else {
                 val n = digits.toLongOrNull()
-                if (n == null) digits else if (digits.length >= 10 || (digits.length > 1 && digits.startsWith("0"))) {
-                    digits.mapNotNull { it.digitToIntOrNull() }.joinToString(" ") { units[it] }
-                } else if (n in 1100L..1999L) {
-                    cardinal(n / 100) + " सौ " + cardinal(n % 100)
+                if (n == null) speakDigits(digits) else if (digits.length >= 10 || (digits.length > 1 && digits.startsWith("0"))) {
+                    speakDigits(digits)
                 } else {
-                    cardinal(n)
+                    numberToHindi(n)
                 }
             }
             prefixSpace + spoken + when {
@@ -146,10 +144,20 @@ object HindiTextNormalizer {
         }
     }
 
+    private fun numberToHindi(number: Long): String {
+        if (number < 0L) return "माइनस " + speakDigits(number.toString().removePrefix("-"))
+        if (number > 999_999_999L) return speakDigits(number.toString())
+        if (number in 1100L..1999L) {
+            return cardinal(number / 100) + " सौ " + cardinal(number % 100)
+        }
+        return cardinal(number)
+    }
+
+    private fun speakDigits(value: String): String =
+        value.mapNotNull { it.digitToIntOrNull() }.joinToString(" ") { units[it] }
+
     private fun cardinal(number: Long): String {
-        if (number < 0L) return "माइनस " + cardinal(-number)
         if (number < 100L) return units[number.toInt()]
-        require(number <= 999_999_999L) { "Number exceeds Hindi model normalizer range" }
         var remaining = number
         val parts = ArrayList<String>()
         val crore = (remaining / 10_000_000L).toInt()
