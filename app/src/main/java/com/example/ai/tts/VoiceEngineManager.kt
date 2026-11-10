@@ -6,6 +6,7 @@ import com.example.agent.MicrophoneEngine
 import com.example.ai.ChatterboxResult
 import com.example.ai.ChatterboxTtsClient
 import com.example.ai.GeminiAudioPlayer
+import com.example.ai.VoiceProfileManager
 import com.example.utils.AppPreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +49,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val indicTinyEngine = IndicTinyTtsEngine(appContext)
     private val chatterboxClient = ChatterboxTtsClient(appContext)
+    private val voiceProfileManager = VoiceProfileManager.getInstance(appContext)
     private val player = GeminiAudioPlayer(appContext, onSpeakingStateChanged = { speaking ->
         updateSpeakingState(speaking)
     })
@@ -69,15 +71,25 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         Log.i(TAG, "Active voice engine set to: " + engine.displayName)
     }
 
-    fun speak(text: String, enqueue: Boolean = false, onComplete: (() -> Unit)? = null) {
-        speakUsingEngine(text, getActiveEngine(), enqueue, onComplete)
+    fun speak(
+        text: String,
+        enqueue: Boolean = false,
+        onComplete: (() -> Unit)? = null,
+        speed: Float = 1.0f,
+        pitch: Float = 1.0f,
+        emotion: String = "natural"
+    ) {
+        speakUsingEngine(text, getActiveEngine(), enqueue, onComplete, speed, pitch, emotion)
     }
 
     private fun speakUsingEngine(
         text: String,
         engine: VoiceEngine,
         enqueue: Boolean,
-        onComplete: (() -> Unit)?
+        onComplete: (() -> Unit)?,
+        speed: Float = 1.0f,
+        pitch: Float = 1.0f,
+        emotion: String = "natural"
     ) {
         if (text.isBlank()) {
             onComplete?.invoke()
@@ -93,7 +105,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                     updateSpeakingState(true)
                     when (engine) {
                         VoiceEngine.INDIC_TINY_TTS -> {
-                            val pcm = indicTinyEngine.synthesizeSpeech(text)
+                            val pcm = indicTinyEngine.synthesizeSpeech(text, speed = speed.coerceIn(0.25f, 4.0f))
                             if (pcm.isEmpty()) {
                                 throw IllegalStateException("Indic Tiny TTS returned empty audio.")
                             }
@@ -106,7 +118,14 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                             playbackQueued = true
                         }
                         VoiceEngine.CHATTERBOX -> {
-                            when (val result = chatterboxClient.synthesize(text)) {
+                            val activeProfile = voiceProfileManager.getActiveProfile()
+                            when (val result = chatterboxClient.synthesize(
+                                text = text,
+                                referenceAudioPath = activeProfile.audioFilePath,
+                                pitchMultiplier = pitch,
+                                speedMultiplier = speed,
+                                emotion = emotion
+                            )) {
                                 is ChatterboxResult.Success -> {
                                     player.playWav(
                                         wavBytes = result.audioBytes,
@@ -145,7 +164,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         sampleText: String = PREVIEW_SAMPLE_HINDI,
         onComplete: (() -> Unit)? = null
     ) {
-        speakUsingEngine(sampleText, engine, enqueue = false, onComplete = onComplete)
+        speakUsingEngine(sampleText, engine, enqueue = false, onComplete = onComplete, speed = 1.0f, pitch = 1.0f, emotion = "natural")
     }
 
     fun stop() {
