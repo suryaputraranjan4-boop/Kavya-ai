@@ -181,7 +181,6 @@ class IndicTinyTtsEngine(private val context: Context) {
         val encSession = encoder ?: error("Text encoder is not initialized")
         val decSession = decoder ?: error("Flow decoder is not initialized")
         val vocSession = vocoder ?: error("Vocoder is not initialized")
-        val runtimeEnv = this.env
 
         val encoderInputs = linkedMapOf<String, OnnxTensor>()
         val encResult: OrtSession.Result
@@ -223,10 +222,11 @@ class IndicTinyTtsEngine(private val context: Context) {
         val muY = Array(channels) { FloatArray(paddedLength) }
         val mask = FloatArray(paddedLength)
         var frame = 0
+        var cumulativeDuration = 0.0
         for (token in 0 until tokenCount) {
-            val count = durations[token].toInt().coerceAtLeast(0)
-            for (j in 0 until count) {
-                if (frame >= melLength) break
+            cumulativeDuration += durations[token].toDouble()
+            val tokenEndFrame = ceil(cumulativeDuration).toInt().coerceAtMost(melLength)
+            while (frame < tokenEndFrame) {
                 mask[frame] = 1.0f
                 for (channel in 0 until channels) muY[channel][frame] = muX[0][channel][token]
                 frame++
