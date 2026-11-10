@@ -391,7 +391,10 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
             previewError = message
             android.widget.Toast.makeText(context, "Voice test failed: " + message, android.widget.Toast.LENGTH_LONG).show()
         }
-        onDispose { voiceEngineManager.onSpeechError = null }
+        onDispose {
+            voiceEngineManager.onSpeechError = null
+            voiceEngineManager.stop()
+        }
     }
 
     val indicStatus by indicModelManager.status.collectAsState()
