@@ -3,7 +3,7 @@ name: Build Kavya APK
 on:
   workflow_dispatch:
   push:
-    branches: ["main", "fix/ci-robolectric-java21"]
+    branches: ["main", "fix/ci-robolectric-java21", "fix/microphone-state-bridge-and-read-recovery"]
 
 permissions:
   contents: read
