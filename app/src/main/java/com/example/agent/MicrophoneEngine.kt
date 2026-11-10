@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.ai.KavyaAI
@@ -59,10 +61,12 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     private val engineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val mutex = Mutex()
+    private val utteranceMutex = Mutex()
 
     // State Flows
     private val _engineState = MutableStateFlow(State.IDLE)
     val engineState: StateFlow<State> = _engineState.asStateFlow()
+    val isRecording: Boolean get() = isRecordingActive
 
     private val _amplitude = MutableStateFlow(0.0f)
     val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
@@ -83,8 +87,12 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     @Volatile private var isMuted = false
     @Volatile private var isSleeping = false
     @Volatile private var isAssistantSpeaking = false
+    @Volatile private var isLiveConversation = false
+    @Volatile private var bargeInListener: (() -> Unit)? = null
+    private var acousticEchoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
 
-    private var commandListener: ((String) -> Unit)? = null
+    @Volatile private var commandListener: ((String) -> Unit)? = null
 
     private val wakeWords = setOf(
         "hey kavya", "hi kavya", "hello kavya",
@@ -115,7 +123,13 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
         // Wire VAD speech start event
         vad.onSpeechStart = {
-            if (_engineState.value == State.LISTENING) {
+            if (isAssistantSpeaking) {
+                Log.i(TAG, "User speech detected during assistant playback; triggering immediate barge-in.")
+                try { bargeInListener?.invoke() } catch (e: Exception) {
+                    Log.w(TAG, "Barge-in listener failed", e)
+                }
+            }
+            if (_engineState.value == State.LISTENING || _engineState.value == State.TTS_PLAYBACK) {
                 _engineState.value = State.SPEECH_DETECTED
             }
         }
@@ -128,6 +142,18 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     fun setCommandListener(listener: (String) -> Unit) {
         this.commandListener = listener
+    }
+
+    /** Called as soon as local VAD confirms speech while Kavya is playing audio. */
+    fun setBargeInListener(listener: (() -> Unit)?) {
+        bargeInListener = listener
+    }
+
+    /** Live mode uses server-side speech recognition; do not run the legacy utterance STT path too. */
+    fun setLiveConversationActive(active: Boolean) {
+        isLiveConversation = active
+        vad.reset()
+        if (!active && isRecordingActive) updateEngineState()
     }
 
     /**
@@ -145,37 +171,42 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     }
 
     /**
-     * Controls assistant TTS speaking gate.
-     * Keeps physical AudioRecord alive while suppressing VAD speech detection.
+     * Playback never gates microphone capture or VAD. This is required for true
+     * full-duplex conversation and user interruption while the assistant speaks.
      */
     fun setAssistantSpeaking(speaking: Boolean) {
         isAssistantSpeaking = speaking
-        pcmProcessor.setPlaybackGated(speaking)
-        if (speaking) {
-            _engineState.value = State.TTS_PLAYBACK
-            _amplitude.value = 0.0f
-        } else {
-            _engineState.value = if (isRecordingActive) {
-                if (isSleeping) State.SLEEPING else State.LISTENING
-            } else {
-                State.IDLE
-            }
-        }
+        updateCaptureGate()
+        updateEngineState()
+        if (speaking) _amplitude.value = 0.0f
     }
 
     fun setSleeping(sleeping: Boolean) {
         isSleeping = sleeping
         AppPreferences.setKavyaState(appContext, if (sleeping) "SLEEP" else "ACTIVE")
-        if (isRecordingActive && !isAssistantSpeaking) {
-            _engineState.value = if (sleeping) State.SLEEPING else State.LISTENING
-        }
+        if (isRecordingActive) updateEngineState()
     }
 
     fun setMuted(muted: Boolean) {
         isMuted = muted
-        pcmProcessor.setPlaybackGated(muted)
+        updateCaptureGate()
         if (isRecordingActive) {
-            _engineState.value = if (muted) State.MUTED else (if (isSleeping) State.SLEEPING else State.LISTENING)
+            updateEngineState()
+        }
+    }
+
+    private fun updateCaptureGate() {
+        // Only an explicit user mute suppresses VAD. Playback must remain interruptible.
+        pcmProcessor.setPlaybackGated(isMuted)
+    }
+
+    private fun updateEngineState() {
+        _engineState.value = when {
+            isAssistantSpeaking -> State.TTS_PLAYBACK
+            !isRecordingActive -> State.IDLE
+            isMuted -> State.MUTED
+            isSleeping -> State.SLEEPING
+            else -> State.LISTENING
         }
     }
 
@@ -205,6 +236,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                     recordingJob?.cancel()
                     recordingJob = null
                     // Release a stale handle before attempting a fresh initialization.
+                    releaseAudioEffects()
                     audioRecord?.let { stale ->
                         try {
                             if (stale.recordingState == AudioRecord.RECORDSTATE_RECORDING) stale.stop()
@@ -226,7 +258,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
                 isRecordingActive = true
                 isSleeping = AppPreferences.getKavyaState(appContext).equals("SLEEP", ignoreCase = true)
-                _engineState.value = if (isSleeping) State.SLEEPING else State.LISTENING
+                updateEngineState()
                 startRecordingLoop()
                 started = true
             }
@@ -247,6 +279,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 recordingJob = null
 
                 try {
+                    releaseAudioEffects()
                     audioRecord?.let { record ->
                         if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                             record.stop()
@@ -297,6 +330,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                     false
                 } else {
                     audioRecord = candidate
+                    attachAudioEffects(candidate)
                     Log.i(TAG, "Physical AudioRecord session successfully started (bufferSize=$bufferSize)")
                     true
                 }
@@ -312,9 +346,38 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
         }
     }
 
+    private fun attachAudioEffects(record: AudioRecord) {
+        releaseAudioEffects()
+        try {
+            if (AcousticEchoCanceler.isAvailable()) {
+                acousticEchoCanceler = AcousticEchoCanceler.create(record.audioSessionId)?.apply {
+                    enabled = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Acoustic echo cancellation could not be enabled on this device", e)
+        }
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                noiseSuppressor = NoiseSuppressor.create(record.audioSessionId)?.apply {
+                    enabled = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Noise suppression could not be enabled on this device", e)
+        }
+    }
+
+    private fun releaseAudioEffects() {
+        try { acousticEchoCanceler?.release() } catch (_: Exception) {}
+        try { noiseSuppressor?.release() } catch (_: Exception) {}
+        acousticEchoCanceler = null
+        noiseSuppressor = null
+    }
+
     private fun startRecordingLoop() {
         recordingJob = engineScope.launch(Dispatchers.IO) {
-            val readBuffer = ByteArray(2048)
+            val readBuffer = ByteArray(1280)
             var consecutiveReadErrors = 0
             Log.d(TAG, "Entering continuous PCM audio capture loop...")
 
@@ -327,12 +390,32 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                     continue
                 }
 
-                val bytesRead = record.read(readBuffer, 0, readBuffer.size)
+                val bytesRead = try {
+                    record.read(readBuffer, 0, readBuffer.size)
+                } catch (e: Exception) {
+                    if (!isRecordingActive) break
+                    Log.e(TAG, "AudioRecord.read() threw an exception; attempting controlled recovery", e)
+                    if (!recoverAudioRecord(record)) break
+                    consecutiveReadErrors = 0
+                    continue
+                }
+
                 if (bytesRead > 0) {
                     consecutiveReadErrors = 0
-                    if (!isMuted && !isAssistantSpeaking) {
-                        pcmProcessor.processRawFrame(readBuffer, bytesRead)
+                    // Keep forwarding microphone PCM during assistant playback so VAD and
+                    // Gemini Live can detect barge-in without reopening AudioRecord.
+                    if (!isMuted) {
+                        // Sleep mode keeps local wake-word detection, but never streams
+                        // microphone audio to the remote Live session.
+                        pcmProcessor.processRawFrame(
+                            readBuffer,
+                            bytesRead,
+                            deliverToSubscribers = !isSleeping
+                        )
                     }
+                } else if (bytesRead == 0) {
+                    // Avoid a tight CPU loop if a device returns an empty blocking read.
+                    delay(10)
                 } else if (bytesRead < 0) {
                     consecutiveReadErrors++
                     Log.e(TAG, "AudioRecord read error code: $bytesRead ($consecutiveReadErrors consecutive)")
@@ -365,6 +448,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             }
 
             val oldRecord = audioRecord
+            releaseAudioEffects()
             audioRecord = null
             try {
                 oldRecord?.let { record ->
@@ -377,12 +461,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
             Log.w(TAG, "Reinitializing AudioRecord after persistent capture failure...")
             if (initializeAudioRecord()) {
-                _engineState.value = when {
-                    isAssistantSpeaking -> State.TTS_PLAYBACK
-                    isMuted -> State.MUTED
-                    isSleeping -> State.SLEEPING
-                    else -> State.LISTENING
-                }
+                updateEngineState()
                 Log.i(TAG, "AudioRecord recovery succeeded; continuous capture resumed.")
                 true
             } else {
@@ -396,57 +475,59 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     }
 
     private fun handleCompletedUtterance(pcmData: ByteArray) {
+        if (isLiveConversation && !isSleeping) return
         engineScope.launch(Dispatchers.IO) {
-            if (_engineState.value == State.SPEECH_DETECTED || _engineState.value == State.LISTENING) {
-                _engineState.value = State.PROCESSING
-            }
+            if (isLiveConversation && !isSleeping) return@launch
+            // Keep transcripts and command callbacks in capture order.
+            utteranceMutex.withLock {
+                if (_engineState.value == State.SPEECH_DETECTED || _engineState.value == State.LISTENING) {
+                    _engineState.value = State.PROCESSING
+                }
 
-            try {
-                Log.d(TAG, "Transcribing captured utterance (${pcmData.size} bytes)...")
-                val kavyaAI = KavyaAI(appContext)
-                val transcript = kavyaAI.transcribeAudio(pcmData, SAMPLE_RATE)
-                val cleanText = transcript.trim()
+                try {
+                    Log.d(TAG, "Transcribing captured utterance (${pcmData.size} bytes)...")
+                    val kavyaAI = KavyaAI(appContext)
+                    val transcript = kavyaAI.transcribeAudio(pcmData, SAMPLE_RATE)
+                    val cleanText = transcript.trim()
 
-                if (cleanText.isNotBlank()) {
-                    Log.i(TAG, "Recognized utterance transcript: \"$cleanText\"")
-                    _lastTranscript.value = cleanText
+                    if (cleanText.isNotBlank()) {
+                        Log.i(TAG, "Recognized utterance transcript: \"$cleanText\"")
+                        _lastTranscript.value = cleanText
 
-                    val lowerText = cleanText.lowercase(Locale.ROOT)
-                    val isWake = wakeWords.any { lowerText.contains(it) }
-                    val isSleep = sleepWords.any { lowerText.contains(it) }
-                    val isStop = stopWords.any { lowerText.contains(it) }
+                        val lowerText = cleanText.lowercase(Locale.ROOT)
+                        val isWake = wakeWords.any { lowerText.contains(it) }
+                        val isSleep = sleepWords.any { lowerText.contains(it) }
+                        val isStop = stopWords.any { lowerText.contains(it) }
 
-                    if (isSleeping) {
-                        if (isWake) {
-                            Log.i(TAG, "Wake word detected in SLEEP mode. Waking up Kavya!")
-                            setSleeping(false)
-                            val remainingPrompt = stripKeywords(cleanText, wakeWords)
-                            if (remainingPrompt.isNotBlank()) {
-                                commandListener?.invoke(remainingPrompt)
+                        if (isSleeping) {
+                            if (isWake) {
+                                Log.i(TAG, "Wake word detected in SLEEP mode. Waking up Kavya!")
+                                setSleeping(false)
+                                val remainingPrompt = stripKeywords(cleanText, wakeWords)
+                                commandListener?.invoke(remainingPrompt.ifBlank { "hey kavya" })
                             } else {
-                                commandListener?.invoke("hey kavya")
+                                Log.d(TAG, "Ignored utterance in SLEEP mode: \"$cleanText\"")
                             }
                         } else {
-                            Log.d(TAG, "Ignored utterance in SLEEP mode: \"$cleanText\"")
-                        }
-                    } else {
-                        if (isSleep) {
-                            Log.i(TAG, "Sleep command detected. Putting Kavya to sleep.")
-                            setSleeping(true)
-                        } else if (isStop) {
-                            Log.i(TAG, "Stop command detected.")
-                            commandListener?.invoke("stop")
-                        } else {
-                            // Forward recognized command to pipeline / ViewModel
-                            commandListener?.invoke(cleanText)
+                            when {
+                                isSleep -> {
+                                    Log.i(TAG, "Sleep command detected. Putting Kavya to sleep.")
+                                    setSleeping(true)
+                                }
+                                isStop -> {
+                                    Log.i(TAG, "Stop command detected.")
+                                    commandListener?.invoke("stop")
+                                }
+                                else -> commandListener?.invoke(cleanText)
+                            }
                         }
                     }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error processing utterance transcript", e)
-            } finally {
-                if (isRecordingActive && !isAssistantSpeaking) {
-                    _engineState.value = if (isSleeping) State.SLEEPING else State.LISTENING
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing utterance transcript", e)
+                } finally {
+                    if (isRecordingActive) {
+                        updateEngineState()
+                    }
                 }
             }
         }

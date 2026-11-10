@@ -383,6 +383,20 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
     val ttsClient = remember { com.example.ai.ChatterboxTtsClient(context) }
 
     val activeEngineState = remember { mutableStateOf(voiceEngineManager.getActiveEngine()) }
+    var isPreviewing by remember { mutableStateOf(false) }
+    var previewError by remember { mutableStateOf<String?>(null) }
+    val previewingNow = androidx.compose.runtime.rememberUpdatedState(isPreviewing)
+
+    androidx.compose.runtime.DisposableEffect(voiceEngineManager) {
+        voiceEngineManager.onSpeechError = { message ->
+            previewError = message
+            android.widget.Toast.makeText(context, "Voice test failed: " + message, android.widget.Toast.LENGTH_LONG).show()
+        }
+        onDispose {
+            voiceEngineManager.onSpeechError = null
+            if (previewingNow.value) voiceEngineManager.stop()
+        }
+    }
 
     val indicStatus by indicModelManager.status.collectAsState()
     val indicProgress by indicModelManager.downloadProgress.collectAsState()
@@ -548,15 +562,28 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                         // Live Sample Voice Preview
                         Button(
                             onClick = {
-                                voiceEngineManager.previewEngine(activeEngineState.value)
+                                previewError = null
+                                isPreviewing = true
+                                voiceEngineManager.previewEngine(activeEngineState.value) {
+                                    isPreviewing = false
+                                }
                             },
+                            enabled = !isPreviewing,
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = Primary),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("🔊 Play Voice Sample (\"नमस्ते! मैं काव्या हूँ।\")")
+                            Text(if (isPreviewing) "Generating and playing sample..." else "🔊 Play Voice Sample (\"नमस्ते! मैं काव्या हूँ।\")")
+                        }
+                        if (previewError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                "Voice test failed: " + previewError,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Error
+                            )
                         }
                     }
                 }
@@ -690,7 +717,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                                 }
                                 com.example.ai.tts.ModelDownloadStatus.READY -> {
                                     Button(
-                                        onClick = { indicModelManager.verifyModel() },
+                                        onClick = { indicModelManager.verifyModelAsync() },
                                         modifier = Modifier.weight(1f),
                                         colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
                                     ) {
@@ -727,7 +754,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                                         Text("Download Model")
                                     }
                                     Button(
-                                        onClick = { indicModelManager.verifyModel() },
+                                        onClick = { indicModelManager.verifyModelAsync() },
                                         modifier = Modifier.weight(1f),
                                         colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
                                     ) {

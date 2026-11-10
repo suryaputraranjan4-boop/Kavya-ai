@@ -67,6 +67,10 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
     val currentChatId by viewModel.currentChatId.collectAsState()
     val isScreenSharing by viewModel.isScreenSharing.collectAsState()
     val voiceState by viewModel.voiceState.collectAsState()
+    val liveVoiceState by viewModel.liveVoiceState.collectAsState()
+    val liveInputTranscript by viewModel.liveInputTranscript.collectAsState()
+    val liveOutputTranscript by viewModel.liveOutputTranscript.collectAsState()
+    val liveVoiceError by viewModel.liveVoiceError.collectAsState()
 
     val context = LocalContext.current
     var showHistory by remember { mutableStateOf(false) }
@@ -89,6 +93,19 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
             cameraLauncher.launch(null)
         } else {
             Toast.makeText(context, "Camera permission required to capture photos", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) viewModel.startLiveConversation()
+        else Toast.makeText(context, "Microphone permission is required for Live Conversation.", Toast.LENGTH_LONG).show()
+    }
+
+    LaunchedEffect(liveVoiceError) {
+        if (!liveVoiceError.isNullOrBlank()) {
+            Toast.makeText(context, liveVoiceError, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -249,7 +266,13 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = if (isScreenSharing) "Screen Share Active" else "Ready",
+                                text = when (liveVoiceState) {
+                                    com.example.ai.LiveVoiceState.CONNECTING -> "Connecting to Kavya Live…"
+                                    com.example.ai.LiveVoiceState.LISTENING -> "Live • Listening"
+                                    com.example.ai.LiveVoiceState.SPEAKING -> "Live • Speaking"
+                                    com.example.ai.LiveVoiceState.ERROR -> "Live voice unavailable"
+                                    com.example.ai.LiveVoiceState.DISCONNECTED -> if (isScreenSharing) "Screen Share Active" else "Ready"
+                                },
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                                 color = if (isScreenSharing) SuccessGreenGlow else TextSecondary
                             )
@@ -306,13 +329,22 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                 onSend = { viewModel.sendMessage(it) },
                 onPlusClick = { showAttachmentPopup = !showAttachmentPopup },
                 onMicClick = {
-                    if (isMicListening) {
-                        viewModel.stopListening()
-                    } else {
-                        viewModel.startListening()
+                    when (liveVoiceState) {
+                        com.example.ai.LiveVoiceState.CONNECTING,
+                        com.example.ai.LiveVoiceState.LISTENING,
+                        com.example.ai.LiveVoiceState.SPEAKING -> viewModel.stopLiveConversation()
+                        else -> {
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                viewModel.startLiveConversation()
+                            } else {
+                                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
                     }
                 },
-                isMicListening = isMicListening,
+                isMicListening = liveVoiceState == com.example.ai.LiveVoiceState.CONNECTING ||
+                    liveVoiceState == com.example.ai.LiveVoiceState.LISTENING ||
+                    liveVoiceState == com.example.ai.LiveVoiceState.SPEAKING,
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 6.dp)
                     .navigationBarsPadding()
@@ -366,6 +398,26 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                         )
                     }
                 }
+            }
+
+            if (liveVoiceState == com.example.ai.LiveVoiceState.CONNECTING ||
+                liveVoiceState == com.example.ai.LiveVoiceState.LISTENING ||
+                liveVoiceState == com.example.ai.LiveVoiceState.SPEAKING
+            ) {
+                val liveCaption = when {
+                    liveInputTranscript.isNotBlank() -> "You: $liveInputTranscript"
+                    liveOutputTranscript.isNotBlank() -> "Kavya: $liveOutputTranscript"
+                    liveVoiceState == com.example.ai.LiveVoiceState.SPEAKING -> "Kavya is speaking…"
+                    else -> "Listening… You can interrupt Kavya anytime."
+                }
+                Text(
+                    text = liveCaption,
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 6.dp)
+                )
             }
 
             LazyColumn(

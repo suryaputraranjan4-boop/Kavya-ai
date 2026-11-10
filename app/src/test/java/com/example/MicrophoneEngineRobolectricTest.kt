@@ -5,6 +5,7 @@ import com.example.agent.MicrophoneEngine
 import com.example.agent.PcmFrameProcessor
 import com.example.agent.VoiceActivityDetector
 import com.example.ai.GeminiLiveClient
+import com.example.ai.LiveVoiceState
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -142,12 +143,12 @@ class MicrophoneEngineRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val client = GeminiLiveClient(context)
 
-        assertFalse("Client should start disconnected", client.connectionState.value)
+        assertEquals("Client should start disconnected", LiveVoiceState.DISCONNECTED, client.state.value)
 
         client.startLiveSession("test_api_key")
-        assertTrue("Client state should be active after start", client.connectionState.value)
+        assertEquals("Client should enter connecting state after start", LiveVoiceState.CONNECTING, client.state.value)
 
         client.stopLiveSession()
-        assertFalse("Client state should be inactive after stop", client.connectionState.value)
+        assertEquals("Client should return to disconnected after stop", LiveVoiceState.DISCONNECTED, client.state.value)
     }
 }

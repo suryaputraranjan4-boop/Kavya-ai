@@ -1,6 +1,10 @@
 package com.example.viewmodel
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 
 import android.app.Application
 import android.content.Context
@@ -52,8 +56,6 @@ import com.example.utils.InstalledApp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import java.util.UUID
 
 data class ChatMessage(
@@ -136,6 +138,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, KavyaAI(application))
+    val liveVoiceClient = com.example.ai.GeminiLiveClient(application)
+    val liveVoiceState = liveVoiceClient.state
+    val liveInputTranscript = liveVoiceClient.inputTranscript
+    val liveOutputTranscript = liveVoiceClient.outputTranscript
+    val liveVoiceError = liveVoiceClient.lastError
+    private var liveStartedMicService = false
+    private var autoSpeakBeforeLive: Boolean? = null
     private val database = AppDatabase.getDatabase(application)
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
@@ -236,6 +245,45 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        val sharedMicEngine = com.example.agent.MicrophoneEngine.getInstance(application)
+        sharedMicEngine.setBargeInListener {
+            if (liveVoiceClient.isActive()) liveVoiceClient.onLocalBargeIn()
+            bargeInController.onUserInterrupted()
+        }
+        liveVoiceClient.onUserTurnComplete = { appendLiveVoiceMessage(it, isUser = true) }
+        liveVoiceClient.onAssistantTurnComplete = { appendLiveVoiceMessage(it, isUser = false) }
+        liveVoiceClient.onAppCommand = { command -> executeLiveAgentCommand(command) }
+        liveVoiceClient.onError = { message ->
+            _latestKavyaCaption.value = message
+            if (liveStartedMicService) {
+                viewModelScope.launch { stopLiveConversation() }
+            }
+        }
+        viewModelScope.launch {
+            liveVoiceClient.state.collect { state ->
+                when (state) {
+                    com.example.ai.LiveVoiceState.SPEAKING -> {
+                        _voiceState.value = VoiceState.SPEAKING
+                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.SPEAKING)
+                    }
+                    com.example.ai.LiveVoiceState.LISTENING,
+                    com.example.ai.LiveVoiceState.CONNECTING -> {
+                        if (_voiceState.value == VoiceState.SPEAKING) {
+                            _voiceState.value = VoiceState.IDLE
+                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                        }
+                    }
+                    com.example.ai.LiveVoiceState.DISCONNECTED,
+                    com.example.ai.LiveVoiceState.ERROR -> {
+                        if (_voiceState.value == VoiceState.SPEAKING) {
+                            _voiceState.value = VoiceState.IDLE
+                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                        }
+                    }
+                }
+            }
+        }
+
         viewModelScope.launch {
             try {
                 schedulerEngine.executeDueSchedules { dueTask ->
@@ -323,11 +371,124 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         proactiveController.onKavyaSpeechStateChanged(state == VoiceState.SPEAKING)
     }
 
+    private suspend fun executeLiveAgentCommand(command: String): String {
+        val cleanCommand = command.trim().take(600)
+        if (cleanCommand.isBlank()) return "No Android action was provided."
+        if (_pendingConfirmation.value != null) {
+            return "An earlier action is awaiting the user's on-screen confirmation. Ask the user to confirm or cancel it before starting another action."
+        }
+        if (_isProcessing.value) {
+            val becameIdle = withTimeoutOrNull(45_000L) {
+                _isProcessing.first { processing -> !processing }
+            }
+            if (becameIdle == null) return "Another Kavya task is still running. Please wait and try again."
+        }
+
+        val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also {
+            _currentChatId.value = it
+            chatDao.insertChat(ChatEntity(id = it, title = "Live actions", timestamp = System.currentTimeMillis()))
+        }
+        val result = CompletableDeferred<String>()
+        val actionJob = Job(viewModelScope.coroutineContext[Job])
+        val actionScope = kotlinx.coroutines.CoroutineScope(viewModelScope.coroutineContext + actionJob)
+        try {
+            processAgentLoop(
+                chatId = chatId,
+                userMsgEntity = null,
+                prompt = cleanCommand,
+                recursionDepth = 0,
+                displayInChat = false,
+                onComplete = { response -> result.complete(response) },
+                executionScope = actionScope
+            )
+            val response = withTimeoutOrNull(120_000L) { result.await() }
+                ?: return "The Android action timed out. Do not assume it was completed."
+            val confirmation = _pendingConfirmation.value
+            return if (confirmation != null) {
+                "This action requires user confirmation on the screen: ${confirmation.description}. Do not claim it is complete until the user confirms and the app reports success."
+            } else {
+                response.ifBlank { "The app did not provide a confirmed completion result." }
+            }
+        } finally {
+            actionJob.cancel()
+        }
+    }
+
+    fun startLiveConversation() {
+        val app = getApplication<Application>()
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                app, android.Manifest.permission.RECORD_AUDIO
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            liveVoiceClient.reportError("Microphone permission is required for Live Conversation.")
+            return
+        }
+        if (_isOfflineMode.value || aiClient.isOfflineMode()) {
+            liveVoiceClient.reportError("Live conversation needs Online Mode.")
+            return
+        }
+        val apiKey = com.example.utils.AppPreferences.getEffectiveApiKey(app)
+        if (apiKey.isBlank()) {
+            liveVoiceClient.reportError("Gemini API key is missing. Add it in AI API Hub.")
+            return
+        }
+
+        if (autoSpeakBeforeLive == null) autoSpeakBeforeLive = _autoSpeak.value
+        _autoSpeak.value = false
+        voiceEngine.stop()
+
+        val mic = com.example.agent.MicrophoneEngine.getInstance(app)
+        mic.setSleeping(false)
+        liveStartedMicService = !mic.isRecording
+        if (liveStartedMicService) {
+            com.example.voice.KavyaMicrophoneEngine.startService(app)
+        }
+        val contextSnapshot = _messages.value
+            .filter { !it.isLoading && !it.isError }
+            .takeLast(12)
+            .joinToString("\n") { message ->
+                (if (message.isUser) "User: " else "Kavya: ") + message.text.take(900)
+            }
+        liveVoiceClient.startLiveSession(
+            apiKey = apiKey,
+            conversationContext = if (contextSnapshot.isBlank()) "" else
+                "Recent conversation context (continue this conversation; do not repeat it):\n$contextSnapshot"
+        )
+    }
+
+    fun stopLiveConversation() {
+        liveVoiceClient.stopLiveSession()
+        if (liveStartedMicService) {
+            com.example.voice.KavyaMicrophoneEngine.stopService(getApplication())
+        }
+        liveStartedMicService = false
+        autoSpeakBeforeLive?.let { _autoSpeak.value = it }
+        autoSpeakBeforeLive = null
+    }
+
+    private fun appendLiveVoiceMessage(text: String, isUser: Boolean) {
+        val clean = text.trim()
+        if (clean.isBlank()) return
+        val existingChatId = _currentChatId.value
+        val chatId = existingChatId ?: UUID.randomUUID().toString().also { _currentChatId.value = it }
+        val createChat = existingChatId == null
+        val messageId = UUID.randomUUID().toString()
+        _messages.value = _messages.value + ChatMessage(messageId, clean, isUser)
+        if (!isUser) _latestKavyaCaption.value = clean
+        viewModelScope.launch(Dispatchers.IO) {
+            if (createChat) {
+                chatDao.insertChat(ChatEntity(id = chatId, title = clean.take(36).ifBlank { "Live conversation" }, timestamp = System.currentTimeMillis()))
+            }
+            chatDao.insertMessage(MessageEntity(messageId, chatId, clean, isUser, System.currentTimeMillis()))
+        }
+    }
+
     fun startListening() {
         com.example.voice.KavyaMicrophoneEngine.startService(getApplication())
     }
 
     fun stopListening() {
+        if (liveVoiceClient.isActive() || liveStartedMicService) stopLiveConversation()
         com.example.voice.KavyaMicrophoneEngine.stopService(getApplication())
     }
 
@@ -528,6 +689,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startNewChat() {
+        stopLiveConversation()
         voiceEngine.stop()
         val newChatId = UUID.randomUUID().toString()
         _currentChatId.value = newChatId
@@ -606,6 +768,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadChat(chatId: String) {
+        stopLiveConversation()
         voiceEngine.stop()
         _currentChatId.value = chatId
         messagesJob?.cancel()
@@ -918,11 +1081,14 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         chatId: String, 
         userMsgEntity: MessageEntity?, 
         prompt: String,
-        recursionDepth: Int
+        recursionDepth: Int,
+        displayInChat: Boolean = true,
+        onComplete: ((String) -> Unit)? = null,
+        executionScope: kotlinx.coroutines.CoroutineScope = viewModelScope
     ) {
         val loadingMsgId = UUID.randomUUID().toString()
         val loadingMsg = ChatMessage(id = loadingMsgId, text = "...", isUser = false, isLoading = true)
-        _messages.value = _messages.value + loadingMsg
+        if (displayInChat) _messages.value = _messages.value + loadingMsg
         
         _isProcessing.value = true
         _voiceState.value = VoiceState.EXECUTING
@@ -930,7 +1096,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         com.example.state.KavyaStateManager.setGeminiState("PROCESSING")
         _latestKavyaCaption.value = null
 
-        viewModelScope.launch {
+        executionScope.launch {
             var cleanResponse = ""
             var shouldRecurse = false
             try {
@@ -986,6 +1152,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     voiceEngine.stop()
                     val app = getApplication<Application>()
                     com.example.utils.AppPreferences.setKavyaState(app, "SLEEP")
+                    com.example.agent.MicrophoneEngine.getInstance(app).setSleeping(true)
                     cleanResponse = "Good night, sir. Going to sleep. Say 'Wake Kavya' whenever you need me."
                     if (_autoSpeak.value) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
@@ -1751,28 +1918,30 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 val isErrorResponse = cleanResponse.startsWith("Unable to connect") || cleanResponse.startsWith("Gemini API Key is not configured")
                 com.example.state.KavyaStateManager.setGeminiState(if (isErrorResponse) "ERROR" else "SUCCESS")
                 
-                val modelMsgEntity = MessageEntity(
-                    id = loadingMsgId,
-                    chatId = chatId,
-                    text = cleanResponse,
-                    isUser = false,
-                    timestamp = System.currentTimeMillis()
-                )
-                chatDao.insertMessage(modelMsgEntity)
-                
-                _messages.value = _messages.value.map { 
-                    if (it.id == loadingMsgId) {
-                        it.copy(
-                            text = cleanResponse,
-                            isLoading = false,
-                            isError = isErrorResponse,
-                            actionType = aType,
-                            actionParam = aParam,
-                            isAmbiguous = isAmbiguous,
-                            candidateApps = candidateApps,
-                            diagnostic = launchDiagnostic
-                        )
-                    } else it 
+                if (displayInChat) {
+                    val modelMsgEntity = MessageEntity(
+                        id = loadingMsgId,
+                        chatId = chatId,
+                        text = cleanResponse,
+                        isUser = false,
+                        timestamp = System.currentTimeMillis()
+                    )
+                    chatDao.insertMessage(modelMsgEntity)
+
+                    _messages.value = _messages.value.map {
+                        if (it.id == loadingMsgId) {
+                            it.copy(
+                                text = cleanResponse,
+                                isLoading = false,
+                                isError = isErrorResponse,
+                                actionType = aType,
+                                actionParam = aParam,
+                                isAmbiguous = isAmbiguous,
+                                candidateApps = candidateApps,
+                                diagnostic = launchDiagnostic
+                            )
+                        } else it
+                    }
                 }
 
                 if (cleanResponse.isNotBlank()) {
@@ -1780,7 +1949,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 
                 if (shouldRecurse && recursionDepth < 5) {
-                    processAgentLoop(chatId, null, "Action executed successfully. Inspect the new screen and decide the next step.", recursionDepth + 1)
+                    processAgentLoop(
+                        chatId, null,
+                        "Action executed successfully. Inspect the new screen and decide the next step.",
+                        recursionDepth + 1, displayInChat, onComplete, executionScope
+                    )
                 }
                 
             } catch (cancelled: CancellationException) {
@@ -1788,8 +1961,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: Exception) {
                 val safeError = "अभी connection में थोड़ी problem आ रही है। कृपया थोड़ी देर में फिर try करें।"
                 Log.w(TAG, "Agent turn failed (${e.javaClass.simpleName}).")
-                _messages.value = _messages.value.map {
-                    if (it.id == loadingMsgId) it.copy(text = safeError, isLoading = false, isError = true) else it
+                cleanResponse = safeError
+                if (displayInChat) {
+                    _messages.value = _messages.value.map {
+                        if (it.id == loadingMsgId) it.copy(text = safeError, isLoading = false, isError = true) else it
+                    }
                 }
                 _latestKavyaCaption.value = safeError
                 com.example.state.KavyaStateManager.setGeminiState("ERROR")
@@ -1805,6 +1981,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     if (!next.isNullOrBlank()) {
                         viewModelScope.launch { sendMessage(next) }
                     }
+                    onComplete?.invoke(cleanResponse)
                 }
             }
         }
@@ -1907,8 +2084,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        super.onCleared()
+        stopLiveConversation()
+        liveVoiceClient.release()
+        com.example.agent.MicrophoneEngine.getInstance(getApplication()).setBargeInListener(null)
         voiceEngine.stop()
         proactiveController.shutdown()
+        super.onCleared()
     }
+
 }

@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -34,6 +35,11 @@ class PcmFrameProcessor(
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
+    private val subscriberFrames = Channel<ByteArray>(
+        capacity = 8,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
     // Subscribers for raw PCM audio frames (e.g., Gemini Live client)
     private val frameSubscribers = ConcurrentHashMap<String, (ByteArray) -> Unit>()
 
@@ -48,6 +54,19 @@ class PcmFrameProcessor(
         // Wire VAD callbacks
         vad.onSpeechEnd = { utterancePcm ->
             onUtteranceCompleted?.invoke(utterancePcm)
+        }
+
+        scope.launch(Dispatchers.IO) {
+            for (pcmData in subscriberFrames) {
+                val subscribersCopy = frameSubscribers.values.toList()
+                for (subscriber in subscribersCopy) {
+                    try {
+                        subscriber(pcmData)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Subscriber delivery exception", e)
+                    }
+                }
+            }
         }
     }
 
@@ -75,7 +94,7 @@ class PcmFrameProcessor(
      * Process a raw PCM audio frame captured directly from AudioRecord.
      * Called on the high-priority recording thread. Must execute efficiently.
      */
-    fun processRawFrame(frame: ByteArray, length: Int) {
+    fun processRawFrame(frame: ByteArray, length: Int, deliverToSubscribers: Boolean = true) {
         if (length <= 0) return
 
         val pcmData = frame.copyOf(length)
@@ -87,18 +106,9 @@ class PcmFrameProcessor(
         // 2. Feed VAD
         vad.processFrame(pcmData, length)
 
-        // 3. Deliver raw frame to subscribers asynchronously if any exist
-        if (frameSubscribers.isNotEmpty()) {
-            val subscribersCopy = frameSubscribers.values.toList()
-            scope.launch {
-                for (subscriber in subscribersCopy) {
-                    try {
-                        subscriber(pcmData)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Subscriber delivery exception", e)
-                    }
-                }
-            }
+        // 3. Deliver raw frames in capture order to the single subscriber worker.
+        if (deliverToSubscribers && frameSubscribers.isNotEmpty()) {
+            subscriberFrames.trySend(pcmData)
         }
     }
 

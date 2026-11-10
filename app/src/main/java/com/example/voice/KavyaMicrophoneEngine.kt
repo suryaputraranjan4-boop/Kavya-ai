@@ -1,9 +1,6 @@
 package com.example.voice
 
-import android.app.Service
 import android.content.Context
-import android.content.Intent
-import android.os.IBinder
 import com.example.agent.MicrophoneEngine
 import com.example.services.KavyaVoiceService
 import kotlinx.coroutines.CoroutineScope
@@ -15,12 +12,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Backward-compatibility wrapper bridging legacy call sites to the central
- * single-AudioRecord [MicrophoneEngine] and [KavyaVoiceService].
+ * Compatibility facade for existing UI/ViewModel call sites.
  *
- * Completely eliminates SpeechRecognizer recreation loops and Google-style microphone beeps.
+ * This is deliberately NOT an Android Service. KavyaVoiceService owns the
+ * foreground-service lifecycle, while MicrophoneEngine is the sole physical
+ * AudioRecord owner. This facade only mirrors state and forwards commands.
  */
-class KavyaMicrophoneEngine : Service() {
+class KavyaMicrophoneEngine private constructor(context: Context) {
 
     enum class EngineState {
         MIC_OFF,
@@ -42,62 +40,73 @@ class KavyaMicrophoneEngine : Service() {
         val amplitude: StateFlow<Float> = amplitudeFlow.asStateFlow()
 
         @Volatile private var instance: KavyaMicrophoneEngine? = null
+        @Volatile private var pendingListener: ((String) -> Unit)? = null
+        @Volatile private var pendingSpeakingState = false
 
-        fun setCommandListener(listener: (String) -> Unit) {
-            // Forward directly to MicrophoneEngine singleton
-            instance?.let {
-                MicrophoneEngine.getInstance(it).setCommandListener(listener)
-            } ?: run {
-                // If instance not bound yet, store listener for when created
-                pendingListener = listener
+        private fun ensureInitialized(context: Context): KavyaMicrophoneEngine {
+            return instance ?: synchronized(this) {
+                instance ?: KavyaMicrophoneEngine(context.applicationContext).also {
+                    instance = it
+                }
             }
         }
 
-        private var pendingListener: ((String) -> Unit)? = null
+        fun setCommandListener(listener: (String) -> Unit) {
+            pendingListener = listener
+            instance?.micEngine?.setCommandListener(listener)
+        }
 
         fun startService(context: Context) {
+            ensureInitialized(context)
             KavyaVoiceService.startService(context)
         }
 
         fun stopService(context: Context) {
+            ensureInitialized(context)
             KavyaVoiceService.stopService(context)
         }
 
         fun sleep(context: Context) {
+            ensureInitialized(context)
             KavyaVoiceService.sleep(context)
         }
 
         fun wake(context: Context) {
+            ensureInitialized(context)
             KavyaVoiceService.wake(context)
         }
 
         fun onKavyaSpeakingChanged(isSpeaking: Boolean) {
-            instance?.let {
-                MicrophoneEngine.getInstance(it).setAssistantSpeaking(isSpeaking)
-            }
+            pendingSpeakingState = isSpeaking
+            instance?.setSpeaking(isSpeaking)
         }
 
         fun getInstance(): KavyaMicrophoneEngine? = instance
     }
 
-    override fun onCreate() {
-        super.onCreate()
-        instance = this
+    private val micEngine = MicrophoneEngine.getInstance(context.applicationContext)
 
-        val mic = MicrophoneEngine.getInstance(this)
-        pendingListener?.let {
-            mic.setCommandListener(it)
-            pendingListener = null
-        }
+    init {
+        pendingListener?.let(micEngine::setCommandListener)
+        micEngine.setAssistantSpeaking(pendingSpeakingState)
 
-        // Map MicrophoneEngine State to legacy EngineState for UI components
+        // These collectors are started as soon as the facade is initialized,
+        // so UI state works even though the foreground service is separate.
         scope.launch {
-            mic.engineState.collect { state ->
+            micEngine.engineState.collect { state ->
                 stateFlow.value = when (state) {
-                    MicrophoneEngine.State.IDLE, MicrophoneEngine.State.STOPPING -> EngineState.MIC_OFF
+                    MicrophoneEngine.State.IDLE,
+                    MicrophoneEngine.State.STOPPING -> EngineState.MIC_OFF
+
                     MicrophoneEngine.State.STARTING -> EngineState.MIC_STARTING
-                    MicrophoneEngine.State.LISTENING, MicrophoneEngine.State.SPEECH_DETECTED,
-                    MicrophoneEngine.State.PROCESSING, MicrophoneEngine.State.TTS_PLAYBACK,
+
+                    MicrophoneEngine.State.LISTENING,
+                    MicrophoneEngine.State.SPEECH_DETECTED,
+                    MicrophoneEngine.State.PROCESSING,
+                    MicrophoneEngine.State.TTS_PLAYBACK -> {
+                        if (micEngine.isRecording) EngineState.MIC_ACTIVE else EngineState.MIC_OFF
+                    }
+
                     MicrophoneEngine.State.MUTED -> EngineState.MIC_ACTIVE
                     MicrophoneEngine.State.SLEEPING -> EngineState.MIC_SLEEPING
                     MicrophoneEngine.State.ERROR -> EngineState.MIC_ERROR
@@ -106,44 +115,31 @@ class KavyaMicrophoneEngine : Service() {
         }
 
         scope.launch {
-            mic.amplitude.collect { amp ->
-                amplitudeFlow.value = amp
+            micEngine.amplitude.collect { amplitude ->
+                amplitudeFlow.value = amplitude
             }
         }
 
         scope.launch {
-            mic.lastTranscript.collect { txt ->
-                partialFlow.value = txt
+            micEngine.lastTranscript.collect { transcript ->
+                partialFlow.value = transcript
             }
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Forward start command to new KavyaVoiceService
-        KavyaVoiceService.startService(this)
-        return START_STICKY
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        instance = null
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
     fun stopEngine() {
-        MicrophoneEngine.getInstance(this).stopListening()
+        micEngine.stopListening()
     }
 
     fun setSleeping() {
-        MicrophoneEngine.getInstance(this).setSleeping(true)
+        micEngine.setSleeping(true)
     }
 
     fun setAwake() {
-        MicrophoneEngine.getInstance(this).setSleeping(false)
+        micEngine.setSleeping(false)
     }
 
     fun setSpeaking(isSpeaking: Boolean) {
-        MicrophoneEngine.getInstance(this).setAssistantSpeaking(isSpeaking)
+        micEngine.setAssistantSpeaking(isSpeaking)
     }
 }

@@ -4,9 +4,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.Manifest
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -41,20 +43,27 @@ class KavyaVoiceService : Service() {
             val intent = Intent(context, KavyaVoiceService::class.java).apply {
                 action = ACTION_START
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Android rejected the microphone service start request.", e)
+                AppPreferences.setMicEnabled(context, false)
+                AppPreferences.setKavyaState(context, "OFF")
             }
         }
 
         fun stopService(context: Context) {
             AppPreferences.setMicEnabled(context, false)
             AppPreferences.setKavyaState(context, "OFF")
-            val intent = Intent(context, KavyaVoiceService::class.java).apply {
-                action = ACTION_STOP
-            }
-            context.startService(intent)
+
+            // Stop the singleton recorder directly, then stop the FGS. Starting
+            // a background service just to stop it is unreliable on modern Android.
+            MicrophoneEngine.getInstance(context).stopListening()
+            context.stopService(Intent(context, KavyaVoiceService::class.java))
         }
 
         fun sleep(context: Context) {
@@ -81,14 +90,45 @@ class KavyaVoiceService : Service() {
         val action = intent?.action ?: ACTION_START
         Log.d(TAG, "onStartCommand received action: $action")
 
-        val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        val micEngine = MicrophoneEngine.getInstance(this)
+
+        // Stop must remain possible even when the runtime microphone permission
+        // has been revoked. Do not promote a stop-only request to a mic FGS.
+        if (action == ACTION_STOP) {
+            micEngine.stopListening()
+            AppPreferences.setMicEnabled(this, false)
+            AppPreferences.setKavyaState(this, "OFF")
+            stopForeground(true)
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
 
-        val micEngine = MicrophoneEngine.getInstance(this)
+        // Android 14+ requires RECORD_AUDIO before a microphone foreground
+        // service can be promoted. Check before calling startForeground().
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "Microphone permission missing; refusing to start microphone foreground service.")
+            micEngine.stopListening()
+            AppPreferences.setMicEnabled(this, false)
+            AppPreferences.setKavyaState(this, "OFF")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
+        val notification = buildNotification()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Android rejected microphone foreground-service promotion.", e)
+            micEngine.stopListening()
+            AppPreferences.setMicEnabled(this, false)
+            AppPreferences.setKavyaState(this, "OFF")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
 
         when (action) {
             ACTION_START, ACTION_WAKE -> {
@@ -105,13 +145,12 @@ class KavyaVoiceService : Service() {
             ACTION_SLEEP -> {
                 micEngine.setSleeping(true)
             }
-            ACTION_STOP -> {
-                micEngine.stopListening()
-                stopSelf()
-            }
             ACTION_TOGGLE -> {
                 val currentState = micEngine.engineState.value
-                if (currentState == MicrophoneEngine.State.IDLE || currentState == MicrophoneEngine.State.STOPPING || currentState == MicrophoneEngine.State.ERROR) {
+                if (currentState == MicrophoneEngine.State.IDLE ||
+                    currentState == MicrophoneEngine.State.STOPPING ||
+                    currentState == MicrophoneEngine.State.ERROR
+                ) {
                     if (!micEngine.startListening()) {
                         Log.e(TAG, "Microphone toggle start failed; stopping foreground service.")
                         AppPreferences.setMicEnabled(this, false)
@@ -122,7 +161,11 @@ class KavyaVoiceService : Service() {
                     }
                 } else {
                     micEngine.stopListening()
-                    stopSelf()
+                    AppPreferences.setMicEnabled(this, false)
+                    AppPreferences.setKavyaState(this, "OFF")
+                    stopForeground(true)
+                    stopSelf(startId)
+                    return START_NOT_STICKY
                 }
             }
         }

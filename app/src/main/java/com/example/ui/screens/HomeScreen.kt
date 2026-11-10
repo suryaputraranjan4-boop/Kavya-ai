@@ -87,6 +87,18 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val canStart = accessibilityGranted && (permissionsToRequest.isEmpty() || permissionState.allPermissionsGranted)
     
     val voiceState by viewModel.voiceState.collectAsState()
+    val liveVoiceState by viewModel.liveVoiceState.collectAsState()
+    val liveVoiceError by viewModel.liveVoiceError.collectAsState()
+    val liveConversationActive = liveVoiceState == com.example.ai.LiveVoiceState.CONNECTING ||
+        liveVoiceState == com.example.ai.LiveVoiceState.LISTENING ||
+        liveVoiceState == com.example.ai.LiveVoiceState.SPEAKING
+    val orbVoiceState = when (liveVoiceState) {
+        com.example.ai.LiveVoiceState.CONNECTING,
+        com.example.ai.LiveVoiceState.LISTENING -> VoiceState.UNDERSTANDING
+        com.example.ai.LiveVoiceState.SPEAKING -> VoiceState.SPEAKING
+        com.example.ai.LiveVoiceState.ERROR -> VoiceState.ERROR
+        com.example.ai.LiveVoiceState.DISCONNECTED -> voiceState
+    }
     val emotionState by viewModel.emotionState.collectAsState()
     val globalState by com.example.state.KavyaStateManager.state.collectAsState()
     var showScreenShareSheet by remember { mutableStateOf(false) }
@@ -119,6 +131,19 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             cameraLauncher.launch(null)
         } else {
             Toast.makeText(context, "Camera permission required to capture photos", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) viewModel.startLiveConversation()
+        else Toast.makeText(context, "Microphone permission is required for Live Conversation.", Toast.LENGTH_LONG).show()
+    }
+
+    LaunchedEffect(liveVoiceError) {
+        if (!liveVoiceError.isNullOrBlank()) {
+            Toast.makeText(context, liveVoiceError, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -408,14 +433,14 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     )
                 }
                 KavyaVoiceOrb(
-                    state = voiceState,
+                    state = orbVoiceState,
                     onClick = {
-                        if (micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_OFF ||
-                            micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ERROR
-                        ) {
-                            com.example.voice.KavyaMicrophoneEngine.startService(context)
+                        if (liveConversationActive) {
+                            viewModel.stopLiveConversation()
+                        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            viewModel.startLiveConversation()
                         } else {
-                            com.example.voice.KavyaMicrophoneEngine.stopService(context)
+                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
                     },
                     baseSize = 72.dp,
@@ -426,6 +451,10 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 
                 // Dynamic, event-driven status text from current task and microphone state
                 val statusText: String? = when {
+                    liveVoiceState == com.example.ai.LiveVoiceState.CONNECTING -> "Connecting to Kavya Live…"
+                    liveVoiceState == com.example.ai.LiveVoiceState.LISTENING -> "Listening • You can interrupt anytime"
+                    liveVoiceState == com.example.ai.LiveVoiceState.SPEAKING -> "Kavya is speaking • Interrupt anytime"
+                    liveVoiceState == com.example.ai.LiveVoiceState.ERROR -> "Live voice unavailable"
                     agentActionStatus != null -> agentActionStatus
                     globalState.taskState == com.example.state.TaskState.OPENING_APP -> globalState.taskStateDetail ?: "App open ho raha hai..."
                     globalState.taskState == com.example.state.TaskState.LOOKING_AT_SCREEN -> "Screen scan kar rahi hoon..."
@@ -530,19 +559,15 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     showAttachmentPopup = !showAttachmentPopup
                 },
                 onMicClick = {
-                    if (
-                        micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_OFF ||
-                        micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ERROR
-                    ) {
-                        viewModel.startListening()
+                    if (liveConversationActive) {
+                        viewModel.stopLiveConversation()
+                    } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        viewModel.startLiveConversation()
                     } else {
-                        viewModel.stopListening()
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 },
-                isMicListening =
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ACTIVE ||
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_SLEEPING ||
-                    micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_STARTING,
+                isMicListening = liveConversationActive,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)
