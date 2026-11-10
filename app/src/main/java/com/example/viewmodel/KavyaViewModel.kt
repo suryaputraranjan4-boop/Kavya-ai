@@ -1,6 +1,9 @@
 package com.example.viewmodel
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 
 import android.app.Application
 import android.content.Context
@@ -250,6 +253,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
         liveVoiceClient.onUserTurnComplete = { appendLiveVoiceMessage(it, isUser = true) }
         liveVoiceClient.onAssistantTurnComplete = { appendLiveVoiceMessage(it, isUser = false) }
+        liveVoiceClient.onAppCommand = { command -> executeLiveAgentCommand(command) }
         liveVoiceClient.onError = { message ->
             _latestKavyaCaption.value = message
             if (liveStartedMicService) {
@@ -366,6 +370,42 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         _voiceState.value = state
         com.example.state.KavyaStateManager.updateVoiceState(state)
         proactiveController.onKavyaSpeechStateChanged(state == VoiceState.SPEAKING)
+    }
+
+    private suspend fun executeLiveAgentCommand(command: String): String {
+        val cleanCommand = command.trim().take(600)
+        if (cleanCommand.isBlank()) return "No Android action was provided."
+        if (_pendingConfirmation.value != null) {
+            return "An earlier action is awaiting the user's on-screen confirmation. Ask the user to confirm or cancel it before starting another action."
+        }
+        if (_isProcessing.value) {
+            val becameIdle = withTimeoutOrNull(45_000L) {
+                _isProcessing.first { processing -> !processing }
+            }
+            if (becameIdle == null) return "Another Kavya task is still running. Please wait and try again."
+        }
+
+        val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also {
+            _currentChatId.value = it
+            chatDao.insertChat(ChatEntity(id = it, title = "Live actions", timestamp = System.currentTimeMillis()))
+        }
+        val result = CompletableDeferred<String>()
+        processAgentLoop(
+            chatId = chatId,
+            userMsgEntity = null,
+            prompt = cleanCommand,
+            recursionDepth = 0,
+            displayInChat = false,
+            onComplete = { response -> result.complete(response) }
+        )
+        val response = withTimeoutOrNull(120_000L) { result.await() }
+            ?: return "The Android action timed out. Do not assume it was completed."
+        val confirmation = _pendingConfirmation.value
+        return if (confirmation != null) {
+            "This action requires user confirmation on the screen: ${confirmation.description}. Do not claim it is complete until the user confirms and the app reports success."
+        } else {
+            response.ifBlank { "The app did not provide a confirmed completion result." }
+        }
     }
 
     fun startLiveConversation() {
@@ -1026,11 +1066,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         chatId: String, 
         userMsgEntity: MessageEntity?, 
         prompt: String,
-        recursionDepth: Int
+        recursionDepth: Int,
+        displayInChat: Boolean = true,
+        onComplete: ((String) -> Unit)? = null
     ) {
         val loadingMsgId = UUID.randomUUID().toString()
         val loadingMsg = ChatMessage(id = loadingMsgId, text = "...", isUser = false, isLoading = true)
-        _messages.value = _messages.value + loadingMsg
+        if (displayInChat) _messages.value = _messages.value + loadingMsg
         
         _isProcessing.value = true
         _voiceState.value = VoiceState.EXECUTING
@@ -1859,28 +1901,30 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 val isErrorResponse = cleanResponse.startsWith("Unable to connect") || cleanResponse.startsWith("Gemini API Key is not configured")
                 com.example.state.KavyaStateManager.setGeminiState(if (isErrorResponse) "ERROR" else "SUCCESS")
                 
-                val modelMsgEntity = MessageEntity(
-                    id = loadingMsgId,
-                    chatId = chatId,
-                    text = cleanResponse,
-                    isUser = false,
-                    timestamp = System.currentTimeMillis()
-                )
-                chatDao.insertMessage(modelMsgEntity)
-                
-                _messages.value = _messages.value.map { 
-                    if (it.id == loadingMsgId) {
-                        it.copy(
-                            text = cleanResponse,
-                            isLoading = false,
-                            isError = isErrorResponse,
-                            actionType = aType,
-                            actionParam = aParam,
-                            isAmbiguous = isAmbiguous,
-                            candidateApps = candidateApps,
-                            diagnostic = launchDiagnostic
-                        )
-                    } else it 
+                if (displayInChat) {
+                    val modelMsgEntity = MessageEntity(
+                        id = loadingMsgId,
+                        chatId = chatId,
+                        text = cleanResponse,
+                        isUser = false,
+                        timestamp = System.currentTimeMillis()
+                    )
+                    chatDao.insertMessage(modelMsgEntity)
+
+                    _messages.value = _messages.value.map {
+                        if (it.id == loadingMsgId) {
+                            it.copy(
+                                text = cleanResponse,
+                                isLoading = false,
+                                isError = isErrorResponse,
+                                actionType = aType,
+                                actionParam = aParam,
+                                isAmbiguous = isAmbiguous,
+                                candidateApps = candidateApps,
+                                diagnostic = launchDiagnostic
+                            )
+                        } else it
+                    }
                 }
 
                 if (cleanResponse.isNotBlank()) {
@@ -1888,7 +1932,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 
                 if (shouldRecurse && recursionDepth < 5) {
-                    processAgentLoop(chatId, null, "Action executed successfully. Inspect the new screen and decide the next step.", recursionDepth + 1)
+                    processAgentLoop(
+                        chatId, null,
+                        "Action executed successfully. Inspect the new screen and decide the next step.",
+                        recursionDepth + 1, displayInChat, onComplete
+                    )
                 }
                 
             } catch (cancelled: CancellationException) {
@@ -1896,8 +1944,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: Exception) {
                 val safeError = "अभी connection में थोड़ी problem आ रही है। कृपया थोड़ी देर में फिर try करें।"
                 Log.w(TAG, "Agent turn failed (${e.javaClass.simpleName}).")
-                _messages.value = _messages.value.map {
-                    if (it.id == loadingMsgId) it.copy(text = safeError, isLoading = false, isError = true) else it
+                cleanResponse = safeError
+                if (displayInChat) {
+                    _messages.value = _messages.value.map {
+                        if (it.id == loadingMsgId) it.copy(text = safeError, isLoading = false, isError = true) else it
+                    }
                 }
                 _latestKavyaCaption.value = safeError
                 com.example.state.KavyaStateManager.setGeminiState("ERROR")
@@ -1913,6 +1964,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     if (!next.isNullOrBlank()) {
                         viewModelScope.launch { sendMessage(next) }
                     }
+                    onComplete?.invoke(cleanResponse)
                 }
             }
         }
