@@ -59,10 +59,11 @@ class KavyaVoiceService : Service() {
         fun stopService(context: Context) {
             AppPreferences.setMicEnabled(context, false)
             AppPreferences.setKavyaState(context, "OFF")
-            val intent = Intent(context, KavyaVoiceService::class.java).apply {
-                action = ACTION_STOP
-            }
-            context.startService(intent)
+
+            // Stop the singleton recorder directly, then stop the FGS. Starting
+            // a background service just to stop it is unreliable on modern Android.
+            MicrophoneEngine.getInstance(context).stopListening()
+            context.stopService(Intent(context, KavyaVoiceService::class.java))
         }
 
         fun sleep(context: Context) {
