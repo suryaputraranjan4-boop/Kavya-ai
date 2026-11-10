@@ -387,13 +387,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         val contextSnapshot = _messages.value
             .filter { !it.isLoading && !it.isError }
             .takeLast(12)
-            .joinToString("\\n") { message ->
+            .joinToString("\n") { message ->
                 (if (message.isUser) "User: " else "Kavya: ") + message.text.take(900)
             }
         liveVoiceClient.startLiveSession(
             apiKey = apiKey,
             conversationContext = if (contextSnapshot.isBlank()) "" else
-                "Recent conversation context (continue this conversation; do not repeat it):\\n$contextSnapshot"
+                "Recent conversation context (continue this conversation; do not repeat it):\n$contextSnapshot"
         )
     }
 
@@ -2008,13 +2008,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        super.onCleared()
-        voiceEngine.stop()
-        proactiveController.shutdown()
-    }
-    override fun onCleared() {
         stopLiveConversation()
         com.example.agent.MicrophoneEngine.getInstance(getApplication()).setBargeInListener(null)
+        voiceEngine.stop()
+        proactiveController.shutdown()
         super.onCleared()
     }
 
