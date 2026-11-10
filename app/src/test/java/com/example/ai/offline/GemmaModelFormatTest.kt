@@ -104,6 +104,20 @@ class GemmaModelFormatTest {
         assertTrue(info.validationMessage.contains("LiteRT-LM"))
     }
 
+
+    @Test
+    fun testLitertLmExtensionWithoutFlatBufferSignatureIsRejected() {
+        val malformedFile = tempFolder.newFile("not-a-model.litertlm")
+        FileOutputStream(malformedFile).use { fos ->
+            fos.write(ByteArray(2 * 1024 * 1024) { 0x2A })
+        }
+
+        val info = GemmaModelManager.inspectModel(malformedFile)
+        assertFalse("A filename extension alone must not make an invalid model loadable", info.isSupported)
+        assertEquals(GemmaModelFormat.UNKNOWN, info.format)
+        assertTrue(info.validationMessage.contains("TFL3"))
+    }
+
     @Test
     fun testUnknownBinaryHeaderRejected() {
         val unknownFile = tempFolder.newFile("unknown.bin")

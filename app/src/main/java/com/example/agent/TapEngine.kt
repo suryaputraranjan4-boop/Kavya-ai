@@ -182,16 +182,15 @@ object TapEngine {
                     bounds = sendBtn.bounds,
                     diagnostic = "Send button clicked and message dispatch confirmed"
                 )
-            } else if (attempt < MAX_RETRIES) {
-                delay(400)
-                continue
             } else {
+                // The click was already dispatched. Never retry a non-idempotent Send action:
+                // a delayed UI update must not cause a duplicate message.
                 return TapResult(
-                    success = false,
+                    success = true,
                     targetLabel = "Send",
                     verified = false,
                     bounds = sendBtn.bounds,
-                    diagnostic = "Send button clicked but message composer text remained uncleared"
+                    diagnostic = "Send click was dispatched, but the resulting screen state could not be verified; no retry was made to prevent duplicate sending"
                 )
             }
         }
@@ -215,13 +214,28 @@ object TapEngine {
         }
 
         val clicked = performNodeClick(service, firstItem)
+        if (!clicked) {
+            return TapResult(false, firstItem.primaryLabel, false, firstItem.bounds, "Failed to dispatch click on first result")
+        }
+
+        // Dispatch acknowledgement is not the same as a verified navigation/state change.
         delay(600)
+        val postRoot = service.rootInActiveWindow
+        val postSnapshot = ScreenUnderstanding.capture(postRoot, currentPackage)
+        val changed = postSnapshot.visibleTexts != snapshot.visibleTexts ||
+            postSnapshot.allElements.size != snapshot.allElements.size ||
+            postSnapshot.foregroundPackage != snapshot.foregroundPackage
+
         return TapResult(
-            success = clicked,
+            success = true,
             targetLabel = firstItem.primaryLabel,
-            verified = clicked,
+            verified = changed,
             bounds = firstItem.bounds,
-            diagnostic = if (clicked) "Selected first result: '${firstItem.primaryLabel}'" else "Failed to click first result"
+            diagnostic = if (changed) {
+                "Selected first result and verified a screen-state change"
+            } else {
+                "Click was dispatched, but no screen-state change was observed; no retry was made"
+            }
         )
     }
 

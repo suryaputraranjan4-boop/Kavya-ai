@@ -20,7 +20,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DurableTaskStepEntity::class,
         ScheduledTaskEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -63,6 +63,142 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+
+        /**
+         * Rebuild legacy memory tables to match the current Room entities.
+         *
+         * Earlier app versions created memories(id TEXT, content, category, timestamp)
+         * and automation_failures with obsolete column names. This migration preserves
+         * the usable legacy fields instead of dropping user data.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                migrateMemoriesTable(db)
+                migrateAutomationFailuresTable(db)
+            }
+        }
+
+        private fun tableColumns(db: SupportSQLiteDatabase, tableName: String): Set<String> {
+            return db.query("PRAGMA table_info(`$tableName`)").use { cursor ->
+                val nameIndex = cursor.getColumnIndex("name")
+                buildSet {
+                    if (nameIndex >= 0) {
+                        while (cursor.moveToNext()) add(cursor.getString(nameIndex))
+                    }
+                }
+            }
+        }
+
+        private fun migrateMemoriesTable(db: SupportSQLiteDatabase) {
+            val existing = tableColumns(db, "memories")
+            val required = setOf(
+                "id", "key", "content", "category", "importance", "createdAt",
+                "lastUsedAt", "sourceConversation", "confidence", "userConfirmed"
+            )
+            if (existing.containsAll(required)) return
+
+            db.execSQL("DROP TABLE IF EXISTS memories_new")
+            db.execSQL(
+                "CREATE TABLE memories_new (" +
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "`key` TEXT NOT NULL, content TEXT NOT NULL, category TEXT NOT NULL, " +
+                    "importance INTEGER NOT NULL, createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL, " +
+                    "sourceConversation TEXT NOT NULL, confidence REAL NOT NULL, userConfirmed INTEGER NOT NULL)"
+            )
+
+            if (existing.isNotEmpty()) {
+                val keyExpr = when {
+                    "key" in existing -> "COALESCE(NULLIF(`key`, ''), 'Legacy memory')"
+                    "id" in existing -> "COALESCE(NULLIF(CAST(id AS TEXT), ''), 'Legacy memory')"
+                    else -> "'Legacy memory'"
+                }
+                val createdExpr = when {
+                    "createdAt" in existing -> "COALESCE(createdAt, 0)"
+                    "timestamp" in existing -> "COALESCE(timestamp, 0)"
+                    else -> "0"
+                }
+                val lastUsedExpr = if ("lastUsedAt" in existing) "COALESCE(lastUsedAt, 0)" else createdExpr
+                val contentExpr = if ("content" in existing) "COALESCE(content, '')" else "''"
+                val categoryExpr = if ("category" in existing) "COALESCE(category, 'PREFERENCE')" else "'PREFERENCE'"
+                val importanceExpr = if ("importance" in existing) "COALESCE(importance, 3)" else "3"
+                val sourceExpr = if ("sourceConversation" in existing) "COALESCE(sourceConversation, '')" else "''"
+                val confidenceExpr = if ("confidence" in existing) "COALESCE(confidence, 1.0)" else "1.0"
+                val confirmedExpr = if ("userConfirmed" in existing) "COALESCE(userConfirmed, 1)" else "1"
+
+                db.execSQL(
+                    "INSERT INTO memories_new (`key`, content, category, importance, createdAt, lastUsedAt, " +
+                        "sourceConversation, confidence, userConfirmed) " +
+                        "SELECT $keyExpr, $contentExpr, $categoryExpr, $importanceExpr, $createdExpr, " +
+                        "$lastUsedExpr, $sourceExpr, $confidenceExpr, $confirmedExpr FROM memories"
+                )
+                db.execSQL("DROP TABLE memories")
+            }
+            db.execSQL("ALTER TABLE memories_new RENAME TO memories")
+        }
+
+        private fun migrateAutomationFailuresTable(db: SupportSQLiteDatabase) {
+            val existing = tableColumns(db, "automation_failures")
+            val required = setOf(
+                "id", "targetApp", "targetAction", "failureType", "screenSummary",
+                "successfulAlternative", "timestamp"
+            )
+            if (existing.containsAll(required)) return
+
+            db.execSQL("DROP TABLE IF EXISTS automation_failures_new")
+            db.execSQL(
+                "CREATE TABLE automation_failures_new (" +
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "targetApp TEXT NOT NULL, targetAction TEXT NOT NULL, failureType TEXT NOT NULL, " +
+                    "screenSummary TEXT NOT NULL, successfulAlternative TEXT, timestamp INTEGER NOT NULL)"
+            )
+
+            if (existing.isNotEmpty()) {
+                val appExpr = when {
+                    "targetApp" in existing -> "COALESCE(targetApp, '')"
+                    "appPackage" in existing -> "COALESCE(appPackage, '')"
+                    else -> "''"
+                }
+                val actionExpr = when {
+                    "targetAction" in existing -> "COALESCE(targetAction, 'Unknown action')"
+                    "targetText" in existing -> "COALESCE(targetText, 'Unknown action')"
+                    "actionType" in existing -> "COALESCE(actionType, 'Unknown action')"
+                    else -> "'Unknown action'"
+                }
+                val failureExpr = when {
+                    "failureType" in existing -> "COALESCE(failureType, 'LEGACY')"
+                    "actionType" in existing && "failureReason" in existing ->
+                        "CASE WHEN COALESCE(actionType, '') <> '' AND COALESCE(failureReason, '') <> '' " +
+                            "THEN actionType || ': ' || failureReason " +
+                            "WHEN COALESCE(failureReason, '') <> '' THEN failureReason " +
+                            "WHEN COALESCE(actionType, '') <> '' THEN actionType ELSE 'LEGACY' END"
+                    "failureReason" in existing -> "COALESCE(failureReason, 'LEGACY')"
+                    "actionType" in existing -> "COALESCE(actionType, 'LEGACY')"
+                    else -> "'LEGACY'"
+                }
+                val screenExpr = when {
+                    "screenSummary" in existing -> "COALESCE(screenSummary, '')"
+                    "screenStateDump" in existing -> "COALESCE(screenStateDump, '')"
+                    else -> "''"
+                }
+                val alternativeExpr = when {
+                    "successfulAlternative" in existing -> "successfulAlternative"
+                    "resolved" in existing ->
+                        "CASE WHEN COALESCE(resolved, 0) <> 0 THEN 'Legacy record marked as resolved' ELSE NULL END"
+                    else -> "NULL"
+                }
+                val timestampExpr = if ("timestamp" in existing) "COALESCE(timestamp, 0)" else "0"
+
+                db.execSQL(
+                    "INSERT INTO automation_failures_new " +
+                        "(targetApp, targetAction, failureType, screenSummary, successfulAlternative, timestamp) " +
+                        "SELECT $appExpr, $actionExpr, $failureExpr, $screenExpr, $alternativeExpr, $timestampExpr " +
+                        "FROM automation_failures"
+                )
+                db.execSQL("DROP TABLE automation_failures")
+            }
+            db.execSQL("ALTER TABLE automation_failures_new RENAME TO automation_failures")
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -70,7 +206,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "kavya_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance
