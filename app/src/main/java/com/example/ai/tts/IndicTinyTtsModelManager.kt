@@ -43,11 +43,11 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
         private const val MODEL_DIR_NAME = "models/indic_tiny_tts_hindi"
 
         val MODEL_SPECS = listOf(
-            TtsModelFileSpec("text_encoder", "text_encoder.onnx", "onnx/text_encoder.onnx", 8_500_000L),
-            TtsModelFileSpec("flow_decoder", "flow_decoder.onnx", "onnx/flow_decoder.onnx", 11_800_000L),
-            TtsModelFileSpec("vocoder", "vocoder.onnx", "onnx/vocoder.onnx", 4_900_000L),
-            TtsModelFileSpec("config", "config.json", "config.json", 12_000L),
-            TtsModelFileSpec("vocab", "vocab.json", "vocab.json", 5_000L)
+            TtsModelFileSpec("text_encoder", "onnx/text_encoder.onnx", "onnx/text_encoder.onnx", 8_500_000L),
+            TtsModelFileSpec("flow_decoder", "onnx/flow_decoder.onnx", "onnx/flow_decoder.onnx", 11_800_000L),
+            TtsModelFileSpec("vocoder", "onnx/vocoder.onnx", "onnx/vocoder.onnx", 4_900_000L),
+            TtsModelFileSpec("onnx_manifest", "onnx/onnx_manifest.json", "onnx/onnx_manifest.json", 4_000L),
+            TtsModelFileSpec("config", "config.json", "config.json", 12_000L)
         )
 
         @Volatile
@@ -155,11 +155,9 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                     val sizeMb = getInstalledSizeBytes() / (1024.0 * 1024.0)
                     _progressText.value = "Indic Tiny TTS Hindi Ready (%.1f MB)".format(sizeMb)
                 } else {
-                    // Fallback to local high-performance synthesizer weights if remote network blocked
-                    createDefaultModelResources(modelDir)
-                    _status.value = ModelDownloadStatus.READY
-                    _downloadProgress.value = 1.0f
-                    _progressText.value = "Indic Tiny TTS Hindi Ready (Offline Mode)"
+                    _status.value = ModelDownloadStatus.ERROR
+                    _downloadProgress.value = 0.0f
+                    _progressText.value = "Download incomplete. Missing or invalid official model files; retry download."
                 }
 
             } catch (e: Exception) {
@@ -221,7 +219,13 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
 
             val body = response.body ?: return@withContext false
             val inputStream: InputStream = body.byteStream()
-            val outputStream = FileOutputStream(targetFile)
+            targetFile.parentFile?.let { parent ->
+                if (!parent.exists() && !parent.mkdirs()) {
+                    throw IllegalStateException("Cannot create model directory")
+                }
+            }
+            val partialFile = File(targetFile.parentFile, targetFile.name + ".part")
+            val outputStream = FileOutputStream(partialFile)
 
             val buffer = ByteArray(8192)
             var bytesRead: Int
@@ -238,6 +242,18 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
             outputStream.flush()
             outputStream.close()
             inputStream.close()
+            if (partialFile.length() <= 0L) {
+                partialFile.delete()
+                return@withContext false
+            }
+            if (targetFile.exists() && !targetFile.delete()) {
+                partialFile.delete()
+                return@withContext false
+            }
+            if (!partialFile.renameTo(targetFile)) {
+                partialFile.delete()
+                return@withContext false
+            }
             true
         } catch (e: Exception) {
             Log.w(TAG, "Failed downloading file from $url: ${e.message}")
@@ -245,16 +261,4 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
         }
     }
 
-    private fun createDefaultModelResources(dir: File) {
-        for (spec in MODEL_SPECS) {
-            val f = File(dir, spec.fileName)
-            if (!f.exists()) {
-                try {
-                    f.writeText("{\"model\": \"indic_tiny_tts_hindi\", \"status\": \"ready\"}")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not write resource stub for ${spec.fileName}")
-                }
-            }
-        }
-    }
 }
