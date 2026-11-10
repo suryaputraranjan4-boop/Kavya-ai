@@ -10,6 +10,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.LinkedList
 import java.util.Queue
+import java.util.concurrent.CopyOnWriteArrayList
 
 data class QueuedAudio(
     val audioBytes: ByteArray,
@@ -28,7 +29,9 @@ class GeminiAudioPlayer(
 
     private var mediaPlayer: MediaPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var isPlaying = false
+    @Volatile private var isPlaying = false
+    private val speakingStateListeners = CopyOnWriteArrayList<(Boolean) -> Unit>()
+    private val captionListeners = CopyOnWriteArrayList<(String) -> Unit>()
     
     private val audioQueue: Queue<QueuedAudio> = LinkedList()
     private var isProcessingQueue = false
@@ -37,18 +40,51 @@ class GeminiAudioPlayer(
 
     fun isSpeaking(): Boolean = isPlaying
 
+    fun addSpeakingStateListener(listener: (Boolean) -> Unit) {
+        speakingStateListeners.addIfAbsent(listener)
+    }
+
+    fun removeSpeakingStateListener(listener: (Boolean) -> Unit) {
+        speakingStateListeners.remove(listener)
+    }
+
+    fun addCaptionListener(listener: (String) -> Unit) {
+        captionListeners.addIfAbsent(listener)
+    }
+
+    fun removeCaptionListener(listener: (String) -> Unit) {
+        captionListeners.remove(listener)
+    }
+
+    private fun dispatchSpeakingState(speaking: Boolean) {
+        onSpeakingStateChanged?.invoke(speaking)
+        speakingStateListeners.forEach { listener ->
+            try { listener(speaking) } catch (e: Exception) {
+                Log.w(TAG, "Speaking-state listener failed: " + e.message)
+            }
+        }
+    }
+
+    private fun dispatchCaption(caption: String) {
+        if (caption.isBlank()) return
+        onAudioChunkStarted?.invoke(caption)
+        captionListeners.forEach { listener ->
+            try { listener(caption) } catch (e: Exception) {
+                Log.w(TAG, "Caption listener failed: " + e.message)
+            }
+        }
+    }
+
     fun notifySpeaking(speaking: Boolean) {
         mainHandler.post {
             this.isPlaying = speaking
-            onSpeakingStateChanged?.invoke(speaking)
+            dispatchSpeakingState(speaking)
         }
     }
 
     fun notifyCaption(caption: String) {
         mainHandler.post {
-            if (caption.isNotBlank()) {
-                onAudioChunkStarted?.invoke(caption)
-            }
+            dispatchCaption(caption)
         }
     }
 
@@ -189,11 +225,11 @@ class GeminiAudioPlayer(
                         mainHandler.post {
                             if (!this@GeminiAudioPlayer.isPlaying) {
                                 this@GeminiAudioPlayer.isPlaying = true
-                                onSpeakingStateChanged?.invoke(true)
+                                dispatchSpeakingState(true)
                             }
                             queuedItem.text?.let { chunkText ->
                                 if (chunkText.isNotBlank()) {
-                                    onAudioChunkStarted?.invoke(chunkText)
+                                    dispatchCaption(chunkText)
                                 }
                             }
                         }
@@ -270,7 +306,7 @@ class GeminiAudioPlayer(
             if (isPlaying && audioQueue.isEmpty()) {
                 isPlaying = false
                 mainHandler.post { 
-                    onSpeakingStateChanged?.invoke(false) 
+                    dispatchSpeakingState(false) 
                     onComplete?.invoke()
                 }
             } else {
