@@ -136,6 +136,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     val voiceEngine = com.example.ai.KavyaVoiceEngine(application, geminiPlayer, KavyaAI(application))
+    val liveVoiceClient = com.example.ai.GeminiLiveClient(application)
+    val liveVoiceState = liveVoiceClient.state
+    val liveInputTranscript = liveVoiceClient.inputTranscript
+    val liveOutputTranscript = liveVoiceClient.outputTranscript
+    val liveVoiceError = liveVoiceClient.lastError
+    private var liveStartedMicService = false
     private val database = AppDatabase.getDatabase(application)
     private val chatDao = database.chatDao()
     val memoryDao = database.memoryDao()
@@ -236,6 +242,44 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        val sharedMicEngine = com.example.agent.MicrophoneEngine.getInstance(application)
+        sharedMicEngine.setBargeInListener {
+            if (liveVoiceClient.isActive()) liveVoiceClient.onLocalBargeIn()
+            bargeInController.onUserInterrupted()
+        }
+        liveVoiceClient.onUserTurnComplete = { appendLiveVoiceMessage(it, isUser = true) }
+        liveVoiceClient.onAssistantTurnComplete = { appendLiveVoiceMessage(it, isUser = false) }
+        liveVoiceClient.onError = { message ->
+            _latestKavyaCaption.value = message
+            if (liveStartedMicService) {
+                viewModelScope.launch { stopLiveConversation() }
+            }
+        }
+        viewModelScope.launch {
+            liveVoiceClient.state.collect { state ->
+                when (state) {
+                    com.example.ai.LiveVoiceState.SPEAKING -> {
+                        _voiceState.value = VoiceState.SPEAKING
+                        com.example.state.KavyaStateManager.updateVoiceState(VoiceState.SPEAKING)
+                    }
+                    com.example.ai.LiveVoiceState.LISTENING,
+                    com.example.ai.LiveVoiceState.CONNECTING -> {
+                        if (_voiceState.value == VoiceState.SPEAKING) {
+                            _voiceState.value = VoiceState.IDLE
+                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                        }
+                    }
+                    com.example.ai.LiveVoiceState.DISCONNECTED,
+                    com.example.ai.LiveVoiceState.ERROR -> {
+                        if (_voiceState.value == VoiceState.SPEAKING) {
+                            _voiceState.value = VoiceState.IDLE
+                            com.example.state.KavyaStateManager.updateVoiceState(VoiceState.IDLE)
+                        }
+                    }
+                }
+            }
+        }
+
         viewModelScope.launch {
             try {
                 schedulerEngine.executeDueSchedules { dueTask ->
@@ -321,6 +365,64 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         _voiceState.value = state
         com.example.state.KavyaStateManager.updateVoiceState(state)
         proactiveController.onKavyaSpeechStateChanged(state == VoiceState.SPEAKING)
+    }
+
+    fun startLiveConversation() {
+        val app = getApplication<Application>()
+        if (_isOfflineMode.value || aiClient.isOfflineMode()) {
+            _latestKavyaCaption.value = "Live conversation needs Online Mode."
+            return
+        }
+        val apiKey = com.example.utils.AppPreferences.getEffectiveApiKey(app)
+        if (apiKey.isBlank()) {
+            _latestKavyaCaption.value = "Gemini API key is missing. Add it in AI API Hub."
+            return
+        }
+
+        val mic = com.example.agent.MicrophoneEngine.getInstance(app)
+        liveStartedMicService = !mic.isRecording
+        if (liveStartedMicService) {
+            com.example.voice.KavyaMicrophoneEngine.startService(app)
+        }
+        val contextSnapshot = _messages.value
+            .filter { !it.isLoading && !it.isError }
+            .takeLast(12)
+            .joinToString("\\n") { message ->
+                (if (message.isUser) "User: " else "Kavya: ") + message.text.take(900)
+            }
+        liveVoiceClient.startLiveSession(
+            apiKey = apiKey,
+            conversationContext = if (contextSnapshot.isBlank()) "" else
+                "Recent conversation context (continue this conversation; do not repeat it):\\n$contextSnapshot"
+        )
+    }
+
+    fun stopLiveConversation() {
+        liveVoiceClient.stopLiveSession()
+        if (liveStartedMicService) {
+            com.example.voice.KavyaMicrophoneEngine.stopService(getApplication())
+        }
+        liveStartedMicService = false
+    }
+
+    private fun appendLiveVoiceMessage(text: String, isUser: Boolean) {
+        val clean = text.trim()
+        if (clean.isBlank()) return
+        val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also {
+            _currentChatId.value = it
+        }
+        val createChat = _currentChatId.value == chatId &&
+            _messages.value.isEmpty() &&
+            allChats.value.none { it.id == chatId }
+        val messageId = UUID.randomUUID().toString()
+        _messages.value = _messages.value + ChatMessage(messageId, clean, isUser)
+        if (!isUser) _latestKavyaCaption.value = clean
+        viewModelScope.launch(Dispatchers.IO) {
+            if (createChat) {
+                chatDao.insertChat(ChatEntity(id = chatId, title = clean.take(36).ifBlank { "Live conversation" }, timestamp = System.currentTimeMillis()))
+            }
+            chatDao.insertMessage(MessageEntity(messageId, chatId, clean, isUser, System.currentTimeMillis()))
+        }
     }
 
     fun startListening() {
@@ -528,6 +630,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startNewChat() {
+        stopLiveConversation()
         voiceEngine.stop()
         val newChatId = UUID.randomUUID().toString()
         _currentChatId.value = newChatId
@@ -606,6 +709,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadChat(chatId: String) {
+        stopLiveConversation()
         voiceEngine.stop()
         _currentChatId.value = chatId
         messagesJob?.cancel()
