@@ -1,6 +1,7 @@
 package com.example.ai
 
 import android.content.Context
+import android.media.AudioManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -45,6 +46,9 @@ class GeminiLiveClient(context: Context) {
     }
 
     private val appContext = context.applicationContext
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var previousAudioMode: Int? = null
+    private var previousSpeakerphoneState: Boolean? = null
     private val micEngine = MicrophoneEngine.getInstance(appContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val httpClient = OkHttpClient.Builder()
@@ -109,6 +113,7 @@ class GeminiLiveClient(context: Context) {
         synchronized(outputText) { outputText.setLength(0) }
         setupReady.set(false)
         _state.value = LiveVoiceState.CONNECTING
+        configureVoiceAudioRoute()
         micEngine.setLiveConversationActive(true)
         synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
         // Buffer a short pre-roll while the WebSocket negotiates setup, so the first
@@ -316,8 +321,40 @@ class GeminiLiveClient(context: Context) {
         _state.value = LiveVoiceState.DISCONNECTED
     }
 
+    private fun configureVoiceAudioRoute() {
+        if (previousAudioMode != null) return
+        try {
+            previousAudioMode = audioManager.mode
+            previousSpeakerphoneState = audioManager.isSpeakerphoneOn
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            val bluetoothOutputConnected = outputs.any { device ->
+                device.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    device.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    (android.os.Build.VERSION.SDK_INT >= 31 &&
+                        device.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET)
+            }
+            if (!bluetoothOutputConnected) audioManager.isSpeakerphoneOn = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not configure low-latency voice audio routing", e)
+        }
+    }
+
+    private fun restoreVoiceAudioRoute() {
+        try {
+            previousAudioMode?.let { audioManager.mode = it }
+            previousSpeakerphoneState?.let { audioManager.isSpeakerphoneOn = it }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not restore previous audio routing", e)
+        } finally {
+            previousAudioMode = null
+            previousSpeakerphoneState = null
+        }
+    }
+
     private fun cleanupSession() {
         setupReady.set(false)
+        restoreVoiceAudioRoute()
         micEngine.unregisterFrameSubscriber(SUBSCRIBER_ID)
         synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
         micEngine.setLiveConversationActive(false)
@@ -441,7 +478,7 @@ private class LivePcmAudioPlayer(
             AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
