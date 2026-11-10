@@ -102,8 +102,12 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
             config.optString("language") == "hi" &&
                 config.optInt("sample_rate") == 24000 &&
                 config.optString("format") == "indic-tiny-tts/1" &&
+                config.optString("default_voice") == "female" &&
                 config.getJSONObject("voices").has("female") &&
+                config.getJSONObject("voices").has("male") &&
                 config.getJSONObject("vocab").optString("normalizer") == "textnorm" &&
+                config.getJSONObject("vocab").optString("normalization_version") == "4" &&
+                config.getJSONObject("vocab").optString("hash") == "beab22b4be22bb49" &&
                 onnxManifest.optString("format") == "indic-tiny-tts-onnx/1" &&
                 onnxManifest.optInt("opset") == 18 &&
                 onnxManifest.getJSONObject("graphs").length() == 3 &&
