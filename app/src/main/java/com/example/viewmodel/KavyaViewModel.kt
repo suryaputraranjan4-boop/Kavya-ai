@@ -408,12 +408,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     private fun appendLiveVoiceMessage(text: String, isUser: Boolean) {
         val clean = text.trim()
         if (clean.isBlank()) return
-        val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also {
-            _currentChatId.value = it
-        }
-        val createChat = _currentChatId.value == chatId &&
-            _messages.value.isEmpty() &&
-            allChats.value.none { it.id == chatId }
+        val existingChatId = _currentChatId.value
+        val chatId = existingChatId ?: UUID.randomUUID().also { _currentChatId.value = it }
+        val createChat = existingChatId == null
         val messageId = UUID.randomUUID().toString()
         _messages.value = _messages.value + ChatMessage(messageId, clean, isUser)
         if (!isUser) _latestKavyaCaption.value = clean
@@ -2015,4 +2012,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         voiceEngine.stop()
         proactiveController.shutdown()
     }
+    override fun onCleared() {
+        stopLiveConversation()
+        com.example.agent.MicrophoneEngine.getInstance(getApplication()).setBargeInListener(null)
+        super.onCleared()
+    }
+
 }
