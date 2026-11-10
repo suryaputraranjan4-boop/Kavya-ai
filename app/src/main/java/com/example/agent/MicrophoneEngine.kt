@@ -202,6 +202,18 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                         return@withLock
                     }
                     isRecordingActive = false
+                    recordingJob?.cancel()
+                    recordingJob = null
+                    // Release a stale handle before attempting a fresh initialization.
+                    audioRecord?.let { stale ->
+                        try {
+                            if (stale.recordingState == AudioRecord.RECORDSTATE_RECORDING) stale.stop()
+                            stale.release()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Error releasing stale AudioRecord before restart", e)
+                        }
+                    }
+                    audioRecord = null
                 }
 
                 _engineState.value = State.STARTING
