@@ -188,8 +188,10 @@ class GeminiLiveClient(context: Context) {
             Use clear Indian Hindi pronunciation when speaking Hindi. Be concise and conversational.
             Do not sound like a formal IVR. Continue naturally without repeating greetings.
             Let the user interrupt at any time and stop speaking immediately when user activity is detected.
-            You are running inside the Kavya Android app. Never claim a phone action was completed
-            unless the app explicitly confirms it.
+            You are running inside the Kavya Android app. When the user explicitly asks you to
+            perform an action using the phone or app, call run_kavya_command and wait for its result.
+            If the result says confirmation is required, ask the user to confirm on screen. Never
+            claim a phone action was completed unless the app explicitly confirms it.
             ${conversationContext.trim()}
         """.trimIndent()
 
@@ -209,8 +211,12 @@ class GeminiLiveClient(context: Context) {
                 .put("automaticActivityDetection", JSONObject().put("disabled", false))
                 .put("activityHandling", "START_OF_ACTIVITY_INTERRUPTS")
             )
-            .put("inputAudioTranscription", JSONObject())
-            .put("outputAudioTranscription", JSONObject())
+            .put("inputAudioTranscription", JSONObject().put(
+                "languageCodes", JSONArray().put("hi-IN").put("en-IN")
+            ))
+            .put("outputAudioTranscription", JSONObject().put(
+                "languageCodes", JSONArray().put("hi-IN").put("en-IN")
+            ))
             .put("tools", JSONArray().put(
                 JSONObject().put("functionDeclarations", JSONArray().put(
                     JSONObject()
@@ -333,7 +339,8 @@ class GeminiLiveClient(context: Context) {
 
     private fun finishCurrentTurn() {
         val userText = synchronized(inputText) {
-            inputText.toString().trim().also { inputText.setLength(0) }
+            inputText.toString().ifBlank { _inputTranscript.value }.trim()
+                .also { inputText.setLength(0) }
         }
         val assistantText = synchronized(outputText) {
             outputText.toString().trim().also { outputText.setLength(0) }
