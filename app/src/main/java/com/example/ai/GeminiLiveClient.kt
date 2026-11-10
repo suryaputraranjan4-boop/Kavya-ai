@@ -121,14 +121,13 @@ class GeminiLiveClient(context: Context) {
         // Buffer a short pre-roll while the WebSocket negotiates setup, so the first
         // words are not silently lost if the user starts speaking immediately.
         micEngine.registerFrameSubscriber(SUBSCRIBER_ID) { pcm ->
-            if (active.get()) {
+            synchronized(pendingAudioFrames) {
+                if (!active.get()) return@synchronized
                 if (setupReady.get()) {
                     sendAudioFrame(pcm)
                 } else {
-                    synchronized(pendingAudioFrames) {
-                        if (pendingAudioFrames.size >= 12) pendingAudioFrames.removeFirst()
-                        pendingAudioFrames.addLast(pcm.copyOf())
-                    }
+                    if (pendingAudioFrames.size >= 12) pendingAudioFrames.removeFirst()
+                    pendingAudioFrames.addLast(pcm.copyOf())
                 }
             }
         }
@@ -243,13 +242,12 @@ class GeminiLiveClient(context: Context) {
             return
         }
         if (message.has("setupComplete")) {
-            setupReady.set(true)
-            val bufferedFrames = synchronized(pendingAudioFrames) {
-                buildList {
-                    while (pendingAudioFrames.isNotEmpty()) add(pendingAudioFrames.removeFirst())
+            synchronized(pendingAudioFrames) {
+                setupReady.set(true)
+                while (pendingAudioFrames.isNotEmpty()) {
+                    sendAudioFrame(pendingAudioFrames.removeFirst())
                 }
             }
-            bufferedFrames.forEach(::sendAudioFrame)
             _state.value = LiveVoiceState.LISTENING
             return
         }
