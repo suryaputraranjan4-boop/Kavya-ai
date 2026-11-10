@@ -100,63 +100,12 @@ class KavyaVoiceEngine(
             stop()
         }
 
+        val engineManager = com.example.ai.tts.VoiceEngineManager.getInstance(context)
         updateSpeakingState(true)
 
-        val job = scope.launch(Dispatchers.IO) {
-            val player = geminiPlayer
-            if (player == null) {
-                withContext(Dispatchers.Main) {
-                    updateSpeakingState(false)
-                    onComplete?.invoke()
-                }
-                return@launch
-            }
-
-            var playbackStarted = false
-
-            try {
-                com.example.api.QuotaManager.instance.totalVoiceRequests++
-                val activeProfile = voiceProfileManager.getActiveProfile()
-                Log.d(TAG, "CHATTERBOX_VOICE_REQUEST: length=${cleanText.length}, profile=${activeProfile.name}")
-
-                val result = chatterboxClient.synthesize(
-                    text = cleanText,
-                    referenceAudioPath = activeProfile.audioFilePath,
-                    pitchMultiplier = effectivePitch,
-                    speedMultiplier = effectiveSpeed,
-                    emotion = sentiment.label
-                )
-
-                when (result) {
-                    is ChatterboxResult.Success -> {
-                        Log.d(TAG, "CHATTERBOX_VOICE_PLAYBACK_STARTED: ${result.audioBytes.size} bytes (sampleRate=${result.sampleRate})")
-                        player.playAudioBytes(result.audioBytes, text = cleanText, enqueue = enqueue) {
-                            Log.d(TAG, "CHATTERBOX_VOICE_PLAYBACK_COMPLETED")
-                            updateSpeakingState(false)
-                            onComplete?.invoke()
-                        }
-                        playbackStarted = true
-                    }
-                    is ChatterboxResult.Error -> {
-                        Log.w(TAG, "Chatterbox speech generation failed: ${result.message}")
-                    }
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (e: Exception) {
-                Log.w(TAG, "Chatterbox voice generation exception: ${e.message}")
-            }
-
-            if (!playbackStarted) {
-                withContext(Dispatchers.Main) {
-                    player.notifyCaption(cleanText)
-                    updateSpeakingState(false)
-                    onComplete?.invoke()
-                }
-            }
-        }
-        if (!enqueue) {
-            activeSpeechJob = job
+        engineManager.speak(cleanText, enqueue = enqueue) {
+            updateSpeakingState(false)
+            onComplete?.invoke()
         }
     }
 

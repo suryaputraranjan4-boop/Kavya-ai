@@ -133,6 +133,7 @@ dependencies {
   implementation(libs.retrofit.converter.serialization)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.mediapipe.tasks.genai)
+  implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
   implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.1")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

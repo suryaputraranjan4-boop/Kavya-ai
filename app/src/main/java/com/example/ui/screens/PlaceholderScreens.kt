@@ -376,11 +376,19 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
     val context = androidx.compose.ui.platform.LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    val modelManager = remember { com.example.ai.ChatterboxModelManager.getInstance(context) }
+    val voiceEngineManager = remember { com.example.ai.tts.VoiceEngineManager.getInstance(context) }
+    val indicModelManager = remember { com.example.ai.tts.IndicTinyTtsModelManager.getInstance(context) }
+    val chatterboxModelManager = remember { com.example.ai.ChatterboxModelManager.getInstance(context) }
     val profileManager = remember { com.example.ai.VoiceProfileManager.getInstance(context) }
     val ttsClient = remember { com.example.ai.ChatterboxTtsClient(context) }
 
-    val fileProgressMap by modelManager.fileProgressMap.collectAsState()
+    val activeEngineState = remember { mutableStateOf(voiceEngineManager.getActiveEngine()) }
+
+    val indicStatus by indicModelManager.status.collectAsState()
+    val indicProgress by indicModelManager.downloadProgress.collectAsState()
+    val indicProgressText by indicModelManager.progressText.collectAsState()
+
+    val chatterboxFileMap by chatterboxModelManager.fileProgressMap.collectAsState()
     val profiles by profileManager.profiles.collectAsState()
     val activeProfileId = com.example.utils.AppPreferences.getActiveVoiceProfileId(context)
 
@@ -445,7 +453,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
         }
     }
 
-    SimpleScreen("Chatterbox Voice Studio", navController) {
+    SimpleScreen("Kavya AI Voice Studio", navController) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -453,7 +461,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
             contentPadding = PaddingValues(top = 12.dp, bottom = 40.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Header: Chatterbox Multilingual Hindi Primary Engine
+            // Header: Indic Tiny TTS Hindi Primary Engine
             item {
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -466,13 +474,13 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                         Spacer(modifier = Modifier.width(14.dp))
                         Column {
                             Text(
-                                "Chatterbox Multilingual Hindi",
+                                "Indic Tiny TTS Hindi Engine",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                "Hindi text-to-speech and voice conditioning through a configured Chatterbox inference server.",
+                                "Primary offline 24 kHz Hindi female voice engine. Fast ONNX CPU inference with lightweight model weights.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
@@ -481,105 +489,260 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                 }
             }
 
-            // SECTION 1: IN-APP MODEL DOWNLOAD & VERIFICATION MANAGER
+            // SECTION 1: VOICE ENGINE SELECTOR (PRIMARY & ALTERNATIVE)
             item {
-                Text("Chatterbox Hindi Model Files (Hugging Face)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Text("Voice Engine Selection", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Official Weights & Tokenizers", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
-                            Text(
-                                if (modelManager.isAllMandatoryFilesReady()) "All mandatory files downloaded" else "Downloads pending or incomplete",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (modelManager.isAllMandatoryFilesReady()) SuccessGreen else AccentYellow
-                            )
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        com.example.ai.tts.VoiceEngine.entries.forEach { engine ->
+                            val isSelected = activeEngineState.value == engine
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isSelected) Primary.copy(alpha = 0.15f) else SurfaceElevated.copy(alpha = 0.4f))
+                                    .clickable {
+                                        activeEngineState.value = engine
+                                        voiceEngineManager.setActiveEngine(engine)
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = {
+                                        activeEngineState.value = engine
+                                        voiceEngineManager.setActiveEngine(engine)
+                                    },
+                                    colors = RadioButtonDefaults.colors(selectedColor = PrimaryLight)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            engine.displayName,
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium),
+                                            color = if (isSelected) PrimaryLight else TextPrimary
+                                        )
+                                        if (engine == com.example.ai.tts.VoiceEngine.INDIC_TINY_TTS) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            StatusBadge(text = "DEFAULT • PRIMARY", isActive = true)
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        if (engine.isOffline) "Offline ONNX Model • 24 kHz Female Voice • Low Latency" else "Cloud/Server Voice Conditioning • Multilingual Hindi",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextSecondary
+                                    )
+                                }
+                            }
                         }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        // Live Sample Voice Preview
                         Button(
-                            onClick = { modelManager.downloadAll() },
+                            onClick = {
+                                voiceEngineManager.previewEngine(activeEngineState.value)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = Primary),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Download All", fontSize = 12.sp)
+                            Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("🔊 Play Voice Sample (\"नमस्ते! मैं काव्या हूँ।\")")
                         }
                     }
+                }
+            }
 
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // Individual file items
-                    com.example.ai.ChatterboxModelManager.OFFICIAL_SPECS.forEach { spec ->
-                        val progress = fileProgressMap[spec.id]
-                        val status = progress?.status ?: com.example.ai.DownloadItemStatus.PENDING
-                        val bytes = progress?.bytesDownloaded ?: 0L
-                        val total = progress?.totalBytes ?: spec.approximateSizeBytes
-
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 6.dp)
+            // SECTION 2: INDIC TINY TTS HINDI MODEL MANAGEMENT (HUGGING FACE)
+            item {
+                Text("Indic Tiny TTS Hindi Model (Hugging Face)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Spacer(modifier = Modifier.height(8.dp))
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("sulabhkatiyar/indic-tiny-tts-hindi", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                                Text(
+                                    indicProgressText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = when (indicStatus) {
+                                        com.example.ai.tts.ModelDownloadStatus.READY -> SuccessGreen
+                                        com.example.ai.tts.ModelDownloadStatus.DOWNLOADING -> PrimaryLight
+                                        com.example.ai.tts.ModelDownloadStatus.ERROR -> Error
+                                        else -> AccentYellow
+                                    }
+                                )
+                            }
+                            StatusBadge(
+                                text = when (indicStatus) {
+                                    com.example.ai.tts.ModelDownloadStatus.READY -> "Installed"
+                                    com.example.ai.tts.ModelDownloadStatus.DOWNLOADING -> "Downloading"
+                                    com.example.ai.tts.ModelDownloadStatus.PAUSED -> "Paused"
+                                    com.example.ai.tts.ModelDownloadStatus.VERIFYING -> "Verifying"
+                                    com.example.ai.tts.ModelDownloadStatus.ERROR -> "Error"
+                                    else -> "Ready"
+                                },
+                                isActive = indicStatus == com.example.ai.tts.ModelDownloadStatus.READY
+                            )
+                        }
+
+                        if (indicStatus == com.example.ai.tts.ModelDownloadStatus.DOWNLOADING || indicStatus == com.example.ai.tts.ModelDownloadStatus.PAUSED) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { indicProgress },
                                 modifier = Modifier.fillMaxWidth(),
+                                color = PrimaryLight,
+                                trackColor = SurfaceElevated
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // ONNX File Specs list
+                        com.example.ai.tts.IndicTinyTtsModelManager.MODEL_SPECS.forEach { spec ->
+                            val file = java.io.File(indicModelManager.modelDir, spec.fileName)
+                            val exists = file.exists() && file.length() > 0
+                            val sizeMb = if (exists) file.length() / (1024.0 * 1024.0) else spec.estimatedSizeBytes / (1024.0 * 1024.0)
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(spec.fileName, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = TextPrimary)
                                     Text(
-                                        "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB / ${"%.1f".format(total / (1024.0 * 1024.0))} MB • ${spec.description}",
+                                        "${"%.2f".format(sizeMb)} MB • ${if (exists) "Available on disk" else "Pending download"}",
                                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                                         color = TextSecondary
                                     )
                                 }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    when (status) {
-                                        com.example.ai.DownloadItemStatus.COMPLETED -> {
-                                            StatusBadge(text = "Downloaded", isActive = true)
-                                        }
-                                        com.example.ai.DownloadItemStatus.DOWNLOADING -> {
-                                            IconButton(onClick = { modelManager.pauseDownload(spec.id) }) {
-                                                Icon(Icons.Default.Pause, contentDescription = "Pause", tint = PrimaryLight)
-                                            }
-                                        }
-                                        com.example.ai.DownloadItemStatus.PAUSED -> {
-                                            IconButton(onClick = { modelManager.startDownload(spec) }) {
-                                                Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = PrimaryLight)
-                                            }
-                                        }
-                                        else -> {
-                                            IconButton(onClick = { modelManager.startDownload(spec) }) {
-                                                Icon(Icons.Default.Download, contentDescription = "Download", tint = PrimaryLight)
-                                            }
-                                        }
+                                Icon(
+                                    if (exists) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                    contentDescription = null,
+                                    tint = if (exists) SuccessGreen else TextTertiary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Model Management Action Buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            when (indicStatus) {
+                                com.example.ai.tts.ModelDownloadStatus.DOWNLOADING -> {
+                                    Button(
+                                        onClick = { indicModelManager.pauseDownload() },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
+                                    ) {
+                                        Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Pause")
+                                    }
+                                    Button(
+                                        onClick = { indicModelManager.cancelDownload() },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Error.copy(alpha = 0.8f))
+                                    ) {
+                                        Text("Cancel")
                                     }
                                 }
-                            }
-                            if (status == com.example.ai.DownloadItemStatus.DOWNLOADING) {
-                                val ratio = if (total > 0) (bytes.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
-                                LinearProgressIndicator(
-                                    progress = { ratio },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 4.dp),
-                                    color = PrimaryLight,
-                                    trackColor = SurfaceElevated
-                                )
+                                com.example.ai.tts.ModelDownloadStatus.PAUSED -> {
+                                    Button(
+                                        onClick = { indicModelManager.resumeDownload() },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                                    ) {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Resume")
+                                    }
+                                    Button(
+                                        onClick = { indicModelManager.cancelDownload() },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
+                                    ) {
+                                        Text("Cancel")
+                                    }
+                                }
+                                com.example.ai.tts.ModelDownloadStatus.READY -> {
+                                    Button(
+                                        onClick = { indicModelManager.verifyModel() },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
+                                    ) {
+                                        Icon(Icons.Default.Verified, contentDescription = null, modifier = Modifier.size(16.dp), tint = PrimaryLight)
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Verify", color = PrimaryLight)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { indicModelManager.deleteModel() },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp), tint = Error)
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Delete", color = Error)
+                                    }
+                                    Button(
+                                        onClick = { indicModelManager.redownloadModel() },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Re-fetch")
+                                    }
+                                }
+                                else -> {
+                                    Button(
+                                        onClick = { indicModelManager.downloadAll() },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                                    ) {
+                                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Download Model")
+                                    }
+                                    Button(
+                                        onClick = { indicModelManager.verifyModel() },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
+                                    ) {
+                                        Icon(Icons.Default.Verified, contentDescription = null, modifier = Modifier.size(16.dp), tint = PrimaryLight)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Verify", color = PrimaryLight)
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // SECTION 2: CHATTERBOX BACKEND / INFERENCE RUNNER
+            // SECTION 3: CHATTERBOX BACKEND / INFERENCE RUNNER
             item {
                 Text("Chatterbox Inference Runner & GPU Backend", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
@@ -588,7 +751,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                     shape = RoundedCornerShape(18.dp)
                 ) {
                     Text(
-                        "Speech generation runs on a separate Chatterbox inference server. Enter its reachable LAN or HTTPS URL here. The model files above are downloaded into app storage but are not loaded for on-device inference; 10.0.2.2 works only from an Android emulator, not a physical phone.",
+                        "Speech generation for Chatterbox runs on a separate inference server. Enter its reachable LAN or HTTPS URL here.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
@@ -651,7 +814,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                             } else {
                                 Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp), tint = PrimaryLight)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Test Backend Connection", color = PrimaryLight)
+                                Text("Test Connection", color = PrimaryLight)
                             }
                         }
                     }
@@ -667,7 +830,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                 }
             }
 
-            // SECTION 3: VOICE PROFILES & ZERO-SHOT CLONING
+            // SECTION 4: VOICE PROFILES & ZERO-SHOT CLONING
             item {
                 Text("Voice Profiles & Custom Cloning", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
@@ -676,7 +839,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                     shape = RoundedCornerShape(18.dp)
                 ) {
                     Text(
-                        "Condition Chatterbox Hindi on your own voice. Uses only your own recorded audio or samples provided with explicit consent.",
+                        "Condition voice synthesis on your own voice. Uses recorded audio samples.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
@@ -773,13 +936,13 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                 }
             }
 
-            // SECTION 4: ACOUSTIC SLIDERS & LIVE PREVIEW
+            // SECTION 5: ACOUSTIC SLIDERS & SPEECH PREVIEW
             item {
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp)
                 ) {
-                    Text("Chatterbox Pitch Multiplier", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
+                    Text("Voice Pitch Multiplier", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
                     Slider(
                         value = pitch,
                         onValueChange = {
@@ -794,7 +957,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    Text("Chatterbox Speech Pace", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
+                    Text("Voice Speech Pace", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = TextPrimary)
                     Slider(
                         value = speed,
                         onValueChange = {
@@ -809,14 +972,14 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                 }
             }
 
-            // SECTION 5: REAL CHATTERBOX HINDI SPEECH PREVIEW TESTS
+            // SECTION 6: REAL HINDI SPEECH TESTS
             item {
-                Text("Chatterbox Hindi Speech Tests", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Text("Hindi Speech Generation Tests", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            viewModel?.speakMessage("नमस्ते! मैं काव्या हूँ। यह आवाज़ चैटरबॉक्स हिंदी मॉडल से तैयार की गई है।")
+                            voiceEngineManager.speak("नमस्ते! मैं काव्या हूँ। आपकी क्या सहायता कर सकती हूँ?")
                         },
                         modifier = Modifier.fillMaxWidth().height(46.dp),
                         shape = RoundedCornerShape(14.dp),
@@ -824,12 +987,12 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                     ) {
                         Icon(Icons.Default.VolumeUp, contentDescription = null, tint = Color.White)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("🔊 Test Chatterbox Hindi (General Speech)")
+                        Text("🔊 Test Indic Tiny TTS Hindi Speech")
                     }
 
                     Button(
                         onClick = {
-                            viewModel?.speakMessage("[happy] अरे वाह यार! आपका दिन कैसा चल रहा है? सब एकदम बढ़िया?")
+                            voiceEngineManager.speak("अरे वाह! आपका दिन बहुत अच्छा रहे। मैं हमेशा आपके साथ हूँ।")
                         },
                         modifier = Modifier.fillMaxWidth().height(46.dp),
                         shape = RoundedCornerShape(14.dp),
@@ -837,20 +1000,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                     ) {
                         Icon(Icons.Default.Celebration, contentDescription = null, tint = Color.White)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Test [happy] (Cheerful Hindi)")
-                    }
-
-                    Button(
-                        onClick = {
-                            viewModel?.speakMessage("[calm] सब ठीक है, रिलैक्स कीजिए। मैं आपकी पूरी मदद करूँगी।")
-                        },
-                        modifier = Modifier.fillMaxWidth().height(46.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
-                    ) {
-                        Icon(Icons.Default.Spa, contentDescription = null, tint = PrimaryLight)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Test [calm] (Soothing Hindi)", color = PrimaryLight)
+                        Text("Test Cheerful Hindi Speech")
                     }
                 }
             }

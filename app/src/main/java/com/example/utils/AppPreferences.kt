@@ -908,8 +908,7 @@ object AppPreferences {
     }
 
     fun getSpeechEngine(context: Context): String {
-        // Enforced to Chatterbox Hindi
-        return getPrefs(context).getString(KEY_SPEECH_ENGINE, "CHATTERBOX_HINDI") ?: "CHATTERBOX_HINDI"
+        return getPrefs(context).getString(KEY_SPEECH_ENGINE, "INDIC_TINY_TTS") ?: "INDIC_TINY_TTS"
     }
 
     fun setSpeechEngine(context: Context, engine: String) {
