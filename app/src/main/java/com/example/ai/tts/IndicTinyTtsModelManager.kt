@@ -162,7 +162,9 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                         return@launch
                     }
                     val target = File(modelDir, spec.fileName)
-                    if (target.isFile && target.length() == spec.expectedSizeBytes) continue
+                    if (target.isFile && target.length() > 0L &&
+                        (spec.expectedSizeBytes == 0L || target.length() == spec.expectedSizeBytes)
+                    ) continue
                     val downloaded = downloadOne(spec, target) { bytes ->
                         val progress = ((completedBytes + bytes).toFloat() / totalBytes.toFloat()).coerceIn(0f, 0.99f)
                         _downloadProgress.value = progress
