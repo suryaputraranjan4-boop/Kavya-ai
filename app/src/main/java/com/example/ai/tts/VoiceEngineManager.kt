@@ -10,6 +10,7 @@ import com.example.ai.VoiceProfileManager
 import com.example.utils.AppPreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -135,7 +136,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         val completion = onComplete?.let { CompletionOnce(it).also { item -> pendingCompletions.add(item) } }
 
         Log.d(TAG, "Routing speech through " + engine.displayName)
-        val speechJob = scope.launch(Dispatchers.IO) {
+        val speechJob = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             var playbackQueued = false
             try {
                 synthesisMutex.withLock {
@@ -196,6 +197,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         activeSpeechJob = speechJob
         activeSpeechJobs.add(speechJob)
         speechJob.invokeOnCompletion { activeSpeechJobs.remove(speechJob) }
+        speechJob.start()
     }
 
     fun previewEngine(
