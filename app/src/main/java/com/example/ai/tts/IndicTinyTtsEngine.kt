@@ -12,6 +12,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import java.util.Random
@@ -296,11 +298,21 @@ class IndicTinyTtsEngine(private val context: Context) {
 
     private fun runtimeEnvForTensor(): OrtEnvironment = env
 
-    private fun tensorLong(shape: LongArray, data: LongArray): OnnxTensor =
-        OnnxTensor.createTensor(runtimeEnvForTensor(), LongBuffer.wrap(data), shape)
+    private fun tensorLong(shape: LongArray, data: LongArray): OnnxTensor {
+        val buffer = ByteBuffer.allocateDirect(data.size * java.lang.Long.BYTES)
+            .order(ByteOrder.nativeOrder())
+            .asLongBuffer()
+        buffer.put(data).flip()
+        return OnnxTensor.createTensor(runtimeEnvForTensor(), buffer, shape)
+    }
 
-    private fun tensorFloat(shape: LongArray, data: FloatArray): OnnxTensor =
-        OnnxTensor.createTensor(runtimeEnvForTensor(), FloatBuffer.wrap(data), shape)
+    private fun tensorFloat(shape: LongArray, data: FloatArray): OnnxTensor {
+        val buffer = ByteBuffer.allocateDirect(data.size * java.lang.Float.BYTES)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+        buffer.put(data).flip()
+        return OnnxTensor.createTensor(runtimeEnvForTensor(), buffer, shape)
+    }
 
     private fun flatten3d(data: Array<FloatArray>): FloatArray {
         val size = data.sumOf { it.size }
