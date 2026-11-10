@@ -373,8 +373,8 @@ class GeminiLiveClient(context: Context) {
             pendingTurnFinalizeJob = scope.launch {
                 // Input transcription is delivered independently and can arrive just after turnComplete.
                 delay(300)
-                finishCurrentTurn()
                 pendingTurnFinalizeJob = null
+                finishCurrentTurn()
             }
         }
     }
