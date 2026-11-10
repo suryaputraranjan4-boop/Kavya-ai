@@ -27,7 +27,17 @@ data class TtsModelFileSpec(
     val remotePath: String,
     val expectedSizeBytes: Long,
     val sha256: String? = null
-)
+) {
+    // UI estimate only; exact byte checks use expectedSizeBytes when known.
+    val estimatedSizeBytes: Long
+        get() = if (expectedSizeBytes > 0L) expectedSizeBytes else when (id) {
+            "onnx_manifest" -> 3_120L
+            "config" -> 3_290L
+            "license" -> 2_980L
+            "release_manifest" -> 6_060L
+            else -> 0L
+        }
+}
 
 enum class ModelDownloadStatus { NOT_DOWNLOADED, DOWNLOADING, PAUSED, VERIFYING, READY, ERROR }
 
