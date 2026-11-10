@@ -59,10 +59,12 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     private val engineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val mutex = Mutex()
+    private val utteranceMutex = Mutex()
 
     // State Flows
     private val _engineState = MutableStateFlow(State.IDLE)
     val engineState: StateFlow<State> = _engineState.asStateFlow()
+    val isRecording: Boolean get() = isRecordingActive
 
     private val _amplitude = MutableStateFlow(0.0f)
     val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
@@ -84,7 +86,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     @Volatile private var isSleeping = false
     @Volatile private var isAssistantSpeaking = false
 
-    private var commandListener: ((String) -> Unit)? = null
+    @Volatile private var commandListener: ((String) -> Unit)? = null
 
     private val wakeWords = setOf(
         "hey kavya", "hi kavya", "hello kavya",
@@ -150,16 +152,10 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
      */
     fun setAssistantSpeaking(speaking: Boolean) {
         isAssistantSpeaking = speaking
-        pcmProcessor.setPlaybackGated(speaking)
+        updateCaptureGate()
+        updateEngineState()
         if (speaking) {
-            _engineState.value = State.TTS_PLAYBACK
             _amplitude.value = 0.0f
-        } else {
-            _engineState.value = if (isRecordingActive) {
-                if (isSleeping) State.SLEEPING else State.LISTENING
-            } else {
-                State.IDLE
-            }
         }
     }
 
@@ -167,15 +163,30 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
         isSleeping = sleeping
         AppPreferences.setKavyaState(appContext, if (sleeping) "SLEEP" else "ACTIVE")
         if (isRecordingActive && !isAssistantSpeaking) {
-            _engineState.value = if (sleeping) State.SLEEPING else State.LISTENING
+            updateEngineState()
         }
     }
 
     fun setMuted(muted: Boolean) {
         isMuted = muted
-        pcmProcessor.setPlaybackGated(muted)
+        updateCaptureGate()
         if (isRecordingActive) {
-            _engineState.value = if (muted) State.MUTED else (if (isSleeping) State.SLEEPING else State.LISTENING)
+            updateEngineState()
+        }
+    }
+
+    private fun updateCaptureGate() {
+        // Muting and TTS playback are independent gates; either one suppresses VAD.
+        pcmProcessor.setPlaybackGated(isMuted || isAssistantSpeaking)
+    }
+
+    private fun updateEngineState() {
+        _engineState.value = when {
+            isAssistantSpeaking -> State.TTS_PLAYBACK
+            !isRecordingActive -> State.IDLE
+            isMuted -> State.MUTED
+            isSleeping -> State.SLEEPING
+            else -> State.LISTENING
         }
     }
 
@@ -226,7 +237,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
                 isRecordingActive = true
                 isSleeping = AppPreferences.getKavyaState(appContext).equals("SLEEP", ignoreCase = true)
-                _engineState.value = if (isSleeping) State.SLEEPING else State.LISTENING
+                updateEngineState()
                 startRecordingLoop()
                 started = true
             }
@@ -327,12 +338,24 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                     continue
                 }
 
-                val bytesRead = record.read(readBuffer, 0, readBuffer.size)
+                val bytesRead = try {
+                    record.read(readBuffer, 0, readBuffer.size)
+                } catch (e: Exception) {
+                    if (!isRecordingActive) break
+                    Log.e(TAG, "AudioRecord.read() threw an exception; attempting controlled recovery", e)
+                    if (!recoverAudioRecord(record)) break
+                    consecutiveReadErrors = 0
+                    continue
+                }
+
                 if (bytesRead > 0) {
                     consecutiveReadErrors = 0
                     if (!isMuted && !isAssistantSpeaking) {
                         pcmProcessor.processRawFrame(readBuffer, bytesRead)
                     }
+                } else if (bytesRead == 0) {
+                    // Avoid a tight CPU loop if a device returns an empty blocking read.
+                    delay(10)
                 } else if (bytesRead < 0) {
                     consecutiveReadErrors++
                     Log.e(TAG, "AudioRecord read error code: $bytesRead ($consecutiveReadErrors consecutive)")
@@ -377,12 +400,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
             Log.w(TAG, "Reinitializing AudioRecord after persistent capture failure...")
             if (initializeAudioRecord()) {
-                _engineState.value = when {
-                    isAssistantSpeaking -> State.TTS_PLAYBACK
-                    isMuted -> State.MUTED
-                    isSleeping -> State.SLEEPING
-                    else -> State.LISTENING
-                }
+                updateEngineState()
                 Log.i(TAG, "AudioRecord recovery succeeded; continuous capture resumed.")
                 true
             } else {
@@ -397,56 +415,56 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     private fun handleCompletedUtterance(pcmData: ByteArray) {
         engineScope.launch(Dispatchers.IO) {
-            if (_engineState.value == State.SPEECH_DETECTED || _engineState.value == State.LISTENING) {
-                _engineState.value = State.PROCESSING
-            }
+            // Keep transcripts and command callbacks in capture order.
+            utteranceMutex.withLock {
+                if (_engineState.value == State.SPEECH_DETECTED || _engineState.value == State.LISTENING) {
+                    _engineState.value = State.PROCESSING
+                }
 
-            try {
-                Log.d(TAG, "Transcribing captured utterance (${pcmData.size} bytes)...")
-                val kavyaAI = KavyaAI(appContext)
-                val transcript = kavyaAI.transcribeAudio(pcmData, SAMPLE_RATE)
-                val cleanText = transcript.trim()
+                try {
+                    Log.d(TAG, "Transcribing captured utterance (${pcmData.size} bytes)...")
+                    val kavyaAI = KavyaAI(appContext)
+                    val transcript = kavyaAI.transcribeAudio(pcmData, SAMPLE_RATE)
+                    val cleanText = transcript.trim()
 
-                if (cleanText.isNotBlank()) {
-                    Log.i(TAG, "Recognized utterance transcript: \"$cleanText\"")
-                    _lastTranscript.value = cleanText
+                    if (cleanText.isNotBlank()) {
+                        Log.i(TAG, "Recognized utterance transcript: \"$cleanText\"")
+                        _lastTranscript.value = cleanText
 
-                    val lowerText = cleanText.lowercase(Locale.ROOT)
-                    val isWake = wakeWords.any { lowerText.contains(it) }
-                    val isSleep = sleepWords.any { lowerText.contains(it) }
-                    val isStop = stopWords.any { lowerText.contains(it) }
+                        val lowerText = cleanText.lowercase(Locale.ROOT)
+                        val isWake = wakeWords.any { lowerText.contains(it) }
+                        val isSleep = sleepWords.any { lowerText.contains(it) }
+                        val isStop = stopWords.any { lowerText.contains(it) }
 
-                    if (isSleeping) {
-                        if (isWake) {
-                            Log.i(TAG, "Wake word detected in SLEEP mode. Waking up Kavya!")
-                            setSleeping(false)
-                            val remainingPrompt = stripKeywords(cleanText, wakeWords)
-                            if (remainingPrompt.isNotBlank()) {
-                                commandListener?.invoke(remainingPrompt)
+                        if (isSleeping) {
+                            if (isWake) {
+                                Log.i(TAG, "Wake word detected in SLEEP mode. Waking up Kavya!")
+                                setSleeping(false)
+                                val remainingPrompt = stripKeywords(cleanText, wakeWords)
+                                commandListener?.invoke(remainingPrompt.ifBlank { "hey kavya" })
                             } else {
-                                commandListener?.invoke("hey kavya")
+                                Log.d(TAG, "Ignored utterance in SLEEP mode: \"$cleanText\"")
                             }
                         } else {
-                            Log.d(TAG, "Ignored utterance in SLEEP mode: \"$cleanText\"")
-                        }
-                    } else {
-                        if (isSleep) {
-                            Log.i(TAG, "Sleep command detected. Putting Kavya to sleep.")
-                            setSleeping(true)
-                        } else if (isStop) {
-                            Log.i(TAG, "Stop command detected.")
-                            commandListener?.invoke("stop")
-                        } else {
-                            // Forward recognized command to pipeline / ViewModel
-                            commandListener?.invoke(cleanText)
+                            when {
+                                isSleep -> {
+                                    Log.i(TAG, "Sleep command detected. Putting Kavya to sleep.")
+                                    setSleeping(true)
+                                }
+                                isStop -> {
+                                    Log.i(TAG, "Stop command detected.")
+                                    commandListener?.invoke("stop")
+                                }
+                                else -> commandListener?.invoke(cleanText)
+                            }
                         }
                     }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error processing utterance transcript", e)
-            } finally {
-                if (isRecordingActive && !isAssistantSpeaking) {
-                    _engineState.value = if (isSleeping) State.SLEEPING else State.LISTENING
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing utterance transcript", e)
+                } finally {
+                    if (isRecordingActive) {
+                        updateEngineState()
+                    }
                 }
             }
         }
