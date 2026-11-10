@@ -410,6 +410,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startLiveConversation() {
         val app = getApplication<Application>()
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                app, android.Manifest.permission.RECORD_AUDIO
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            liveVoiceClient.reportError("Microphone permission is required for Live Conversation.")
+            return
+        }
         if (_isOfflineMode.value || aiClient.isOfflineMode()) {
             liveVoiceClient.reportError("Live conversation needs Online Mode.")
             return
@@ -425,6 +432,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         voiceEngine.stop()
 
         val mic = com.example.agent.MicrophoneEngine.getInstance(app)
+        mic.setSleeping(false)
         liveStartedMicService = !mic.isRecording
         if (liveStartedMicService) {
             com.example.voice.KavyaMicrophoneEngine.startService(app)
