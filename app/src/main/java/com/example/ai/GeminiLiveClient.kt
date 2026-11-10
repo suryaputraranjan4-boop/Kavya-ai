@@ -303,6 +303,13 @@ class GeminiLiveClient(context: Context) {
             return
         }
 
+        val goAway = message.optJSONObject("goAway")
+        if (goAway != null) {
+            Log.w(TAG, "Gemini Live server requested connection shutdown; attempting session resumption.")
+            scheduleReconnect("Gemini Live is refreshing the connection")
+            return
+        }
+
         val serverContent = message.optJSONObject("serverContent") ?: return
         if (serverContent.optBoolean("interrupted", false)) {
             audioPlayer.flush()
