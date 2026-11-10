@@ -269,12 +269,21 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
     fun pauseDownload() {
         paused = true
         activeCall?.cancel()
-        downloadJob?.cancel()
         _status.value = ModelDownloadStatus.PAUSED
         _progressText.value = "Download paused"
     }
 
-    fun resumeDownload() = downloadAll()
+    fun resumeDownload() {
+        val previousJob = downloadJob
+        if (previousJob?.isActive == true) {
+            scope.launch {
+                previousJob.join()
+                downloadAll()
+            }
+        } else {
+            downloadAll()
+        }
+    }
 
     fun cancelDownload() {
         paused = true
