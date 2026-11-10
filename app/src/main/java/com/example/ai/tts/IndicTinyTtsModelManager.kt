@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -67,6 +68,7 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
     private val _progressText = MutableStateFlow("Model not installed")
     val progressText: StateFlow<String> = _progressText.asStateFlow()
     private var downloadJob: Job? = null
+    @Volatile private var activeCall: Call? = null
     @Volatile private var paused = false
 
     val modelDir: File
@@ -198,7 +200,9 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
             val partial = File(parent, target.name + ".part")
             try {
                 val request = Request.Builder().url(HF_BASE_URL + spec.remotePath).get().build()
-                client.newCall(request).execute().use { response ->
+                val call = client.newCall(request)
+                activeCall = call
+                call.execute().use { response ->
                     if (!response.isSuccessful) return@withContext false
                     val body = response.body ?: return@withContext false
                     if (body.contentLength() > 0L && body.contentLength() != spec.expectedSizeBytes) return@withContext false
@@ -228,11 +232,13 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                 false
             } finally {
                 if (partial.exists()) partial.delete()
+                activeCall = null
             }
         }
 
     fun pauseDownload() {
         paused = true
+        activeCall?.cancel()
         downloadJob?.cancel()
         _status.value = ModelDownloadStatus.PAUSED
         _progressText.value = "Download paused"
@@ -241,7 +247,8 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
     fun resumeDownload() = downloadAll()
 
     fun cancelDownload() {
-        paused = false
+        paused = true
+        activeCall?.cancel()
         downloadJob?.cancel()
         downloadJob = null
         checkInstalledState()
@@ -262,7 +269,8 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
     }
 
     fun deleteModel() {
-        paused = false
+        paused = true
+        activeCall?.cancel()
         downloadJob?.cancel()
         downloadJob = null
         modelDir.deleteRecursively()
