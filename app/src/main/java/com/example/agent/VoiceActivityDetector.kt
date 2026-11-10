@@ -20,7 +20,7 @@ class VoiceActivityDetector(
     private val sampleRate: Int = 16000,
     private val speechStartRmsThreshold: Float = 260.0f,
     private val speechEndRmsThreshold: Float = 160.0f,
-    private val minSpeechDurationMs: Long = 200L,
+    private val minSpeechDurationMs: Long = 120L,
     private val silenceDurationMs: Long = 850L,
     private val preRollMs: Long = 300L,
     private val postRollMs: Long = 200L
