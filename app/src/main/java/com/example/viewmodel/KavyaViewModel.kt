@@ -1136,6 +1136,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     voiceEngine.stop()
                     val app = getApplication<Application>()
                     com.example.utils.AppPreferences.setKavyaState(app, "SLEEP")
+                    com.example.agent.MicrophoneEngine.getInstance(app).setSleeping(true)
                     cleanResponse = "Good night, sir. Going to sleep. Say 'Wake Kavya' whenever you need me."
                     if (_autoSpeak.value) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
