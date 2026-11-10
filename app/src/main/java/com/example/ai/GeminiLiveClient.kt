@@ -8,8 +8,10 @@ import android.media.AudioTrack
 import android.util.Base64
 import android.util.Log
 import com.example.agent.MicrophoneEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -27,6 +29,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -80,6 +83,7 @@ class GeminiLiveClient(context: Context) {
     private val inputText = StringBuilder()
     private val outputText = StringBuilder()
     private val pendingAudioFrames = java.util.ArrayDeque<ByteArray>()
+    private val pendingToolCallJobs = ConcurrentHashMap<String, Job>()
     private val audioPlayer = LivePcmAudioPlayer { speaking ->
         micEngine.setAssistantSpeaking(speaking)
         if (active.get()) {
@@ -283,6 +287,23 @@ class GeminiLiveClient(context: Context) {
     }
 
     private fun handleServerMessage(message: JSONObject) {
+        message.optJSONObject("inputTranscription")?.optString("text")
+            ?.takeIf { it.isNotBlank() }?.let { appendTranscript(inputText, it, _inputTranscript) }
+        message.optJSONObject("outputTranscription")?.optString("text")
+            ?.takeIf { it.isNotBlank() }?.let { appendTranscript(outputText, it, _outputTranscript) }
+
+        message.optJSONObject("toolCallCancellation")?.let { cancellation ->
+            val ids = cancellation.optJSONArray("ids")
+            if (ids != null) {
+                for (index in 0 until ids.length()) {
+                    pendingToolCallJobs.remove(ids.optString(index))?.cancel(
+                        CancellationException("Gemini Live canceled the pending function call.")
+                    )
+                }
+            }
+            return
+        }
+
         message.optJSONObject("sessionResumptionUpdate")?.let { update ->
             val handle = update.optString("newHandle").ifBlank { update.optString("token") }
             sessionResumeHandle = if (update.optBoolean("resumable", false) && handle.isNotBlank()) handle else null
@@ -343,7 +364,10 @@ class GeminiLiveClient(context: Context) {
 
     private fun handleToolCall(toolCall: JSONObject) {
         val calls = toolCall.optJSONArray("functionCalls") ?: return
-        scope.launch {
+        val callIds = (0 until calls.length()).mapNotNull { index ->
+            calls.optJSONObject(index)?.optString("id")?.takeIf { it.isNotBlank() }
+        }
+        val job = scope.launch {
             val responses = JSONArray()
             for (index in 0 until calls.length()) {
                 val call = calls.optJSONObject(index) ?: continue
@@ -368,7 +392,7 @@ class GeminiLiveClient(context: Context) {
                         .put("response", JSONObject().put("result", result))
                 )
             }
-            if (responses.length() > 0) {
+            if (responses.length() > 0 && active.get()) {
                 webSocket?.send(
                     JSONObject().put(
                         "toolResponse",
@@ -376,6 +400,10 @@ class GeminiLiveClient(context: Context) {
                     ).toString()
                 )
             }
+        }
+        callIds.forEach { pendingToolCallJobs[it] = job }
+        job.invokeOnCompletion {
+            callIds.forEach { pendingToolCallJobs.remove(it, job) }
         }
     }
 
@@ -492,6 +520,8 @@ class GeminiLiveClient(context: Context) {
         setupReady.set(false)
         micEngine.unregisterFrameSubscriber(SUBSCRIBER_ID)
         synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
+        pendingToolCallJobs.values.toSet().forEach { it.cancel() }
+        pendingToolCallJobs.clear()
         micEngine.setLiveConversationActive(false)
         micEngine.setAssistantSpeaking(false)
         audioPlayer.stop()
