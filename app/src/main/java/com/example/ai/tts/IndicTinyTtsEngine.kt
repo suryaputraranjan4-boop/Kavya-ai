@@ -215,9 +215,10 @@ class IndicTinyTtsEngine(private val context: Context) {
 
         val lengthScale = 1.0f / speed
         val durations = FloatArray(tokenCount) { index ->
-            ceil(exp(logW[0][0][index].toDouble())).toFloat() * lengthScale
+            val predicted = exp(logW[0][0][index].toDouble()).toFloat()
+            ceil(predicted.toDouble()).toFloat() * lengthScale
         }
-        val melLength = max(1, durations.sum().toInt())
+        val melLength = max(1, durations.sumOf { it.toDouble() }.toFloat().toInt())
         if (melLength < 2) return FloatArray(0)
         val paddedLength = ((melLength + FRAME_MULTIPLE - 1) / FRAME_MULTIPLE) * FRAME_MULTIPLE
         require(paddedLength <= 12000) { "Generated speech chunk is too long for the device." }
@@ -228,7 +229,7 @@ class IndicTinyTtsEngine(private val context: Context) {
         var frame = 0
         var cumulativeDuration = 0.0
         for (token in 0 until tokenCount) {
-            cumulativeDuration += durations[token].toDouble()
+            cumulativeDuration = (cumulativeDuration + durations[token].toDouble()).toFloat().toDouble()
             val tokenEndFrame = ceil(cumulativeDuration).toInt().coerceAtMost(melLength)
             while (frame < tokenEndFrame) {
                 mask[frame] = 1.0f
