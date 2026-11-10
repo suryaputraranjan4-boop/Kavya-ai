@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.first
 
@@ -388,21 +389,28 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             chatDao.insertChat(ChatEntity(id = it, title = "Live actions", timestamp = System.currentTimeMillis()))
         }
         val result = CompletableDeferred<String>()
-        processAgentLoop(
-            chatId = chatId,
-            userMsgEntity = null,
-            prompt = cleanCommand,
-            recursionDepth = 0,
-            displayInChat = false,
-            onComplete = { response -> result.complete(response) }
-        )
-        val response = withTimeoutOrNull(120_000L) { result.await() }
-            ?: return "The Android action timed out. Do not assume it was completed."
-        val confirmation = _pendingConfirmation.value
-        return if (confirmation != null) {
-            "This action requires user confirmation on the screen: ${confirmation.description}. Do not claim it is complete until the user confirms and the app reports success."
-        } else {
-            response.ifBlank { "The app did not provide a confirmed completion result." }
+        val actionJob = Job(viewModelScope.coroutineContext[Job])
+        val actionScope = kotlinx.coroutines.CoroutineScope(viewModelScope.coroutineContext + actionJob)
+        try {
+            processAgentLoop(
+                chatId = chatId,
+                userMsgEntity = null,
+                prompt = cleanCommand,
+                recursionDepth = 0,
+                displayInChat = false,
+                onComplete = { response -> result.complete(response) },
+                executionScope = actionScope
+            )
+            val response = withTimeoutOrNull(120_000L) { result.await() }
+                ?: return "The Android action timed out. Do not assume it was completed."
+            val confirmation = _pendingConfirmation.value
+            return if (confirmation != null) {
+                "This action requires user confirmation on the screen: ${confirmation.description}. Do not claim it is complete until the user confirms and the app reports success."
+            } else {
+                response.ifBlank { "The app did not provide a confirmed completion result." }
+            }
+        } finally {
+            actionJob.cancel()
         }
     }
 
@@ -1075,7 +1083,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         prompt: String,
         recursionDepth: Int,
         displayInChat: Boolean = true,
-        onComplete: ((String) -> Unit)? = null
+        onComplete: ((String) -> Unit)? = null,
+        executionScope: kotlinx.coroutines.CoroutineScope = viewModelScope
     ) {
         val loadingMsgId = UUID.randomUUID().toString()
         val loadingMsg = ChatMessage(id = loadingMsgId, text = "...", isUser = false, isLoading = true)
@@ -1087,7 +1096,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         com.example.state.KavyaStateManager.setGeminiState("PROCESSING")
         _latestKavyaCaption.value = null
 
-        viewModelScope.launch {
+        executionScope.launch {
             var cleanResponse = ""
             var shouldRecurse = false
             try {
@@ -1943,7 +1952,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     processAgentLoop(
                         chatId, null,
                         "Action executed successfully. Inspect the new screen and decide the next step.",
-                        recursionDepth + 1, displayInChat, onComplete
+                        recursionDepth + 1, displayInChat, onComplete, executionScope
                     )
                 }
                 
