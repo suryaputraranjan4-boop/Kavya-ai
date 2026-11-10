@@ -43,10 +43,16 @@ class KavyaVoiceService : Service() {
             val intent = Intent(context, KavyaVoiceService::class.java).apply {
                 action = ACTION_START
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Android rejected the microphone service start request.", e)
+                AppPreferences.setMicEnabled(context, false)
+                AppPreferences.setKavyaState(context, "OFF")
             }
         }
 
@@ -114,7 +120,7 @@ class KavyaVoiceService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
-        } catch (e: SecurityException) {
+        } catch (e: Exception) {
             Log.e(TAG, "Android rejected microphone foreground-service promotion.", e)
             micEngine.stopListening()
             AppPreferences.setMicEnabled(this, false)
