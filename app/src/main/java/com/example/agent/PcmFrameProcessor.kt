@@ -35,6 +35,11 @@ class PcmFrameProcessor(
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
+    private val subscriberFrames = Channel<ByteArray>(
+        capacity = 8,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
     // Subscribers for raw PCM audio frames (e.g., Gemini Live client)
     private val frameSubscribers = ConcurrentHashMap<String, (ByteArray) -> Unit>()
 
