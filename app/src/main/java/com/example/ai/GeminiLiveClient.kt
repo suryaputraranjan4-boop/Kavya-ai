@@ -83,6 +83,7 @@ class GeminiLiveClient(context: Context) {
 
     @Volatile var onUserTurnComplete: ((String) -> Unit)? = null
     @Volatile var onAssistantTurnComplete: ((String) -> Unit)? = null
+    @Volatile var onAppCommand: (suspend (String) -> String)? = null
     @Volatile var onError: ((String) -> Unit)? = null
 
     fun isActive(): Boolean = active.get()
@@ -210,11 +211,30 @@ class GeminiLiveClient(context: Context) {
             )
             .put("inputAudioTranscription", JSONObject())
             .put("outputAudioTranscription", JSONObject())
+            .put("tools", JSONArray().put(
+                JSONObject().put("functionDeclarations", JSONArray().put(
+                    JSONObject()
+                        .put("name", "run_kavya_command")
+                        .put("description", "Use only when the user explicitly asks Kavya to perform an action using the Android app or connected phone capabilities. The command is routed through Kavya's existing safety checks and confirmation flow. Never claim an action succeeded unless the app result confirms it.")
+                        .put("parameters", JSONObject()
+                            .put("type", "OBJECT")
+                            .put("properties", JSONObject().put(
+                                "command",
+                                JSONObject().put("type", "STRING").put("description", "The user's requested Android app or phone action, in plain language.")
+                            ))
+                            .put("required", JSONArray().put("command"))
+                        )
+                ))
+            ))
             .put("sessionResumption", JSONObject())
         return JSONObject().put("setup", setup)
     }
 
     private fun handleServerMessage(message: JSONObject) {
+        if (message.has("toolCall")) {
+            handleToolCall(message.optJSONObject("toolCall") ?: return)
+            return
+        }
         if (message.has("setupComplete")) {
             setupReady.set(true)
             val bufferedFrames = synchronized(pendingAudioFrames) {
@@ -256,6 +276,44 @@ class GeminiLiveClient(context: Context) {
         // Transcription events are independent of audio events. Google guarantees
         // the final output transcript before turnComplete, so finalize only there.
         if (serverContent.optBoolean("turnComplete", false)) finishCurrentTurn()
+    }
+
+    private fun handleToolCall(toolCall: JSONObject) {
+        val calls = toolCall.optJSONArray("functionCalls") ?: return
+        scope.launch {
+            val responses = JSONArray()
+            for (index in 0 until calls.length()) {
+                val call = calls.optJSONObject(index) ?: continue
+                val id = call.optString("id")
+                val name = call.optString("name")
+                val command = call.optJSONObject("args")?.optString("command").orEmpty().trim()
+                val result = if (name == "run_kavya_command" && command.isNotBlank()) {
+                    try {
+                        onAppCommand?.invoke(command)
+                            ?: "Kavya's Android action bridge is not available right now."
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Kavya app command failed", e)
+                        "The app could not complete that action: ${e.localizedMessage ?: "unknown error"}"
+                    }
+                } else {
+                    "Unsupported Kavya app action."
+                }
+                responses.put(
+                    JSONObject()
+                        .put("id", id)
+                        .put("name", name)
+                        .put("response", JSONObject().put("result", result))
+                )
+            }
+            if (responses.length() > 0) {
+                webSocket?.send(
+                    JSONObject().put(
+                        "toolResponse",
+                        JSONObject().put("functionResponses", responses)
+                    ).toString()
+                )
+            }
+        }
     }
 
     private fun appendTranscript(buffer: StringBuilder, incoming: String, flow: MutableStateFlow<String>) {
