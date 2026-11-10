@@ -434,12 +434,12 @@ class GeminiLiveClient(context: Context) {
 
     private fun cleanupSession() {
         setupReady.set(false)
-        restoreVoiceAudioRoute()
         micEngine.unregisterFrameSubscriber(SUBSCRIBER_ID)
         synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
         micEngine.setLiveConversationActive(false)
         micEngine.setAssistantSpeaking(false)
         audioPlayer.stop()
+        restoreVoiceAudioRoute()
     }
 
     private fun fail(message: String) {
