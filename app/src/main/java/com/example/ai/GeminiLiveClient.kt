@@ -10,6 +10,7 @@ import com.example.agent.MicrophoneEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,6 +69,7 @@ class GeminiLiveClient(context: Context) {
 
     private val inputText = StringBuilder()
     private val outputText = StringBuilder()
+    private val pendingAudioFrames = java.util.ArrayDeque<ByteArray>()
     private val audioPlayer = LivePcmAudioPlayer { speaking ->
         micEngine.setAssistantSpeaking(speaking)
         if (active.get()) {
@@ -108,6 +110,21 @@ class GeminiLiveClient(context: Context) {
         setupReady.set(false)
         _state.value = LiveVoiceState.CONNECTING
         micEngine.setLiveConversationActive(true)
+        synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
+        // Buffer a short pre-roll while the WebSocket negotiates setup, so the first
+        // words are not silently lost if the user starts speaking immediately.
+        micEngine.registerFrameSubscriber(SUBSCRIBER_ID) { pcm ->
+            if (active.get()) {
+                if (setupReady.get()) {
+                    sendAudioFrame(pcm)
+                } else {
+                    synchronized(pendingAudioFrames) {
+                        if (pendingAudioFrames.size >= 12) pendingAudioFrames.removeFirst()
+                        pendingAudioFrames.addLast(pcm.copyOf())
+                    }
+                }
+            }
+        }
 
         val generation = socketGeneration.incrementAndGet()
         val httpsUrl = LIVE_ENDPOINT.toHttpUrl().newBuilder()
@@ -195,9 +212,12 @@ class GeminiLiveClient(context: Context) {
     private fun handleServerMessage(message: JSONObject) {
         if (message.has("setupComplete")) {
             setupReady.set(true)
-            micEngine.registerFrameSubscriber(SUBSCRIBER_ID) { pcm ->
-                if (active.get() && setupReady.get()) sendAudioFrame(pcm)
+            val bufferedFrames = synchronized(pendingAudioFrames) {
+                buildList {
+                    while (pendingAudioFrames.isNotEmpty()) add(pendingAudioFrames.removeFirst())
+                }
             }
+            bufferedFrames.forEach(::sendAudioFrame)
             _state.value = LiveVoiceState.LISTENING
             return
         }
@@ -228,9 +248,9 @@ class GeminiLiveClient(context: Context) {
             }
         }
 
-        if (serverContent.optBoolean("turnComplete", false) ||
-            serverContent.optBoolean("generationComplete", false)
-        ) finishCurrentTurn()
+        // Transcription events are independent of audio events. Google guarantees
+        // the final output transcript before turnComplete, so finalize only there.
+        if (serverContent.optBoolean("turnComplete", false)) finishCurrentTurn()
     }
 
     private fun appendTranscript(buffer: StringBuilder, incoming: String, flow: MutableStateFlow<String>) {
@@ -299,6 +319,7 @@ class GeminiLiveClient(context: Context) {
     private fun cleanupSession() {
         setupReady.set(false)
         micEngine.unregisterFrameSubscriber(SUBSCRIBER_ID)
+        synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
         micEngine.setLiveConversationActive(false)
         micEngine.setAssistantSpeaking(false)
         audioPlayer.stop()
@@ -328,7 +349,10 @@ private class LivePcmAudioPlayer(
     )
 
     private val generation = AtomicLong(0L)
-    private val queue = Channel<AudioChunk>(capacity = 24)
+    private val queue = Channel<AudioChunk>(
+        capacity = 24,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     private val playerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var track: AudioTrack? = null
     @Volatile private var speaking = false
