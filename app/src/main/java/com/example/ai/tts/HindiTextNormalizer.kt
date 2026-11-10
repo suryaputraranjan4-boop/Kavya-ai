@@ -67,7 +67,7 @@ object HindiTextNormalizer {
     )
 
     private val latinWord = Regex("[A-Za-z]+")
-    private val numberToken = Regex("₹?\\s*\\d[\\d,]*(?:\\.\\d+)?%?")
+    private val numberToken = Regex("₹\\s*\\d[\\d,]*(?:\\.\\d+)?%?|\\d[\\d,]*(?:\\.\\d+)?%?")
 
     fun normalize(text: String): String {
         if (text.isBlank()) return ""
@@ -118,6 +118,8 @@ object HindiTextNormalizer {
     private fun normalizeNumbers(input: String): String {
         return numberToken.replace(input) { match ->
             val token = match.value.trim()
+            val prefixSpace = if (match.range.first > 0 && input[match.range.first - 1].isLetter()) " " else ""
+            val suffixSpace = if (match.range.last + 1 < input.length && input[match.range.last + 1].isLetter()) " " else ""
             val hasRupee = token.startsWith("₹")
             val hasPercent = token.endsWith("%")
             var digits = token.removePrefix("₹").removeSuffix("%").replace(",", "").trim()
@@ -136,11 +138,11 @@ object HindiTextNormalizer {
                     cardinal(n)
                 }
             }
-            spoken + when {
+            prefixSpace + spoken + when {
                 hasRupee -> " रुपये"
                 hasPercent -> " प्रतिशत"
                 else -> ""
-            }
+            } + suffixSpace
         }
     }
 
