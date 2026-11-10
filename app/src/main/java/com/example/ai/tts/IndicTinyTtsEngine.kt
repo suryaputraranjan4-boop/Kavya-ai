@@ -231,8 +231,9 @@ class IndicTinyTtsEngine(private val context: Context) {
         var frame = 0
         var cumulativeDuration = 0.0
         for (token in 0 until tokenCount) {
-            cumulativeDuration = (cumulativeDuration + durations[token].toDouble()).toFloat().toDouble()
-            val tokenEndFrame = ceil(cumulativeDuration).toInt().coerceAtMost(melLength)
+            cumulativeDuration += durations[token].toDouble()
+            // Match the reference ONNX frontend: float64 cumulative sum, then float32 cast.
+            val tokenEndFrame = ceil(cumulativeDuration.toFloat().toDouble()).toInt().coerceAtMost(melLength)
             while (frame < tokenEndFrame) {
                 mask[frame] = 1.0f
                 for (channel in 0 until channels) muY[channel][frame] = muX[0][channel][token]
