@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.ai.KavyaAI
@@ -85,6 +87,10 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     @Volatile private var isMuted = false
     @Volatile private var isSleeping = false
     @Volatile private var isAssistantSpeaking = false
+    @Volatile private var isLiveConversation = false
+    @Volatile private var bargeInListener: (() -> Unit)? = null
+    private var acousticEchoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
 
     @Volatile private var commandListener: ((String) -> Unit)? = null
 
@@ -117,7 +123,13 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
         // Wire VAD speech start event
         vad.onSpeechStart = {
-            if (_engineState.value == State.LISTENING) {
+            if (isAssistantSpeaking) {
+                Log.i(TAG, "User speech detected during assistant playback; triggering immediate barge-in.")
+                try { bargeInListener?.invoke() } catch (e: Exception) {
+                    Log.w(TAG, "Barge-in listener failed", e)
+                }
+            }
+            if (_engineState.value == State.LISTENING || _engineState.value == State.TTS_PLAYBACK) {
                 _engineState.value = State.SPEECH_DETECTED
             }
         }
@@ -130,6 +142,18 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     fun setCommandListener(listener: (String) -> Unit) {
         this.commandListener = listener
+    }
+
+    /** Called as soon as local VAD confirms speech while Kavya is playing audio. */
+    fun setBargeInListener(listener: (() -> Unit)?) {
+        bargeInListener = listener
+    }
+
+    /** Live mode uses server-side speech recognition; do not run the legacy utterance STT path too. */
+    fun setLiveConversationActive(active: Boolean) {
+        isLiveConversation = active
+        vad.reset()
+        if (!active && isRecordingActive) updateEngineState()
     }
 
     /**
@@ -147,24 +171,20 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     }
 
     /**
-     * Controls assistant TTS speaking gate.
-     * Keeps physical AudioRecord alive while suppressing VAD speech detection.
+     * Playback never gates microphone capture or VAD. This is required for true
+     * full-duplex conversation and user interruption while the assistant speaks.
      */
     fun setAssistantSpeaking(speaking: Boolean) {
         isAssistantSpeaking = speaking
         updateCaptureGate()
         updateEngineState()
-        if (speaking) {
-            _amplitude.value = 0.0f
-        }
+        if (speaking) _amplitude.value = 0.0f
     }
 
     fun setSleeping(sleeping: Boolean) {
         isSleeping = sleeping
         AppPreferences.setKavyaState(appContext, if (sleeping) "SLEEP" else "ACTIVE")
-        if (isRecordingActive && !isAssistantSpeaking) {
-            updateEngineState()
-        }
+        if (isRecordingActive) updateEngineState()
     }
 
     fun setMuted(muted: Boolean) {
@@ -176,8 +196,8 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     }
 
     private fun updateCaptureGate() {
-        // Muting and TTS playback are independent gates; either one suppresses VAD.
-        pcmProcessor.setPlaybackGated(isMuted || isAssistantSpeaking)
+        // Only an explicit user mute suppresses VAD. Playback must remain interruptible.
+        pcmProcessor.setPlaybackGated(isMuted)
     }
 
     private fun updateEngineState() {
@@ -267,6 +287,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 } catch (e: Exception) {
                     Log.e(TAG, "Error stopping AudioRecord", e)
                 } finally {
+                    releaseAudioEffects()
                     audioRecord = null
                     pcmProcessor.reset()
                     _engineState.value = State.IDLE
@@ -308,6 +329,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                     false
                 } else {
                     audioRecord = candidate
+                    attachAudioEffects(candidate)
                     Log.i(TAG, "Physical AudioRecord session successfully started (bufferSize=$bufferSize)")
                     true
                 }
@@ -321,6 +343,35 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             Log.e(TAG, "Exception initializing AudioRecord", e)
             false
         }
+    }
+
+    private fun attachAudioEffects(record: AudioRecord) {
+        releaseAudioEffects()
+        try {
+            if (AcousticEchoCanceler.isAvailable()) {
+                acousticEchoCanceler = AcousticEchoCanceler.create(record.audioSessionId)?.apply {
+                    enabled = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Acoustic echo cancellation could not be enabled on this device", e)
+        }
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                noiseSuppressor = NoiseSuppressor.create(record.audioSessionId)?.apply {
+                    enabled = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Noise suppression could not be enabled on this device", e)
+        }
+    }
+
+    private fun releaseAudioEffects() {
+        try { acousticEchoCanceler?.release() } catch (_: Exception) {}
+        try { noiseSuppressor?.release() } catch (_: Exception) {}
+        acousticEchoCanceler = null
+        noiseSuppressor = null
     }
 
     private fun startRecordingLoop() {
@@ -350,9 +401,9 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
                 if (bytesRead > 0) {
                     consecutiveReadErrors = 0
-                    if (!isMuted && !isAssistantSpeaking) {
-                        pcmProcessor.processRawFrame(readBuffer, bytesRead)
-                    }
+                    // Keep forwarding microphone PCM during assistant playback so VAD and
+                    // Gemini Live can detect barge-in without reopening AudioRecord.
+                    if (!isMuted) pcmProcessor.processRawFrame(readBuffer, bytesRead)
                 } else if (bytesRead == 0) {
                     // Avoid a tight CPU loop if a device returns an empty blocking read.
                     delay(10)
@@ -388,6 +439,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             }
 
             val oldRecord = audioRecord
+            releaseAudioEffects()
             audioRecord = null
             try {
                 oldRecord?.let { record ->
@@ -414,7 +466,9 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     }
 
     private fun handleCompletedUtterance(pcmData: ByteArray) {
+        if (isLiveConversation) return
         engineScope.launch(Dispatchers.IO) {
+            if (isLiveConversation) return@launch
             // Keep transcripts and command callbacks in capture order.
             utteranceMutex.withLock {
                 if (_engineState.value == State.SPEECH_DETECTED || _engineState.value == State.LISTENING) {
