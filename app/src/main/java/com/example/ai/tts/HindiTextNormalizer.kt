@@ -49,9 +49,12 @@ object HindiTextNormalizer {
         "thank" to "थैंक", "sorry" to "सॉरी", "weather" to "वेदर",
         "search" to "सर्च", "cpu" to "सीपीयू", "ram" to "रैम",
         "api" to "एपीआई", "percent" to "प्रतिशत", "rupees" to "रुपये",
-        "dollar" to "डॉलर", "internet" to "इंटरनेट", "call" to "कॉल",
+        "dollar" to "डॉलर", "usd" to "डॉलर", "inr" to "रुपये", "internet" to "इंटरनेट", "call" to "कॉल",
         "open" to "ओपन", "close" to "क्लोज़", "smart" to "स्मार्ट",
-        "fast" to "फास्ट", "slow" to "स्लो", "natural" to "नेचुरल"
+        "fast" to "फास्ट", "slow" to "स्लो", "natural" to "नेचुरल",
+        "km" to "किलोमीटर", "kg" to "किलोग्राम", "cm" to "सेंटीमीटर",
+        "mm" to "मिलीमीटर", "ml" to "मिलीलीटर", "mg" to "मिलीग्राम",
+        "gb" to "जीबी", "mb" to "एमबी", "mbps" to "एमबीपीएस", "mhz" to "मेगाहर्ट्ज"
     )
 
     private val letterNames = mapOf(
@@ -70,6 +73,10 @@ object HindiTextNormalizer {
         if (text.isBlank()) return ""
         var value = Normalizer.normalize(text, Normalizer.Form.NFC)
             .replace("[\\u200B\\uFEFF\\u2060\\u00AD\\u200C\\u200D]".toRegex(), "")
+            .map { ch ->
+                if (ch in '०'..'९') ('0'.code + (ch.code - '०'.code)).toChar() else ch
+            }.joinToString("")
+            .replace("$", " डॉलर ")
             .replace(Regex("\\s+"), " ")
             .trim()
 
