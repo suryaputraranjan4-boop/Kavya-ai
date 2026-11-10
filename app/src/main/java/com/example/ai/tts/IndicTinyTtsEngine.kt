@@ -159,7 +159,7 @@ class IndicTinyTtsEngine(private val context: Context) {
     private fun encodeCharacters(text: String): LongArray {
         val result = ArrayList<Long>(text.length * 2 + 1)
         val blank = vocabulary["<blank>"]?.toLong() ?: 0L
-        if (true) result.add(blank)
+        result.add(blank)
         for (ch in text) {
             val token = vocabulary["c:" + ch]
             val fallback = when (ch) {
@@ -172,7 +172,6 @@ class IndicTinyTtsEngine(private val context: Context) {
             result.add(id.toLong())
             result.add(blank)
         }
-        while (result.size > 1 && result.last() == blank) result.removeAt(result.lastIndex)
         return result.toLongArray()
     }
 
