@@ -474,6 +474,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopListening() {
+        if (liveVoiceClient.isActive() || liveStartedMicService) stopLiveConversation()
         com.example.voice.KavyaMicrophoneEngine.stopService(getApplication())
     }
 
