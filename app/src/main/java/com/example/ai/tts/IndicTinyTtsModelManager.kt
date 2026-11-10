@@ -236,6 +236,13 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
             val parent = target.parentFile ?: return@withContext false
             if (!parent.exists() && !parent.mkdirs()) return@withContext false
             val partial = File(parent, target.name + ".part")
+            if (partial.isFile && spec.sha256 != null && sha256(partial) == spec.sha256) {
+                if (target.exists()) target.delete()
+                return@withContext partial.renameTo(target)
+            }
+            if (partial.isFile && spec.expectedSizeBytes > 0L && partial.length() > spec.expectedSizeBytes) {
+                partial.delete()
+            }
             val existingBytes = if (partial.isFile) partial.length() else 0L
             try {
                 val requestBuilder = Request.Builder().url(HF_BASE_URL + spec.remotePath).get()
