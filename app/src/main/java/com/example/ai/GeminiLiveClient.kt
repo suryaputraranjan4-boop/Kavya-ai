@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -392,6 +393,14 @@ class GeminiLiveClient(context: Context) {
         _state.value = LiveVoiceState.DISCONNECTED
     }
 
+    fun release() {
+        stopLiveSession()
+        audioPlayer.release()
+        scope.cancel()
+        httpClient.dispatcher.executorService.shutdown()
+        httpClient.connectionPool.evictAll()
+    }
+
     private fun configureVoiceAudioRoute() {
         if (previousAudioMode != null) return
         try {
@@ -538,6 +547,12 @@ private class LivePcmAudioPlayer(
         try { track?.stop() } catch (_: Exception) {}
         try { track?.release() } catch (_: Exception) {}
         track = null
+    }
+
+    fun release() {
+        stop()
+        queue.close()
+        playerScope.cancel()
     }
 
     @Synchronized
