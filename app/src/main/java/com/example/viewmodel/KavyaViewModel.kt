@@ -370,12 +370,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     fun startLiveConversation() {
         val app = getApplication<Application>()
         if (_isOfflineMode.value || aiClient.isOfflineMode()) {
-            _latestKavyaCaption.value = "Live conversation needs Online Mode."
+            liveVoiceClient.reportError("Live conversation needs Online Mode.")
             return
         }
         val apiKey = com.example.utils.AppPreferences.getEffectiveApiKey(app)
         if (apiKey.isBlank()) {
-            _latestKavyaCaption.value = "Gemini API key is missing. Add it in AI API Hub."
+            liveVoiceClient.reportError("Gemini API key is missing. Add it in AI API Hub.")
             return
         }
 
