@@ -93,7 +93,14 @@ class KavyaVoiceService : Service() {
         when (action) {
             ACTION_START, ACTION_WAKE -> {
                 micEngine.setSleeping(false)
-                micEngine.startListening()
+                if (!micEngine.startListening()) {
+                    Log.e(TAG, "Microphone failed to start; stopping foreground service instead of leaving a false listening state.")
+                    AppPreferences.setMicEnabled(this, false)
+                    AppPreferences.setKavyaState(this, "OFF")
+                    stopForeground(true)
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
             }
             ACTION_SLEEP -> {
                 micEngine.setSleeping(true)
@@ -105,7 +112,14 @@ class KavyaVoiceService : Service() {
             ACTION_TOGGLE -> {
                 val currentState = micEngine.engineState.value
                 if (currentState == MicrophoneEngine.State.IDLE || currentState == MicrophoneEngine.State.STOPPING || currentState == MicrophoneEngine.State.ERROR) {
-                    micEngine.startListening()
+                    if (!micEngine.startListening()) {
+                        Log.e(TAG, "Microphone toggle start failed; stopping foreground service.")
+                        AppPreferences.setMicEnabled(this, false)
+                        AppPreferences.setKavyaState(this, "OFF")
+                        stopForeground(true)
+                        stopSelf(startId)
+                        return START_NOT_STICKY
+                    }
                 } else {
                     micEngine.stopListening()
                     stopSelf()
