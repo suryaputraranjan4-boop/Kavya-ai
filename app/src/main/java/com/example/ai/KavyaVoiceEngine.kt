@@ -18,7 +18,6 @@ class KavyaVoiceEngine(
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var activeSpeechJob: Job? = null
     private var lastErrorSpeechTimestamp = 0L
 
     @Volatile
@@ -59,8 +58,6 @@ class KavyaVoiceEngine(
                 lower.contains("network error")
     }
 
-    private val chatterboxClient = ChatterboxTtsClient(context)
-    private val voiceProfileManager = VoiceProfileManager.getInstance(context)
 
     fun speak(
         text: String,
@@ -103,38 +100,30 @@ class KavyaVoiceEngine(
         val engineManager = com.example.ai.tts.VoiceEngineManager.getInstance(context)
         updateSpeakingState(true)
 
-        engineManager.speak(cleanText, enqueue = enqueue) {
-            updateSpeakingState(false)
-            onComplete?.invoke()
-        }
+        engineManager.speak(
+            text = cleanText,
+            enqueue = enqueue,
+            onComplete = {
+                updateSpeakingState(false)
+                onComplete?.invoke()
+            },
+            speed = effectiveSpeed,
+            pitch = effectivePitch,
+            emotion = sentiment.label
+        )
     }
 
     private fun speakCleanFallback(enqueue: Boolean, onComplete: (() -> Unit)?) {
         val naturalFallback = "अभी connection में थोड़ी problem है, थोड़ी देर में फिर try करती हूँ।"
-        scope.launch(Dispatchers.IO) {
-            try {
-                val activeProfile = voiceProfileManager.getActiveProfile()
-                val result = chatterboxClient.synthesize(
-                    text = naturalFallback,
-                    referenceAudioPath = activeProfile.audioFilePath,
-                    pitchMultiplier = 1.0f,
-                    speedMultiplier = 1.0f,
-                    emotion = "Calm and relaxed"
-                )
-                if (result is ChatterboxResult.Success && result.audioBytes.isNotEmpty() && geminiPlayer != null) {
-                    geminiPlayer.playAudioBytes(result.audioBytes, text = naturalFallback, enqueue = enqueue) {
-                        updateSpeakingState(false)
-                        onComplete?.invoke()
-                    }
-                } else {
-                    updateSpeakingState(false)
-                    onComplete?.invoke()
-                }
-            } catch (_: Exception) {
+        updateSpeakingState(true)
+        com.example.ai.tts.VoiceEngineManager.getInstance(context).speak(
+            text = naturalFallback,
+            enqueue = enqueue,
+            onComplete = {
                 updateSpeakingState(false)
                 onComplete?.invoke()
             }
-        }
+        )
     }
 
     suspend fun speakSuspending(text: String, explicitSentiment: Sentiment? = null) {
@@ -156,8 +145,9 @@ class KavyaVoiceEngine(
             }
 
             // Stop the underlying request if the caller waits longer than the safety limit.
+            val timeoutMs = (20_000L + clean.length * 120L).coerceIn(30_000L, 180_000L)
             timeoutJob = scope.launch {
-                delay(10000)
+                delay(timeoutMs)
                 if (continuation.isActive) {
                     stop()
                     continuation.resume(Unit) {}
@@ -172,7 +162,7 @@ class KavyaVoiceEngine(
     }
 
     fun stop() {
-        activeSpeechJob?.cancel()
+        com.example.ai.tts.VoiceEngineManager.getInstance(context).stop()
         geminiPlayer?.stop()
         updateSpeakingState(false)
         Log.d(TAG, "VOICE_PLAYBACK_INTERRUPTED")
