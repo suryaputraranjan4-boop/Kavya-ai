@@ -64,6 +64,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     // State Flows
     private val _engineState = MutableStateFlow(State.IDLE)
     val engineState: StateFlow<State> = _engineState.asStateFlow()
+    val isRecording: Boolean get() = isRecordingActive
 
     private val _amplitude = MutableStateFlow(0.0f)
     val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
