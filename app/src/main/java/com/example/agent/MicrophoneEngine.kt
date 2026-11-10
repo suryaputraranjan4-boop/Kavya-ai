@@ -377,7 +377,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     private fun startRecordingLoop() {
         recordingJob = engineScope.launch(Dispatchers.IO) {
-            val readBuffer = ByteArray(2048)
+            val readBuffer = ByteArray(1280)
             var consecutiveReadErrors = 0
             Log.d(TAG, "Entering continuous PCM audio capture loop...")
 
