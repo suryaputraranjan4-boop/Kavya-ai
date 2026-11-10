@@ -181,7 +181,7 @@ class IndicTinyTtsEngine(private val context: Context) {
         val encSession = encoder ?: error("Text encoder is not initialized")
         val decSession = decoder ?: error("Flow decoder is not initialized")
         val vocSession = vocoder ?: error("Vocoder is not initialized")
-        val env = env
+        val runtimeEnv = this.env
 
         val encoderInputs = linkedMapOf<String, OnnxTensor>()
         val encResult: OrtSession.Result
@@ -196,14 +196,16 @@ class IndicTinyTtsEngine(private val context: Context) {
             encoderInputs.values.forEach { it.close() }
         }
 
-        val muX: Array<Array<FloatArray>>
-        val logW: Array<Array<FloatArray>>
-        val cond: Array<FloatArray>
-        encResult.use {
-            muX = it.get("mu_x").get().value as Array<Array<FloatArray>>
-            logW = it.get("logw").get().value as Array<Array<FloatArray>>
-            cond = it.get("cond").get().value as Array<FloatArray>
+        val encoded = encResult.use { result ->
+            Triple(
+                result.get("mu_x").get().value as Array<Array<FloatArray>>,
+                result.get("logw").get().value as Array<Array<FloatArray>>,
+                result.get("cond").get().value as Array<FloatArray>
+            )
         }
+        val muX = encoded.first
+        val logW = encoded.second
+        val cond = encoded.third
         val tokenCount = ids.size
         require(muX[0].all { it.size == tokenCount } && logW[0][0].size == tokenCount) {
             "Text encoder returned unexpected tensor dimensions."
@@ -258,8 +260,7 @@ class IndicTinyTtsEngine(private val context: Context) {
             } finally {
                 inputs.values.forEach { it.close() }
             }
-            val velocity: Array<Array<FloatArray>>
-            result.use { velocity = it.get("v").get().value as Array<Array<FloatArray>> }
+            val velocity = result.use { it.get("v").get().value as Array<Array<FloatArray>> }
             for (c in 0 until channels) for (t in 0 until paddedLength) {
                 x[c][t] += dt * velocity[0][c][t]
             }
@@ -277,20 +278,24 @@ class IndicTinyTtsEngine(private val context: Context) {
         } finally {
             vocInputs.values.forEach { it.close() }
         }
-        val real: Array<Array<FloatArray>>
-        val imag: Array<Array<FloatArray>>
-        vocResult.use {
-            real = it.get("real").get().value as Array<Array<FloatArray>>
-            imag = it.get("imag").get().value as Array<Array<FloatArray>>
+        val spectra = vocResult.use { result ->
+            Pair(
+                result.get("real").get().value as Array<Array<FloatArray>>,
+                result.get("imag").get().value as Array<Array<FloatArray>>
+            )
         }
+        val real = spectra.first
+        val imag = spectra.second
         return inverseStft(real[0], imag[0])
     }
 
+    private fun runtimeEnvForTensor(): OrtEnvironment = env
+
     private fun tensorLong(shape: LongArray, data: LongArray): OnnxTensor =
-        OnnxTensor.createTensor(env, LongBuffer.wrap(data), shape)
+        OnnxTensor.createTensor(runtimeEnvForTensor(), LongBuffer.wrap(data), shape)
 
     private fun tensorFloat(shape: LongArray, data: FloatArray): OnnxTensor =
-        OnnxTensor.createTensor(env, FloatBuffer.wrap(data), shape)
+        OnnxTensor.createTensor(runtimeEnvForTensor(), FloatBuffer.wrap(data), shape)
 
     private fun flatten3d(data: Array<FloatArray>): FloatArray {
         val size = data.sumOf { it.size }
