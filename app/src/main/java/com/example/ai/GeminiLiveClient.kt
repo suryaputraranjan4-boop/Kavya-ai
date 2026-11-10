@@ -211,12 +211,12 @@ class GeminiLiveClient(context: Context) {
                 .put("automaticActivityDetection", JSONObject().put("disabled", false))
                 .put("activityHandling", "START_OF_ACTIVITY_INTERRUPTS")
             )
-            .put("inputAudioTranscription", JSONObject().put(
-                "languageCodes", JSONArray().put("hi-IN").put("en-IN")
-            ))
-            .put("outputAudioTranscription", JSONObject().put(
-                "languageCodes", JSONArray().put("hi-IN").put("en-IN")
-            ))
+            .put("inputAudioTranscription", JSONObject())
+            .put("outputAudioTranscription", JSONObject())
+            .put("contextWindowCompression", JSONObject()
+                .put("triggerTokens", 8000)
+                .put("slidingWindow", JSONObject().put("targetTokens", 4000))
+            )
             .put("tools", JSONArray().put(
                 JSONObject().put("functionDeclarations", JSONArray().put(
                     JSONObject()
