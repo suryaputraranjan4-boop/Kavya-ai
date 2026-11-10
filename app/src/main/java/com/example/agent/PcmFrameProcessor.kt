@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -49,6 +50,19 @@ class PcmFrameProcessor(
         vad.onSpeechEnd = { utterancePcm ->
             onUtteranceCompleted?.invoke(utterancePcm)
         }
+
+        scope.launch(Dispatchers.IO) {
+            for (pcmData in subscriberFrames) {
+                val subscribersCopy = frameSubscribers.values.toList()
+                for (subscriber in subscribersCopy) {
+                    try {
+                        subscriber(pcmData)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Subscriber delivery exception", e)
+                    }
+                }
+            }
+        }
     }
 
     var onUtteranceCompleted: ((ByteArray) -> Unit)? = null
@@ -87,18 +101,9 @@ class PcmFrameProcessor(
         // 2. Feed VAD
         vad.processFrame(pcmData, length)
 
-        // 3. Deliver raw frame to subscribers asynchronously if any exist
+        // 3. Deliver raw frames in capture order to the single subscriber worker.
         if (frameSubscribers.isNotEmpty()) {
-            val subscribersCopy = frameSubscribers.values.toList()
-            scope.launch {
-                for (subscriber in subscribersCopy) {
-                    try {
-                        subscriber(pcmData)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Subscriber delivery exception", e)
-                    }
-                }
-            }
+            subscriberFrames.trySend(pcmData)
         }
     }
 
