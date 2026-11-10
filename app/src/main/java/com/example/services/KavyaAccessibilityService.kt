@@ -711,14 +711,33 @@ class KavyaAccessibilityService : AccessibilityService() {
         return null
     }
 
-    fun clickSearchOrSubmitButton(): Boolean {
-        val root = safeGetRootInActiveWindow() ?: return false
-        val searchNode = findSubmitButton(root, "Search")
-            ?: findSubmitButton(root, "Go")
-            ?: findSubmitButton(root, "Submit")
-            ?: findSubmitButton(root, "Send")
-            ?: findSubmitButton(root, "खोजें")
-        return clickNode(searchNode)
+    fun clickSearchOrSubmitButton(targetNode: AccessibilityNodeInfo? = null): Boolean {
+        // 1. Dispatch IME action directly on the input node or focused node
+        val candidate = targetNode ?: findFocusedEditableNode(safeGetRootInActiveWindow())
+        var imeDispatched = false
+        if (candidate != null) {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                imeDispatched = candidate.performAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+            }
+        }
+
+        // 2. Search for explicit search or submit button
+        val root = safeGetRootInActiveWindow()
+        if (root != null) {
+            val searchNode = findSubmitButton(root, "Search")
+                ?: findSubmitButton(root, "Go")
+                ?: findSubmitButton(root, "Submit")
+                ?: findSubmitButton(root, "Send")
+                ?: findSubmitButton(root, "खोजें")
+                ?: findSubmitButton(root, "search_go_btn")
+                ?: findSubmitButton(root, "search_button")
+            if (searchNode != null) {
+                val clicked = clickNode(searchNode)
+                if (clicked) return true
+            }
+        }
+
+        return imeDispatched || candidate != null
     }
 
     /**
@@ -778,20 +797,20 @@ class KavyaAccessibilityService : AccessibilityService() {
         if (targetField != null) {
             val typed = typeInNode(targetField, query)
             if (typed) {
-                kotlinx.coroutines.delay(200)
-                return clickSearchOrSubmitButton()
+                kotlinx.coroutines.delay(250)
+                return clickSearchOrSubmitButton(targetField)
             }
         }
 
         // 4. Try typing in currently focused input
         if (typeInFocusedNode(query)) {
-            kotlinx.coroutines.delay(200)
+            kotlinx.coroutines.delay(250)
             return clickSearchOrSubmitButton()
         }
 
         // 5. Try generic search text resolution
         if (typeInNodeByText("search", query)) {
-            kotlinx.coroutines.delay(200)
+            kotlinx.coroutines.delay(250)
             return clickSearchOrSubmitButton()
         }
 

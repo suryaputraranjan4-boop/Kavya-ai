@@ -82,6 +82,11 @@
         </provider>
 
         <service
+            android:name="com.example.services.KavyaVoiceService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
+
+        <service
             android:name="com.example.voice.KavyaMicrophoneEngine"
             android:foregroundServiceType="microphone"
             android:exported="false" />

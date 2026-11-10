@@ -976,6 +976,23 @@ fun AiApiHubScreen(navController: NavController) {
             }
 
             item {
+                val hasCustomKey = geminiKeyInput.isNotBlank()
+                val isSecretLoaded = !hasCustomKey && effectiveGeminiKey.isNotBlank()
+                val activeDisplayKey = if (hasCustomKey) geminiKeyInput else effectiveGeminiKey
+                val isFromKey1 = !hasCustomKey && try {
+                    val k1 = com.example.BuildConfig.GEMINI_API_KEY1.trim()
+                    k1.isNotBlank() && !AppPreferences.isPlaceholderKey(k1) && k1 == effectiveGeminiKey
+                } catch (_: Throwable) { false }
+                val activeKeySource = if (hasCustomKey) {
+                    "In-App Key Override"
+                } else if (isFromKey1) {
+                    "AI Studio Secret (GEMINI_API_KEY1 Active)"
+                } else if (isSecretLoaded) {
+                    "AI Studio Secret (Active)"
+                } else {
+                    null
+                }
+
                 ApiCard(
                     title = "Google Gemini",
                     badge = "MAIN BRAIN / BOSS",
@@ -983,7 +1000,7 @@ fun AiApiHubScreen(navController: NavController) {
                     icon = Icons.Default.Psychology,
                     isEnabled = true,
                     onToggleEnabled = null, // Main orchestrator is always on
-                    status = if (effectiveGeminiKey.isBlank()) {
+                    status = if (effectiveGeminiKey.isBlank() && geminiKeyInput.isBlank()) {
                         ConnectionStatus.NOT_CONFIGURED
                     } else if (isGeminiTesting) {
                         ConnectionStatus.TESTING
@@ -994,12 +1011,16 @@ fun AiApiHubScreen(navController: NavController) {
                     } else {
                         ConnectionStatus.CONFIGURED
                     },
-                    apiKey = geminiKeyInput,
+                    apiKey = if (isGeminiEditing) geminiKeyInput else activeDisplayKey,
+                    keySourceLabel = activeKeySource,
                     onApiKeyChange = { geminiKeyInput = it },
                     isKeyVisible = isGeminiKeyVisible,
                     onToggleKeyVisibility = { isGeminiKeyVisible = !isGeminiKeyVisible },
                     isEditing = isGeminiEditing,
-                    onStartEdit = { isGeminiEditing = true },
+                    onStartEdit = {
+                        isGeminiEditing = true
+                        geminiKeyInput = activeDisplayKey
+                    },
                     onSaveKey = {
                         AppPreferences.setCustomApiKey(context, geminiKeyInput.trim())
                         isGeminiEditing = false
@@ -1682,6 +1703,7 @@ fun ApiCard(
     onToggleEnabled: ((Boolean) -> Unit)?,
     status: ConnectionStatus,
     apiKey: String,
+    keySourceLabel: String? = null,
     onApiKeyChange: (String) -> Unit,
     isKeyVisible: Boolean,
     onToggleKeyVisibility: () -> Unit,
@@ -1832,7 +1854,20 @@ fun ApiCard(
 
             // API Key Section
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("API Key:", style = MaterialTheme.typography.labelSmall, color = TextTertiary)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("API Key:", style = MaterialTheme.typography.labelSmall, color = TextTertiary)
+                    if (!keySourceLabel.isNullOrBlank()) {
+                        Text(
+                            keySourceLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = AccentCyan
+                        )
+                    }
+                }
 
                 if (!isEditing && apiKey.isNotBlank()) {
                     Row(
@@ -1843,8 +1878,13 @@ fun ApiCard(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Lock, contentDescription = null, tint = SuccessGreenGlow, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
+                            val maskedDisplay = if (apiKey.length > 8) {
+                                "•••••••••••••••• " + apiKey.takeLast(4)
+                            } else {
+                                "••••••••••••••••"
+                            }
                             Text(
-                                "••••••••••••••••••••",
+                                maskedDisplay,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = TextPrimary
                             )

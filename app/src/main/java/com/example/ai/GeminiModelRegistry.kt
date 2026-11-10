@@ -37,8 +37,11 @@ object GeminiModelRegistry {
 
     // Ordered candidate tiers for chat and reasoning
     val CHAT_MODEL_TIERS = listOf(
+        "gemini-2.5-flash",
         DEFAULT_AGENT_MODEL,
-        PRO_REASONING_MODEL
+        "gemini-2.0-flash",
+        PRO_REASONING_MODEL,
+        "gemini-1.5-flash"
     )
 }
 

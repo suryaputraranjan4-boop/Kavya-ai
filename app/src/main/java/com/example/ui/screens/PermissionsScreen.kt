@@ -42,11 +42,19 @@ import com.google.accompanist.permissions.rememberMultiplePermissionsState
 fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var notifGranted by remember { mutableStateOf(AppPreferences.hasNotificationPermission(context)) }
+    var micGranted by remember { mutableStateOf(PermissionsManager.hasRecordAudioPermission(context)) }
     var accessibilityGranted by remember { mutableStateOf(PermissionsManager.isAccessibilityServiceEnabled(context, KavyaAccessibilityService::class.java)) }
+    var overlayGranted by remember { mutableStateOf(PermissionsManager.canDrawOverlays(context)) }
+    var usageStatsGranted by remember { mutableStateOf(PermissionsManager.hasUsageStatsPermission(context)) }
+    var notifListenerGranted by remember { mutableStateOf(PermissionsManager.hasNotificationListenerPermission(context)) }
 
     fun refreshAll() {
         notifGranted = AppPreferences.hasNotificationPermission(context)
+        micGranted = PermissionsManager.hasRecordAudioPermission(context)
         accessibilityGranted = PermissionsManager.isAccessibilityServiceEnabled(context, KavyaAccessibilityService::class.java)
+        overlayGranted = PermissionsManager.canDrawOverlays(context)
+        usageStatsGranted = PermissionsManager.hasUsageStatsPermission(context)
+        notifListenerGranted = PermissionsManager.hasNotificationListenerPermission(context)
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
@@ -54,7 +62,7 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
     }
 
     val permissionsToRequest = remember {
-        val list = mutableListOf<String>()
+        val list = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             list.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -74,7 +82,7 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
         ) {
             item {
                 Text(
-                    text = "System Access for Screen Perception & Notifications",
+                    text = "System Access for Voice, Screen Perception & In-App Assistance",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
@@ -83,10 +91,10 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
 
             item {
                 PermissionGlassCard(
-                    icon = Icons.Default.Notifications,
-                    title = "Background Alerts & Notifications",
-                    description = "Displays live companion status and action feedback.",
-                    isGranted = notifGranted,
+                    icon = Icons.Default.Mic,
+                    title = "Microphone & Voice Input",
+                    description = "Required for hands-free voice commands, continuous listening, and Chatterbox Hindi speech coordination.",
+                    isGranted = micGranted,
                     onClick = { permissionState.launchMultiplePermissionRequest() }
                 )
             }
@@ -95,9 +103,49 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
                 PermissionGlassCard(
                     icon = Icons.Default.Accessibility,
                     title = "Accessibility & Vision Service",
-                    description = "Enables Kavya to inspect on-screen UI nodes, read content, and assist your interactions.",
+                    description = "Enables Kavya to inspect on-screen UI nodes, read app content, and execute requested taps and searches.",
                     isGranted = accessibilityGranted,
                     onClick = { PermissionsManager.requestAccessibilityPermission(context) }
+                )
+            }
+
+            item {
+                PermissionGlassCard(
+                    icon = Icons.Default.Notifications,
+                    title = "Background Alerts & Status",
+                    description = "Displays live companion status, ongoing task progress, and scheduled reminder alerts.",
+                    isGranted = notifGranted,
+                    onClick = { permissionState.launchMultiplePermissionRequest() }
+                )
+            }
+
+            item {
+                PermissionGlassCard(
+                    icon = Icons.AutoMirrored.Filled.OpenInNew,
+                    title = "Overlay & Visual Reticle",
+                    description = "Allows Kavya to display floating companion indicators and 'Shows You How' interactive guidance over apps.",
+                    isGranted = overlayGranted,
+                    onClick = { PermissionsManager.requestOverlayPermission(context) }
+                )
+            }
+
+            item {
+                PermissionGlassCard(
+                    icon = Icons.Default.RestartAlt,
+                    title = "App Usage Stats & Context",
+                    description = "Enables context-aware assistance by detecting foreground applications and study/work patterns.",
+                    isGranted = usageStatsGranted,
+                    onClick = { PermissionsManager.requestUsageStatsPermission(context) }
+                )
+            }
+
+            item {
+                PermissionGlassCard(
+                    icon = Icons.Default.Notifications,
+                    title = "Notification Listener",
+                    description = "Allows reading and summarizing incoming notifications (e.g. WhatsApp messages) when requested.",
+                    isGranted = notifListenerGranted,
+                    onClick = { PermissionsManager.requestNotificationListenerPermission(context) }
                 )
             }
 
@@ -118,16 +166,16 @@ fun PermissionsScreen(navController: NavController, modifier: Modifier = Modifie
                     }
 
                     Button(
-                        onClick = { navController.navigate("onboarding") },
+                        onClick = { PermissionsManager.openAppSettings(context) },
                         modifier = Modifier
                             .weight(1.2f)
                             .height(48.dp),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Primary)
                     ) {
-                        Icon(Icons.Default.RestartAlt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Run Setup Flow", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                        Text("App Settings", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
                     }
                 }
             }

@@ -160,6 +160,16 @@ object RetrofitClient {
         .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val original = chain.request()
+            val url = original.url
+            val key = url.queryParameter("key")
+            val builder = original.newBuilder()
+            if (!key.isNullOrBlank() && original.header("x-goog-api-key").isNullOrBlank()) {
+                builder.header("x-goog-api-key", key)
+            }
+            chain.proceed(builder.build())
+        }
         .build()
 
     private val json = Json { 
@@ -490,7 +500,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
         history: List<MessageEntity> = emptyList(),
         screenContext: String? = null, 
         memoryContext: String = "",
-        isProactiveMode: Boolean = false
+        isProactiveMode: Boolean = false,
+        imageBytes: ByteArray? = null
     ): String = withContext(Dispatchers.IO) {
         val requestId = (prompt.hashCode() * 31 + history.size).toString()
         val priority = if (isProactiveMode) com.example.api.RequestPriority.P3_PROACTIVE_CONVERSATION else com.example.api.RequestPriority.P0_ACTIVE_USER_REQUEST
@@ -580,7 +591,13 @@ class KavyaAI(private val context: android.content.Context? = null) {
             // Can't have two users in a row. Drop the previous one if the current prompt is also user.
             contents.removeAt(contents.size - 1)
         }
-        contents.add(Content(role = "user", parts = listOf(Part(text = prompt.trim()))))
+        val userParts = mutableListOf<Part>()
+        if (imageBytes != null && imageBytes.isNotEmpty()) {
+            val base64Data = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
+            userParts.add(Part(inlineData = InlineData(mimeType = "image/jpeg", data = base64Data)))
+        }
+        userParts.add(Part(text = prompt.trim()))
+        contents.add(Content(role = "user", parts = userParts))
 
         val request = GenerateContentRequest(
             contents = contents,
@@ -816,7 +833,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
         history: List<com.example.data.MessageEntity> = emptyList(), 
         screenContext: String? = null, 
         memoryContext: String = "",
-        isProactiveMode: Boolean = true
+        isProactiveMode: Boolean = true,
+        imageBytes: ByteArray? = null
     ): kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.flow {
         val requestId = (prompt.hashCode() * 31 + history.size).toString()
         val priority = if (isProactiveMode) com.example.api.RequestPriority.P3_PROACTIVE_CONVERSATION else com.example.api.RequestPriority.P0_ACTIVE_USER_REQUEST
@@ -842,7 +860,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
         val isUsingOpenRouter = context != null && com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER"
         if (isUsingOpenRouter) {
-            val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode)
+            val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode, imageBytes)
             emit(responseText)
             return@flow
         }
@@ -859,7 +877,13 @@ class KavyaAI(private val context: android.content.Context? = null) {
         if (lastRole == "user") {
             contents.removeAt(contents.size - 1)
         }
-        contents.add(Content(role = "user", parts = listOf(Part(text = prompt.trim()))))
+        val userParts = mutableListOf<Part>()
+        if (imageBytes != null && imageBytes.isNotEmpty()) {
+            val base64Data = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
+            userParts.add(Part(inlineData = InlineData(mimeType = "image/jpeg", data = base64Data)))
+        }
+        userParts.add(Part(text = prompt.trim()))
+        contents.add(Content(role = "user", parts = userParts))
         
         val sysText = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
 
@@ -895,6 +919,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 if (hasEmittedTokens) break
                 val request = okhttp3.Request.Builder()
                     .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$apiKey")
+                    .addHeader("x-goog-api-key", apiKey)
+                    .addHeader("Accept", "text/event-stream")
                     .post(okhttp3.RequestBody.create("application/json".toMediaType(), requestJson))
                     .build()
 
@@ -952,4 +978,59 @@ class KavyaAI(private val context: android.content.Context? = null) {
             com.example.api.QuotaManager.instance.releaseQuota(requestId)
         }
     }.flowOn(kotlinx.coroutines.Dispatchers.IO)
+
+    suspend fun transcribeAudio(pcmData: ByteArray, sampleRate: Int = 16000): String = withContext(Dispatchers.IO) {
+        if (pcmData.isEmpty()) return@withContext ""
+        val wavBytes = createWavBytes(pcmData, sampleRate)
+        val base64Wav = Base64.encodeToString(wavBytes, Base64.NO_WRAP)
+        val request = GenerateContentRequest(
+            contents = listOf(
+                Content(
+                    role = "user",
+                    parts = listOf(
+                        Part(inlineData = InlineData(mimeType = "audio/wav", data = base64Wav)),
+                        Part(text = "Transcribe the spoken audio accurately. Output only the verbatim transcribed speech text in its spoken language (Hindi, English, or Hinglish) without any commentary.")
+                    )
+                )
+            )
+        )
+        val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
+        if (apiKey.isBlank()) return@withContext ""
+        try {
+            val response = RetrofitClient.service.generateContent(
+                model = GeminiModelRegistry.DEFAULT_AGENT_MODEL,
+                apiKey = apiKey,
+                request = request
+            )
+            response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
+        } catch (e: Exception) {
+            Log.e("KavyaAI", "Error transcribing audio: ${e.message}")
+            ""
+        }
+    }
+
+    private fun createWavBytes(pcmData: ByteArray, sampleRate: Int = 16000): ByteArray {
+        val totalDataLen = pcmData.size + 36
+        val byteRate = sampleRate * 2
+        val header = ByteArray(44)
+        val bb = java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        bb.put('R'.code.toByte()).put('I'.code.toByte()).put('F'.code.toByte()).put('F'.code.toByte())
+        bb.putInt(totalDataLen)
+        bb.put('W'.code.toByte()).put('A'.code.toByte()).put('V'.code.toByte()).put('E'.code.toByte())
+        bb.put('f'.code.toByte()).put('m'.code.toByte()).put('t'.code.toByte()).put(' '.code.toByte())
+        bb.putInt(16)
+        bb.putShort(1.toShort())
+        bb.putShort(1.toShort())
+        bb.putInt(sampleRate)
+        bb.putInt(byteRate)
+        bb.putShort(2.toShort())
+        bb.putShort(16.toShort())
+        bb.put('d'.code.toByte()).put('a'.code.toByte()).put('t'.code.toByte()).put('a'.code.toByte())
+        bb.putInt(pcmData.size)
+
+        val wav = ByteArray(44 + pcmData.size)
+        System.arraycopy(header, 0, wav, 0, 44)
+        System.arraycopy(pcmData, 0, wav, 44, pcmData.size)
+        return wav
+    }
 }

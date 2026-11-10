@@ -334,7 +334,27 @@ class MemoryEngine(private val context: Context) {
     ): String? = withContext(Dispatchers.IO) {
         val lower = query.lowercase(Locale.ROOT).trim()
 
-        val isRecallQuestion = lower.contains("what did i tell you") ||
+        val isContinuationQuery = lower.contains("continue where we") ||
+                lower.contains("leave off") ||
+                lower.contains("left off") ||
+                lower.contains("where did we stop") ||
+                lower.contains("continue from where") ||
+                lower.contains("what was i working on") ||
+                lower.contains("continue my previous") ||
+                lower.contains("resume previous") ||
+                lower.contains("resume my") ||
+                lower.contains("kahan ruka tha") ||
+                lower.contains("kahan chhoda tha") ||
+                lower.contains("kahan choda tha") ||
+                lower.contains("pichla project") ||
+                lower.contains("pichla task") ||
+                lower.contains("previous project") ||
+                lower.contains("previous task") ||
+                lower.contains("kis topic par") ||
+                lower.contains("hum kis baare mein")
+
+        val isRecallQuestion = isContinuationQuery ||
+                lower.contains("what did i tell you") ||
                 lower.contains("last time") ||
                 lower.contains("what do you remember") ||
                 lower.contains("kya yaad hai") ||
@@ -350,10 +370,30 @@ class MemoryEngine(private val context: Context) {
 
         val memories = memoryDao.getAllMemories()
 
+        // Handle continuation / resume queries specifically
+        if (isContinuationQuery) {
+            val projectMemories = memories.filter { m ->
+                val lowerKey = m.key.lowercase(Locale.ROOT)
+                val lowerCat = m.category.lowercase(Locale.ROOT)
+                lowerKey.contains("project") || lowerKey.contains("task") || lowerKey.contains("goal") ||
+                        lowerKey.contains("work") || lowerCat == "task_workflow" || lowerCat == "critical"
+            }
+            if (projectMemories.isNotEmpty()) {
+                val latest = projectMemories.maxByOrNull { it.lastUsedAt } ?: projectMemories.first()
+                return@withContext "Pichli baar hum '${latest.key}' par focus kar rahe the (${latest.content}). Kya hum ise aage continue karein?"
+            } else if (recentMessages.isNotEmpty()) {
+                val lastMeaningfulUserMsg = recentMessages.filter { it.isUser && it.text.length > 5 }.lastOrNull()
+                if (lastMeaningfulUserMsg != null) {
+                    return@withContext "Pichli baar aapne '${lastMeaningfulUserMsg.text.take(80)}' ke baare mein baat ki thi. Kya hum wahin se aage badhein?"
+                }
+            }
+            return@withContext "Mujhe koi active incomplete project memory nahi mili. Aap jis task ya project par kaam shuru karna chahte hain, mujhe bataiye!"
+        }
+
         // Check if user is asking about a SPECIFIC topic, person, or app (Requirement 9: No Fake Memory)
         val specificKeywords = listOf(
             "didi", "whatsapp", "spotify", "youtube", "chrome", "rohan",
-            "mummy", "call", "message", "song", "preference", "workflow"
+            "mummy", "call", "message", "song", "preference", "workflow", "project", "task"
         )
         val matchingKeywords = specificKeywords.filter { lower.contains(it) }
 

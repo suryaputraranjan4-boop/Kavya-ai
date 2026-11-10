@@ -372,6 +372,8 @@ object AppPreferences {
     }
 
     fun isBuiltInApiKeyAvailable(): Boolean {
+        val key1 = try { BuildConfig.GEMINI_API_KEY1.trim() } catch (_: Throwable) { "" }
+        if (key1.isNotBlank() && !isPlaceholderKey(key1)) return true
         val key = BuildConfig.GEMINI_API_KEY.trim()
         return key.isNotBlank() && !isPlaceholderKey(key)
     }
@@ -401,6 +403,11 @@ object AppPreferences {
         if (customKey.isNotBlank() && !isPlaceholderKey(customKey)) {
             return customKey
         }
+        // Prefer GEMINI_API_KEY1 if configured
+        val buildKey1 = try { BuildConfig.GEMINI_API_KEY1.trim() } catch (_: Throwable) { "" }
+        if (buildKey1.isNotBlank() && !isPlaceholderKey(buildKey1)) {
+            return buildKey1
+        }
         val buildKey = BuildConfig.GEMINI_API_KEY.trim()
         if (buildKey.isNotBlank() && !isPlaceholderKey(buildKey)) {
             return buildKey
@@ -413,6 +420,8 @@ object AppPreferences {
         return lower.isBlank() ||
                 lower == "my_gemini_api_key" ||
                 lower == "your_gemini_api_key" ||
+                lower == "your_gemini_api_key1" ||
+                lower == "my_gemini_api_key1" ||
                 lower == "your_api_key" ||
                 lower == "my_api_key" ||
                 lower == "placeholder" ||
@@ -451,40 +460,72 @@ object AppPreferences {
      * Validates API key against Gemini API with a lightweight prompt
      */
     suspend fun validateGeminiApiKey(apiKey: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) {
-            return@withContext Pair(false, "API Key is empty.")
+        val cleanKey = apiKey.trim()
+        if (cleanKey.isBlank() || isPlaceholderKey(cleanKey)) {
+            return@withContext Pair(false, "API Key is empty or placeholder.")
         }
-        try {
-            val testRequest = GenerateContentRequest(
-                contents = listOf(
-                    Content(
-                        role = "user",
-                        parts = listOf(Part(text = "Hi"))
-                    )
+        val candidateModels = listOf(
+            com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL,
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash"
+        )
+        val testRequest = GenerateContentRequest(
+            contents = listOf(
+                Content(
+                    role = "user",
+                    parts = listOf(Part(text = "Hi"))
                 )
             )
-            val response = RetrofitClient.service.generateContent(
-                model = "gemini-3.6-flash",
-                apiKey = apiKey.trim(),
-                request = testRequest
-            )
-            val candidate = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-            if (!candidate.isNullOrBlank()) {
-                Pair(true, "API Key verified successfully!")
-            } else {
-                Pair(true, "API Key is valid and active.")
+        )
+        var lastHttpCode = 0
+        var lastHttpBody = ""
+        for (model in candidateModels) {
+            try {
+                val response = RetrofitClient.service.generateContent(
+                    model = model,
+                    apiKey = cleanKey,
+                    request = testRequest
+                )
+                val candidate = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                if (!candidate.isNullOrBlank()) {
+                    return@withContext Pair(true, "API Key verified with $model!")
+                } else {
+                    return@withContext Pair(true, "API Key is valid and active.")
+                }
+            } catch (e: retrofit2.HttpException) {
+                lastHttpCode = e.code()
+                lastHttpBody = try { e.response()?.errorBody()?.string().orEmpty() } catch (_: Exception) { "" }
+                if (lastHttpCode == 404) {
+                    // Try next candidate model
+                    continue
+                }
+                if (lastHttpCode == 429) {
+                    return@withContext Pair(true, "Valid API Key (rate limited, but active).")
+                }
+                break
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (io: java.io.IOException) {
+                return@withContext Pair(false, "Network error during validation: ${io.localizedMessage}")
+            } catch (e: Exception) {
+                return@withContext Pair(false, "Connection error: ${e.localizedMessage ?: "Check network and key"}")
             }
-        } catch (e: retrofit2.HttpException) {
-            when (e.code()) {
-                400 -> Pair(false, "Invalid API Key format or request rejected (400).")
-                403 -> Pair(false, "Permission denied. Please verify your Gemini API key (403).")
-                429 -> Pair(true, "Valid API Key (rate limited, but active).")
-                else -> Pair(false, "Verification error: HTTP ${e.code()}")
+        }
+
+        when (lastHttpCode) {
+            401 -> {
+                if (lastHttpBody.contains("ACCESS_TOKEN_TYPE_UNSUPPORTED")) {
+                    Pair(false, "Key was rejected (401: Unsupported Token Type). If using an AQ key, ensure Generative Language API is enabled on your GCP project or generate a new Gemini API Key in Google AI Studio.")
+                } else {
+                    Pair(false, "Invalid API key (401 Unauthorized). Check your key in Google AI Studio.")
+                }
             }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-            Pair(false, "Connection failed: ${e.localizedMessage ?: "Please check your network and API key"}")
+            403 -> Pair(false, "Permission denied (403). Ensure Generative Language API is enabled on your project.")
+            400 -> Pair(false, "Invalid API Key format or request rejected (400).")
+            429 -> Pair(true, "Valid API Key (rate limited, but active).")
+            404 -> Pair(false, "Candidate models not found on this API tier (404).")
+            else -> Pair(false, if (lastHttpCode != 0) "Verification error: HTTP $lastHttpCode" else "Connection failed. Please check network.")
         }
     }
 

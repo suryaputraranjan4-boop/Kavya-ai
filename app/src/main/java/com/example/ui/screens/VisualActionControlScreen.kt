@@ -180,6 +180,7 @@ fun VisualActionControlScreen(
                         // Modes
                         listOf(
                             VisualAutomationMode.AUTOMATIC_SAFE.name to "Automatic Safe (High confidence actions execute automatically)",
+                            VisualAutomationMode.SHOW_ME_HOW.name to "Show Me How (Interactive guidance: highlights target element with voice prompt)",
                             VisualAutomationMode.ASK_BEFORE_ACTION.name to "Ask Before Action (Prompts before clicking)",
                             VisualAutomationMode.MANUAL_CONFIRMATION.name to "Manual Confirmation (Requires approval for all taps)"
                         ).forEach { (mode, desc) ->

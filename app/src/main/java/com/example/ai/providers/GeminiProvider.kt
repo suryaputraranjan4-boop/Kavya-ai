@@ -192,6 +192,8 @@ class GeminiProvider : AIProvider {
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val request = Request.Builder()
             .url(url)
+            .header("x-goog-api-key", apiKey)
+            .header("Accept", "text/event-stream")
             .post(payload.toString().toRequestBody(mediaType))
             .build()
 

@@ -100,6 +100,8 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val isOfflineMode by viewModel.isOfflineMode.collectAsState()
     val micEngineState by com.example.voice.KavyaMicrophoneEngine.engineState.collectAsState()
     val micAmplitude by com.example.voice.KavyaMicrophoneEngine.amplitude.collectAsState()
+    val guidanceState by com.example.visual.JarvisGuidanceEngine.guidanceState.collectAsState()
+    val activeExplanation by com.example.visual.JarvisGuidanceEngine.activeExplanation.collectAsState()
 
     // Option 1: Camera
     val cameraLauncher = rememberLauncherForActivityResult(
@@ -464,6 +466,26 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         text = "Permissions required",
                         style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFFFF4444)),
                         modifier = Modifier.clickable { navController.navigate("permissions") }
+                    )
+                }
+            }
+
+            // JARVIS "Shows You How" Guidance Banner
+            AnimatedVisibility(visible = guidanceState.isActive) {
+                JarvisGuidanceBanner(
+                    guidance = guidanceState,
+                    onDismiss = { com.example.visual.JarvisGuidanceEngine.clearGuidance() },
+                    modifier = Modifier.padding(horizontal = 20.dp)
+                )
+            }
+
+            // JARVIS "Explains Anything" Card
+            AnimatedVisibility(visible = activeExplanation != null) {
+                activeExplanation?.let { card ->
+                    JarvisExplanationCardView(
+                        card = card,
+                        onDismiss = { com.example.visual.JarvisGuidanceEngine.dismissExplanation() },
+                        modifier = Modifier.padding(horizontal = 20.dp)
                     )
                 }
             }

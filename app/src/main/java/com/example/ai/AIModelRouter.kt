@@ -54,7 +54,8 @@ class AIModelRouter(private val context: Context) {
         history: List<MessageEntity> = emptyList(),
         screenContext: String? = null,
         memoryContext: String = "",
-        isProactiveMode: Boolean = false
+        isProactiveMode: Boolean = false,
+        imageBytes: ByteArray? = null
     ): String = withContext(Dispatchers.IO) {
         if (isOfflineMode()) {
             Log.d(TAG, "Routing chat request to LOCAL selected local model engine")
@@ -78,7 +79,8 @@ class AIModelRouter(private val context: Context) {
                 history = history,
                 screenContext = screenContext,
                 memoryContext = memoryContext,
-                isProactiveMode = isProactiveMode
+                isProactiveMode = isProactiveMode,
+                imageBytes = imageBytes
             )
         }
     }
@@ -91,7 +93,8 @@ class AIModelRouter(private val context: Context) {
         history: List<MessageEntity> = emptyList(),
         screenContext: String? = null,
         memoryContext: String = "",
-        isProactiveMode: Boolean = false
+        isProactiveMode: Boolean = false,
+        imageBytes: ByteArray? = null
     ): Flow<String> {
         return if (isOfflineMode()) {
             Log.d(TAG, "Routing streamChat request to LOCAL selected local model engine")
@@ -111,7 +114,8 @@ class AIModelRouter(private val context: Context) {
                 history = history,
                 screenContext = screenContext,
                 memoryContext = memoryContext,
-                isProactiveMode = isProactiveMode
+                isProactiveMode = isProactiveMode,
+                imageBytes = imageBytes
             )
         }
     }

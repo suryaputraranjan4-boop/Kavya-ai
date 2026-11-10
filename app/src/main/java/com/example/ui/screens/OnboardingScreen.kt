@@ -620,7 +620,7 @@ private fun Step2ApiKeySetup(
                     Button(
                         onClick = {
                             focusManager.clearFocus()
-                            val keyToTest = if (apiKeyInput.isNotBlank()) apiKeyInput else com.example.BuildConfig.GEMINI_API_KEY
+                            val keyToTest = if (apiKeyInput.isNotBlank()) apiKeyInput else com.example.utils.AppPreferences.getEffectiveApiKey(context)
                             onVerifyAndSave(keyToTest)
                         },
                         enabled = !isVerifying && (apiKeyInput.isNotBlank() || isBuiltInKeyAvailable),

@@ -1454,6 +1454,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         .map { MessageEntity(it.id, chatId, it.text, it.isUser, 0) }
                     
                     val screenContext = if (!isFastChat) screenInspector.getScreenContextString() else ""
+                    val liveScreenFrame = if (_isScreenSharing.value || com.example.services.ScreenShareManager.isScreenSharingActive) {
+                        com.example.visual.VisionPipeline.getCompressedJpegFrame()
+                    } else null
                     
                     // Retrieve only top relevant memories (semantic & keyword scored)
                     val relevantMemories = if (!isFastChat) memoryEngine.retrieveRelevantMemories(prompt, contextEngine.activeTargetAppName) else emptyList()
@@ -1473,7 +1476,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             history = historyEntities, 
                             screenContext = screenContext, 
                             memoryContext = memoryBlock,
-                            isProactiveMode = false
+                            isProactiveMode = false,
+                            imageBytes = liveScreenFrame
                         ).collect { chunk ->
                             if (!chunk.startsWith("Error:")) {
                                 fullResponse += chunk
@@ -1532,7 +1536,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                 history = historyEntities,
                                 screenContext = screenContext,
                                 memoryContext = memoryBlock,
-                                isProactiveMode = false
+                                isProactiveMode = false,
+                                imageBytes = liveScreenFrame
                             )
                         } catch (cancelled: CancellationException) {
             throw cancelled

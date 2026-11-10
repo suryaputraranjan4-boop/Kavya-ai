@@ -86,6 +86,9 @@ class VisualSafetyController(private val context: Context) {
                     Pair(true, "Action approved for automatic safe execution")
                 }
             }
+            VisualAutomationMode.SHOW_ME_HOW -> {
+                Pair(false, "Showing you where to tap '${action.target}' — please tap the highlighted element.")
+            }
         }
     }
 

@@ -174,7 +174,8 @@ enum class ConfidenceLevel {
 enum class VisualAutomationMode {
     ASK_BEFORE_ACTION,
     AUTOMATIC_SAFE,
-    MANUAL_CONFIRMATION
+    MANUAL_CONFIRMATION,
+    SHOW_ME_HOW
 }
 
 /**
