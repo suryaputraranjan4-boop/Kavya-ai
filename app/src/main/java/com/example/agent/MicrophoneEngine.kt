@@ -404,7 +404,15 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                     consecutiveReadErrors = 0
                     // Keep forwarding microphone PCM during assistant playback so VAD and
                     // Gemini Live can detect barge-in without reopening AudioRecord.
-                    if (!isMuted) pcmProcessor.processRawFrame(readBuffer, bytesRead)
+                    if (!isMuted) {
+                        // Sleep mode keeps local wake-word detection, but never streams
+                        // microphone audio to the remote Live session.
+                        pcmProcessor.processRawFrame(
+                            readBuffer,
+                            bytesRead,
+                            deliverToSubscribers = !isSleeping
+                        )
+                    }
                 } else if (bytesRead == 0) {
                     // Avoid a tight CPU loop if a device returns an empty blocking read.
                     delay(10)
@@ -467,9 +475,9 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     }
 
     private fun handleCompletedUtterance(pcmData: ByteArray) {
-        if (isLiveConversation) return
+        if (isLiveConversation && !isSleeping) return
         engineScope.launch(Dispatchers.IO) {
-            if (isLiveConversation) return@launch
+            if (isLiveConversation && !isSleeping) return@launch
             // Keep transcripts and command callbacks in capture order.
             utteranceMutex.withLock {
                 if (_engineState.value == State.SPEECH_DETECTED || _engineState.value == State.LISTENING) {
