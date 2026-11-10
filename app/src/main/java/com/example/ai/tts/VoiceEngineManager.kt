@@ -3,133 +3,145 @@ package com.example.ai.tts
 import android.content.Context
 import android.util.Log
 import com.example.agent.MicrophoneEngine
+import com.example.ai.ChatterboxResult
 import com.example.ai.ChatterboxTtsClient
 import com.example.ai.GeminiAudioPlayer
 import com.example.utils.AppPreferences
-import kotlinx.coroutines.*
-import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 enum class VoiceEngine(val id: String, val displayName: String, val isOffline: Boolean) {
     INDIC_TINY_TTS("INDIC_TINY_TTS", "Indic Tiny TTS Hindi (Female Voice)", true),
     CHATTERBOX("CHATTERBOX_HINDI", "Chatterbox Multilingual Hindi", false);
 
     companion object {
-        fun fromId(id: String): VoiceEngine {
-            return entries.find { it.id.equals(id, ignoreCase = true) } ?: INDIC_TINY_TTS
-        }
+        fun fromId(id: String): VoiceEngine =
+            entries.find { it.id.equals(id, ignoreCase = true) } ?: INDIC_TINY_TTS
     }
 }
 
 /**
- * Centralized Voice Engine Manager for Kavya AI.
- *
- * Guarantees:
- * 1. Indic Tiny TTS Hindi Female Voice is selected by default.
- * 2. ALL assistant speech across app features routes through the active engine.
- * 3. Chatterbox remains fully supported as an alternative selectable engine.
- * 4. Microphones are gated during playback to eliminate echo feedback.
+ * Centralized speech routing. The selected engine is never silently replaced.
+ * Previewing an engine does not mutate the user's saved engine preference.
  */
 class VoiceEngineManager private constructor(private val appContext: Context) {
-
     companion object {
         private const val TAG = "VoiceEngineManager"
-        const val PREVIEW_SAMPLE_HINDI = "नमस्ते! मैं काव्या हूँ, आपकी एआई सहायिका। मैं आपकी सहायता करने के लिए तैयार हूँ।"
+        const val PREVIEW_SAMPLE_HINDI =
+            "नमस्ते! मैं काव्या हूँ, आपकी एआई सहायिका। मैं आपकी सहायता करने के लिए तैयार हूँ।"
 
-        @Volatile
-        private var instance: VoiceEngineManager? = null
+        @Volatile private var instance: VoiceEngineManager? = null
 
-        fun getInstance(context: Context): VoiceEngineManager {
-            return instance ?: synchronized(this) {
+        fun getInstance(context: Context): VoiceEngineManager =
+            instance ?: synchronized(this) {
                 instance ?: VoiceEngineManager(context.applicationContext).also { instance = it }
             }
-        }
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val indicTinyEngine = IndicTinyTtsEngine(appContext)
     private val chatterboxClient = ChatterboxTtsClient(appContext)
-    private val player = GeminiAudioPlayer(appContext)
-
+    private val player = GeminiAudioPlayer(appContext, onSpeakingStateChanged = { speaking ->
+        updateSpeakingState(speaking)
+    })
+    private val synthesisMutex = Mutex()
     private var activeSpeechJob: Job? = null
 
-    @Volatile
-    var isSpeaking: Boolean = false
+    @Volatile var isSpeaking: Boolean = false
         private set
 
     var onSpeakingStateChanged: ((Boolean) -> Unit)? = null
+    var onSpeechError: ((String) -> Unit)? = null
 
-    fun getActiveEngine(): VoiceEngine {
-        val savedId = AppPreferences.getSpeechEngine(appContext)
-        return VoiceEngine.fromId(savedId)
-    }
+    fun getActiveEngine(): VoiceEngine =
+        VoiceEngine.fromId(AppPreferences.getSpeechEngine(appContext))
 
     fun setActiveEngine(engine: VoiceEngine) {
         AppPreferences.setSpeechEngine(appContext, engine.id)
-        Log.i(TAG, "Active voice engine set to: ${engine.displayName}")
+        Log.i(TAG, "Active voice engine set to: " + engine.displayName)
     }
 
-    fun speak(
+    fun speak(text: String, enqueue: Boolean = false, onComplete: (() -> Unit)? = null) {
+        speakUsingEngine(text, getActiveEngine(), enqueue, onComplete)
+    }
+
+    private fun speakUsingEngine(
         text: String,
-        enqueue: Boolean = false,
-        onComplete: (() -> Unit)? = null
+        engine: VoiceEngine,
+        enqueue: Boolean,
+        onComplete: (() -> Unit)?
     ) {
         if (text.isBlank()) {
             onComplete?.invoke()
             return
         }
+        if (!enqueue) stop()
 
-        if (!enqueue) {
-            stop()
-        }
-
-        val engine = getActiveEngine()
-        Log.d(TAG, "Routing speech request through engine: ${engine.displayName} (\"${text.take(30)}...\")")
-
+        Log.d(TAG, "Routing speech through " + engine.displayName)
         activeSpeechJob = scope.launch(Dispatchers.IO) {
+            var playbackQueued = false
             try {
-                updateSpeakingState(true)
-
-                when (engine) {
-                    VoiceEngine.INDIC_TINY_TTS -> {
-                        val pcmBytes = indicTinyEngine.synthesizeSpeech(text)
-                        if (pcmBytes.isNotEmpty()) {
-                            // Play 24kHz 16-bit mono PCM audio
-                            player.playPcm(pcmBytes, sampleRate = IndicTinyTtsEngine.SAMPLE_RATE)
-                        } else {
-                            Log.w(TAG, "Indic Tiny TTS returned empty audio bytes")
+                synthesisMutex.withLock {
+                    updateSpeakingState(true)
+                    when (engine) {
+                        VoiceEngine.INDIC_TINY_TTS -> {
+                            val pcm = indicTinyEngine.synthesizeSpeech(text)
+                            if (pcm.isEmpty()) {
+                                throw IllegalStateException("Indic Tiny TTS returned empty audio.")
+                            }
+                            player.playPcm(
+                                pcmBytes = pcm,
+                                sampleRate = IndicTinyTtsEngine.SAMPLE_RATE,
+                                enqueue = enqueue,
+                                onComplete = onComplete
+                            )
+                            playbackQueued = true
                         }
-                    }
-                    VoiceEngine.CHATTERBOX -> {
-                        val result = chatterboxClient.synthesize(text)
-                        if (result is com.example.ai.ChatterboxResult.Success) {
-                            player.playWav(result.audioBytes)
-                        } else {
-                            Log.w(TAG, "Chatterbox synthesis failed; fallback to Indic Tiny TTS")
-                            val fallbackPcm = indicTinyEngine.synthesizeSpeech(text)
-                            if (fallbackPcm.isNotEmpty()) {
-                                player.playPcm(fallbackPcm, sampleRate = IndicTinyTtsEngine.SAMPLE_RATE)
+                        VoiceEngine.CHATTERBOX -> {
+                            when (val result = chatterboxClient.synthesize(text)) {
+                                is ChatterboxResult.Success -> {
+                                    player.playWav(
+                                        wavBytes = result.audioBytes,
+                                        enqueue = enqueue,
+                                        onComplete = onComplete
+                                    )
+                                    playbackQueued = true
+                                }
+                                is ChatterboxResult.Error -> {
+                                    throw IllegalStateException(result.message)
+                                }
                             }
                         }
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                updateSpeakingState(false)
+                if (!playbackQueued) withContext(Dispatchers.Main) { onComplete?.invoke() }
+                throw cancelled
             } catch (e: Exception) {
-                Log.e(TAG, "Error synthesizing speech with ${engine.displayName}", e)
-            } finally {
+                Log.e(TAG, "Speech synthesis failed with " + engine.displayName, e)
                 updateSpeakingState(false)
                 withContext(Dispatchers.Main) {
-                    onComplete?.invoke()
+                    onSpeechError?.invoke(e.message ?: "Speech generation failed.")
+                    if (!playbackQueued) onComplete?.invoke()
                 }
             }
         }
     }
 
-    fun previewEngine(engine: VoiceEngine, sampleText: String = PREVIEW_SAMPLE_HINDI, onComplete: (() -> Unit)? = null) {
-        val previousEngine = getActiveEngine()
-        setActiveEngine(engine)
-        speak(sampleText, enqueue = false) {
-            setActiveEngine(previousEngine)
-            onComplete?.invoke()
-        }
+    fun previewEngine(
+        engine: VoiceEngine,
+        sampleText: String = PREVIEW_SAMPLE_HINDI,
+        onComplete: (() -> Unit)? = null
+    ) {
+        speakUsingEngine(sampleText, engine, enqueue = false, onComplete = onComplete)
     }
 
     fun stop() {
@@ -140,13 +152,11 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     }
 
     private fun updateSpeakingState(speaking: Boolean) {
-        if (isSpeaking != speaking) {
-            isSpeaking = speaking
-            // Gate physical microphone to prevent echo
-            MicrophoneEngine.getInstance(appContext).setAssistantSpeaking(speaking)
-            scope.launch(Dispatchers.Main) {
-                onSpeakingStateChanged?.invoke(speaking)
-            }
+        if (isSpeaking == speaking) return
+        isSpeaking = speaking
+        MicrophoneEngine.getInstance(appContext).setAssistantSpeaking(speaking)
+        scope.launch(Dispatchers.Main) {
+            onSpeakingStateChanged?.invoke(speaking)
         }
     }
 }
