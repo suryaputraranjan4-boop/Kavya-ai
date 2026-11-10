@@ -35,6 +35,7 @@ class GeminiAudioPlayer(
     
     private val audioQueue: Queue<QueuedAudio> = LinkedList()
     private var isProcessingQueue = false
+    @Volatile private var playbackGeneration = 0L
     private var fileCounter = 0
     private val instanceId = java.util.UUID.randomUUID().toString().take(8)
 
@@ -203,7 +204,8 @@ class GeminiAudioPlayer(
             return
         }
         isProcessingQueue = true
-        
+        val generation = playbackGeneration
+
         var tempFile: File? = null
         try {
             fileCounter++
@@ -221,6 +223,12 @@ class GeminiAudioPlayer(
                 )
                 setDataSource(fileToDelete.absolutePath)
                 setOnPreparedListener { mp ->
+                    if (generation != playbackGeneration) {
+                        try { mp.release() } catch (_: Exception) {}
+                        try { fileToDelete.delete() } catch (_: Exception) {}
+                        if (currentTempFile == fileToDelete) currentTempFile = null
+                        return@setOnPreparedListener
+                    }
                     try {
                         mainHandler.post {
                             if (!this@GeminiAudioPlayer.isPlaying) {
@@ -249,8 +257,10 @@ class GeminiAudioPlayer(
                     if (mediaPlayer === mp) mediaPlayer = null
                     try { fileToDelete.delete() } catch (_: Exception) {}
                     if (currentTempFile == fileToDelete) currentTempFile = null
-                    queuedItem.onComplete?.invoke()
-                    processNextInQueue()
+                    if (generation == playbackGeneration) {
+                        queuedItem.onComplete?.invoke()
+                        processNextInQueue()
+                    }
                 }
                 setOnErrorListener { mp, what, extra ->
                     Log.e(TAG, "MediaPlayer error: what=$what, extra=$extra")
@@ -258,8 +268,10 @@ class GeminiAudioPlayer(
                     if (mediaPlayer === mp) mediaPlayer = null
                     try { fileToDelete.delete() } catch (_: Exception) {}
                     if (currentTempFile == fileToDelete) currentTempFile = null
-                    queuedItem.onComplete?.invoke()
-                    processNextInQueue()
+                    if (generation == playbackGeneration) {
+                        queuedItem.onComplete?.invoke()
+                        processNextInQueue()
+                    }
                     true
                 }
                 prepareAsync()
@@ -275,6 +287,7 @@ class GeminiAudioPlayer(
 
     @Synchronized
     fun stop() {
+        playbackGeneration++
         audioQueue.clear()
         isProcessingQueue = false
         try {
