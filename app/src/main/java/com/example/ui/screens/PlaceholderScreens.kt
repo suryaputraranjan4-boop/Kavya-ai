@@ -713,7 +713,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                                 }
                                 com.example.ai.tts.ModelDownloadStatus.READY -> {
                                     Button(
-                                        onClick = { indicModelManager.verifyModel() },
+                                        onClick = { indicModelManager.verifyModelAsync() },
                                         modifier = Modifier.weight(1f),
                                         colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
                                     ) {
