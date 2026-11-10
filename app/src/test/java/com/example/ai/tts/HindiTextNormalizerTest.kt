@@ -23,6 +23,27 @@ class HindiTextNormalizerTest {
     }
 
     @Test
+    fun readsDecimalPercentages() {
+        assertEquals("तीन दशमलव पाँच प्रतिशत", HindiTextNormalizer.normalize("3.5%"))
+    }
+
+    @Test
+    fun spellsOutLongIdentifiersInsteadOfThrowingOrDroppingDigits() {
+        assertEquals(
+            "एक दो तीन चार पाँच छह सात आठ नौ शून्य",
+            HindiTextNormalizer.normalize("1234567890")
+        )
+    }
+
+    @Test
+    fun readsPhoneNumbersDigitByDigitWhenLeadingZeroIsPresent() {
+        assertEquals(
+            "शून्य नौ आठ सात छह पाँच चार तीन दो एक",
+            HindiTextNormalizer.normalize("0987654321")
+        )
+    }
+
+    @Test
     fun readsYearsUsingHindiYearConvention() {
         assertEquals("उन्नीस सौ अट्ठानवे", HindiTextNormalizer.normalize("1998"))
     }
