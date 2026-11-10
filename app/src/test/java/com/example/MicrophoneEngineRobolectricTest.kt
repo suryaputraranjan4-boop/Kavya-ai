@@ -5,6 +5,7 @@ import com.example.agent.MicrophoneEngine
 import com.example.agent.PcmFrameProcessor
 import com.example.agent.VoiceActivityDetector
 import com.example.ai.GeminiLiveClient
+import com.example.ai.LiveVoiceState
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
