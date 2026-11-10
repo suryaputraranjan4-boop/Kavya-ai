@@ -18,8 +18,8 @@ import kotlin.math.sqrt
  */
 class VoiceActivityDetector(
     private val sampleRate: Int = 16000,
-    private val speechStartRmsThreshold: Float = 350.0f,
-    private val speechEndRmsThreshold: Float = 220.0f,
+    private val speechStartRmsThreshold: Float = 260.0f,
+    private val speechEndRmsThreshold: Float = 160.0f,
     private val minSpeechDurationMs: Long = 200L,
     private val silenceDurationMs: Long = 850L,
     private val preRollMs: Long = 300L,
@@ -27,8 +27,8 @@ class VoiceActivityDetector(
 ) {
     companion object {
         private const val TAG = "KavyaVAD"
-        private const val MIN_NOISE_FLOOR = 50.0f
-        private const val MAX_NOISE_FLOOR = 800.0f
+        private const val MIN_NOISE_FLOOR = 35.0f
+        private const val MAX_NOISE_FLOOR = 400.0f
         private const val MAX_UTTERANCE_DURATION_MS = 20000L // 20s hard cap
     }
 
@@ -84,8 +84,8 @@ class VoiceActivityDetector(
             noiseFloor = (0.96f * noiseFloor + 0.04f * rms).coerceIn(MIN_NOISE_FLOOR, MAX_NOISE_FLOOR)
         }
 
-        val dynamicStartThreshold = maxOf(speechStartRmsThreshold, noiseFloor * 2.2f)
-        val dynamicEndThreshold = maxOf(speechEndRmsThreshold, noiseFloor * 1.4f)
+        val dynamicStartThreshold = maxOf(speechStartRmsThreshold, (noiseFloor * 1.8f).coerceAtMost(700.0f))
+        val dynamicEndThreshold = maxOf(speechEndRmsThreshold, (noiseFloor * 1.25f).coerceAtMost(500.0f))
 
         val frameCopy = frame.copyOf(length)
 
