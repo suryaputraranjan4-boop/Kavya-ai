@@ -7,7 +7,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,10 +42,10 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
             TtsModelFileSpec("text_encoder", "onnx/text_encoder.onnx", "onnx/text_encoder.onnx", 17_695_838L, "38df505ea822800d91a13bdc4a670f81ee964e9e0fe24a705590859fe7cfd08f"),
             TtsModelFileSpec("flow_decoder", "onnx/flow_decoder.onnx", "onnx/flow_decoder.onnx", 19_169_253L, "923a0472ec4d4c05c43bfc8ea512f8f762cf447b9f6ce1f01043144e1f6d1252"),
             TtsModelFileSpec("vocoder", "onnx/vocoder.onnx", "onnx/vocoder.onnx", 54_150_036L, "44d36238a761750447038895ab194e2378f6f4ba2c2d089a4766fa52810ef353"),
-            TtsModelFileSpec("onnx_manifest", "onnx/onnx_manifest.json", "onnx/onnx_manifest.json", 0L),
-            TtsModelFileSpec("config", "config.json", "config.json", 0L),
+            TtsModelFileSpec("onnx_manifest", "onnx/onnx_manifest.json", "onnx/onnx_manifest.json", 0L, "30ce6bb339f2d27b0aada791c57f4197b2dd9ddd7d710dbcb36eb095bd5f762f"),
+            TtsModelFileSpec("config", "config.json", "config.json", 0L, "8303f0f7f727c12cd6d4852317a75003d658370da354af2cc683b5db50165f1e"),
             TtsModelFileSpec("release_manifest", "MANIFEST.json", "MANIFEST.json", 0L),
-            TtsModelFileSpec("license", "LICENSE.md", "LICENSE.md", 0L)
+            TtsModelFileSpec("license", "LICENSE.md", "LICENSE.md", 0L, "64fa648284b590c9e62a0d40521ba8c40728ec16cfb485245ef620436f0579ed")
         )
 
         @Volatile private var instance: IndicTinyTtsModelManager? = null
@@ -88,12 +87,18 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
         if (!filesPresent) return false
         return try {
             val config = JSONObject(File(modelDir, "config.json").readText(Charsets.UTF_8))
-            val manifest = JSONObject(File(modelDir, "onnx/onnx_manifest.json").readText(Charsets.UTF_8))
+            val onnxManifest = JSONObject(File(modelDir, "onnx/onnx_manifest.json").readText(Charsets.UTF_8))
+            val releaseManifest = JSONObject(File(modelDir, "MANIFEST.json").readText(Charsets.UTF_8))
             config.optString("language") == "hi" &&
                 config.optInt("sample_rate") == 24000 &&
-                manifest.optString("format") == "indic-tiny-tts-onnx/1" &&
-                manifest.optInt("opset") == 18 &&
-                manifest.getJSONObject("graphs").length() == 3
+                config.optString("format") == "indic-tiny-tts/1" &&
+                config.getJSONObject("voices").has("female") &&
+                config.getJSONObject("vocab").optString("normalizer") == "textnorm" &&
+                onnxManifest.optString("format") == "indic-tiny-tts-onnx/1" &&
+                onnxManifest.optInt("opset") == 18 &&
+                onnxManifest.getJSONObject("graphs").length() == 3 &&
+                releaseManifest.optString("build_code_sha") == "gd0099827" &&
+                releaseManifest.getJSONObject("files").has("config.json")
         } catch (_: Exception) { false }
     }
 
@@ -104,11 +109,16 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                 val file = File(modelDir, spec.fileName)
                 if (sha256(file) != spec.sha256) return false
             }
-            val manifest = JSONObject(File(modelDir, "onnx/onnx_manifest.json").readText(Charsets.UTF_8))
+            val releaseManifest = JSONObject(File(modelDir, "MANIFEST.json").readText(Charsets.UTF_8))
+            val releaseFiles = releaseManifest.getJSONObject("files")
             for (spec in MODEL_SPECS.filter { it.sha256 != null }) {
-                val graphName = spec.id
-                val declared = manifest.getJSONObject("graphs").getJSONObject(graphName).optString("sha256")
+                val declared = releaseFiles.optString(spec.remotePath)
                 if (!declared.equals(spec.sha256, ignoreCase = true)) return false
+            }
+            val onnxManifest = JSONObject(File(modelDir, "onnx/onnx_manifest.json").readText(Charsets.UTF_8))
+            for (spec in MODEL_SPECS.filter { it.id in setOf("text_encoder", "flow_decoder", "vocoder") }) {
+                val graphSha = onnxManifest.getJSONObject("graphs").getJSONObject(spec.id).optString("sha256")
+                if (!graphSha.equals(spec.sha256, ignoreCase = true)) return false
             }
             true
         } catch (e: Exception) {
