@@ -85,13 +85,18 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
 
     @Synchronized
     fun attachAudioPlayer(audioPlayer: GeminiAudioPlayer?) {
-        if (audioPlayer == null || audioPlayer === internalPlayer || audioPlayer === attachedPlayer) return
+        if (audioPlayer === internalPlayer || audioPlayer === attachedPlayer) return
         attachedPlayer?.removeSpeakingStateListener(playerSpeakingListener)
         attachedPlayer?.removeCaptionListener(playerCaptionListener)
         attachedPlayer = audioPlayer
-        audioPlayer.addSpeakingStateListener(playerSpeakingListener)
-        audioPlayer.addCaptionListener(playerCaptionListener)
-        updateSpeakingState(audioPlayer.isSpeaking())
+        if (audioPlayer != null) {
+            audioPlayer.addSpeakingStateListener(playerSpeakingListener)
+            audioPlayer.addCaptionListener(playerCaptionListener)
+            updateSpeakingState(audioPlayer.isSpeaking())
+        } else {
+            // Detach stale Activity/ViewModel players and safely fall back to the owned player.
+            updateSpeakingState(internalPlayer.isSpeaking())
+        }
     }
 
     fun getActiveEngine(): VoiceEngine =
