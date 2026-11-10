@@ -268,6 +268,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     @SuppressLint("MissingPermission")
     private fun initializeAudioRecord(): Boolean {
+        var candidate: AudioRecord? = null
         return try {
             val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
             if (minBufSize <= 0) {
@@ -276,7 +277,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             }
             val bufferSize = maxOf(minBufSize * 2, 8192)
 
-            val record = AudioRecord(
+            candidate = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
@@ -284,23 +285,28 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 bufferSize
             )
 
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord failed to initialize (state=${record.state})")
-                record.release()
+            if (candidate.state != AudioRecord.STATE_INITIALIZED) {
+                Log.e(TAG, "AudioRecord failed to initialize (state=${candidate.state})")
+                candidate.release()
                 false
             } else {
-                record.startRecording()
-                if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                candidate.startRecording()
+                if (candidate.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                     Log.e(TAG, "AudioRecord failed to start recording")
-                    record.release()
+                    candidate.release()
                     false
                 } else {
-                    audioRecord = record
+                    audioRecord = candidate
                     Log.i(TAG, "Physical AudioRecord session successfully started (bufferSize=$bufferSize)")
                     true
                 }
             }
         } catch (e: Exception) {
+            try {
+                candidate?.release()
+            } catch (releaseError: Exception) {
+                Log.w(TAG, "Failed to release partially initialized AudioRecord", releaseError)
+            }
             Log.e(TAG, "Exception initializing AudioRecord", e)
             false
         }
