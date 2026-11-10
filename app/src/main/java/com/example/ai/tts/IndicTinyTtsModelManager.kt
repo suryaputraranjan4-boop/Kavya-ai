@@ -43,9 +43,9 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
             TtsModelFileSpec("text_encoder", "onnx/text_encoder.onnx", "onnx/text_encoder.onnx", 17_695_838L, "38df505ea822800d91a13bdc4a670f81ee964e9e0fe24a705590859fe7cfd08f"),
             TtsModelFileSpec("flow_decoder", "onnx/flow_decoder.onnx", "onnx/flow_decoder.onnx", 19_169_253L, "923a0472ec4d4c05c43bfc8ea512f8f762cf447b9f6ce1f01043144e1f6d1252"),
             TtsModelFileSpec("vocoder", "onnx/vocoder.onnx", "onnx/vocoder.onnx", 54_150_036L, "44d36238a761750447038895ab194e2378f6f4ba2c2d089a4766fa52810ef353"),
-            TtsModelFileSpec("onnx_manifest", "onnx/onnx_manifest.json", "onnx/onnx_manifest.json", 3_120L),
-            TtsModelFileSpec("config", "config.json", "config.json", 3_290L),
-            TtsModelFileSpec("license", "LICENSE.md", "LICENSE.md", 2_980L)
+            TtsModelFileSpec("onnx_manifest", "onnx/onnx_manifest.json", "onnx/onnx_manifest.json", 0L),
+            TtsModelFileSpec("config", "config.json", "config.json", 0L),
+            TtsModelFileSpec("license", "LICENSE.md", "LICENSE.md", 0L)
         )
 
         @Volatile private var instance: IndicTinyTtsModelManager? = null
@@ -81,7 +81,8 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
     fun isModelReady(): Boolean {
         val filesPresent = MODEL_SPECS.all { spec ->
             val file = File(modelDir, spec.fileName)
-            file.isFile && file.length() == spec.expectedSizeBytes
+            file.isFile && file.length() > 0L &&
+                (spec.expectedSizeBytes == 0L || file.length() == spec.expectedSizeBytes)
         }
         if (!filesPresent) return false
         return try {
@@ -147,10 +148,12 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
         _progressText.value = "Downloading official Indic Tiny TTS Hindi ONNX files..."
         downloadJob = scope.launch {
             try {
-                val totalBytes = MODEL_SPECS.sumOf { it.expectedSizeBytes }
+                val totalBytes = MODEL_SPECS.sumOf { if (it.expectedSizeBytes > 0L) it.expectedSizeBytes else 4_000L }
                 var completedBytes = MODEL_SPECS.sumOf { spec ->
                     val f = File(modelDir, spec.fileName)
-                    if (f.isFile && f.length() == spec.expectedSizeBytes) f.length() else 0L
+                    if (f.isFile && f.length() > 0L &&
+                        (spec.expectedSizeBytes == 0L || f.length() == spec.expectedSizeBytes)
+                    ) f.length() else 0L
                 }
                 for (spec in MODEL_SPECS) {
                     if (paused) {
@@ -173,7 +176,7 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                         }
                         throw IllegalStateException("Could not download or validate " + spec.fileName)
                     }
-                    completedBytes += spec.expectedSizeBytes
+                    completedBytes += if (spec.expectedSizeBytes > 0L) spec.expectedSizeBytes else target.length()
                 }
                 _status.value = ModelDownloadStatus.VERIFYING
                 _progressText.value = "Checking model files and SHA-256..."
@@ -205,7 +208,9 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                 call.execute().use { response ->
                     if (!response.isSuccessful) return@withContext false
                     val body = response.body ?: return@withContext false
-                    if (body.contentLength() > 0L && body.contentLength() != spec.expectedSizeBytes) return@withContext false
+                    if (spec.expectedSizeBytes > 0L && body.contentLength() > 0L &&
+                        body.contentLength() != spec.expectedSizeBytes
+                    ) return@withContext false
                     FileOutputStream(partial).use { output ->
                         body.byteStream().use { input ->
                             val buffer = ByteArray(64 * 1024)
@@ -220,7 +225,9 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                         }
                     }
                 }
-                if (!partial.isFile || partial.length() != spec.expectedSizeBytes) return@withContext false
+                if (!partial.isFile || partial.length() <= 0L ||
+                    (spec.expectedSizeBytes > 0L && partial.length() != spec.expectedSizeBytes)
+                ) return@withContext false
                 if (spec.sha256 != null && sha256(partial) != spec.sha256) return@withContext false
                 if (target.exists() && !target.delete()) return@withContext false
                 if (!partial.renameTo(target)) return@withContext false
