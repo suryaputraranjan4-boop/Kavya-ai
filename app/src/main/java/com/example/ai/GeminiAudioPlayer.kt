@@ -223,33 +223,33 @@ class GeminiAudioPlayer(
                 )
                 setDataSource(fileToDelete.absolutePath)
                 setOnPreparedListener { mp ->
-                    if (generation != playbackGeneration) {
-                        try { mp.release() } catch (_: Exception) {}
-                        try { fileToDelete.delete() } catch (_: Exception) {}
-                        if (currentTempFile == fileToDelete) currentTempFile = null
-                        return@setOnPreparedListener
-                    }
-                    try {
-                        mainHandler.post {
+                    mainHandler.post {
+                        if (generation != playbackGeneration) {
+                            try { mp.release() } catch (_: Exception) {}
+                            try { fileToDelete.delete() } catch (_: Exception) {}
+                            if (currentTempFile == fileToDelete) currentTempFile = null
+                            return@post
+                        }
+                        try {
                             if (!this@GeminiAudioPlayer.isPlaying) {
                                 this@GeminiAudioPlayer.isPlaying = true
                                 dispatchSpeakingState(true)
                             }
                             queuedItem.text?.let { chunkText ->
-                                if (chunkText.isNotBlank()) {
-                                    dispatchCaption(chunkText)
-                                }
+                                if (chunkText.isNotBlank()) dispatchCaption(chunkText)
+                            }
+                            mp.start()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to start MediaPlayer", e)
+                            try { mp.release() } catch (_: Exception) {}
+                            if (mediaPlayer === mp) mediaPlayer = null
+                            try { fileToDelete.delete() } catch (_: Exception) {}
+                            if (currentTempFile == fileToDelete) currentTempFile = null
+                            if (generation == playbackGeneration) {
+                                queuedItem.onComplete?.invoke()
+                                processNextInQueue()
                             }
                         }
-                        mp.start()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to start MediaPlayer", e)
-                        try { mp.release() } catch (_: Exception) {}
-                        if (mediaPlayer === mp) mediaPlayer = null
-                        try { fileToDelete.delete() } catch (_: Exception) {}
-                        if (currentTempFile == fileToDelete) currentTempFile = null
-                        queuedItem.onComplete?.invoke()
-                        processNextInQueue()
                     }
                 }
                 setOnCompletionListener { mp ->
