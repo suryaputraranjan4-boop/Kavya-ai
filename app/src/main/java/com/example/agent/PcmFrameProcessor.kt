@@ -89,7 +89,7 @@ class PcmFrameProcessor(
      * Process a raw PCM audio frame captured directly from AudioRecord.
      * Called on the high-priority recording thread. Must execute efficiently.
      */
-    fun processRawFrame(frame: ByteArray, length: Int) {
+    fun processRawFrame(frame: ByteArray, length: Int, deliverToSubscribers: Boolean = true) {
         if (length <= 0) return
 
         val pcmData = frame.copyOf(length)
@@ -102,7 +102,7 @@ class PcmFrameProcessor(
         vad.processFrame(pcmData, length)
 
         // 3. Deliver raw frames in capture order to the single subscriber worker.
-        if (frameSubscribers.isNotEmpty()) {
+        if (deliverToSubscribers && frameSubscribers.isNotEmpty()) {
             subscriberFrames.trySend(pcmData)
         }
     }
