@@ -15,13 +15,13 @@ object GeminiModelRegistry {
     const val PRO_REASONING_MODEL = "gemini-3.1-pro-preview"
 
     // Ultra-low Latency Bidi Live Streaming Model (WebSocket)
-    const val LIVE_STREAM_MODEL = "gemini-3.1-flash-live-preview"
+    const val LIVE_STREAM_MODEL = "gemini-3.8-live"
 
     // Primary High-Fidelity Audio & Speech Synthesis Model (Gemini TTS)
-    const val PRIMARY_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+    const val PRIMARY_TTS_MODEL = "gemini-3.8-flash-tts"
 
     // High-volume / Low-latency Audio Model Fallback
-    const val SECONDARY_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+    const val SECONDARY_TTS_MODEL = "gemini-3.8-flash-lite-tts"
 
     // Real-time Screen & UI Vision Understanding Model
     const val VISION_ANALYZER_MODEL = "gemini-3.1-flash-image"
