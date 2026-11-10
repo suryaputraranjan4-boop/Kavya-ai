@@ -753,7 +753,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                                         Text("Download Model")
                                     }
                                     Button(
-                                        onClick = { indicModelManager.verifyModel() },
+                                        onClick = { indicModelManager.verifyModelAsync() },
                                         modifier = Modifier.weight(1f),
                                         colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
                                     ) {
