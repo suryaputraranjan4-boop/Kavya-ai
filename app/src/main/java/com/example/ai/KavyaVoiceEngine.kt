@@ -20,6 +20,10 @@ class KavyaVoiceEngine(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var lastErrorSpeechTimestamp = 0L
 
+    init {
+        com.example.ai.tts.VoiceEngineManager.getInstance(context).attachAudioPlayer(geminiPlayer)
+    }
+
     @Volatile
     var isSpeaking: Boolean = false
         private set
@@ -163,7 +167,6 @@ class KavyaVoiceEngine(
 
     fun stop() {
         com.example.ai.tts.VoiceEngineManager.getInstance(context).stop()
-        geminiPlayer?.stop()
         updateSpeakingState(false)
         Log.d(TAG, "VOICE_PLAYBACK_INTERRUPTED")
     }
