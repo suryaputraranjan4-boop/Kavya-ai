@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicBoolean
 
 enum class VoiceEngine(val id: String, val displayName: String, val isOffline: Boolean) {
     INDIC_TINY_TTS("INDIC_TINY_TTS", "Indic Tiny TTS Hindi (Female Voice)", true),
@@ -63,6 +64,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     private val synthesisMutex = Mutex()
     private var activeSpeechJob: Job? = null
     private val activeSpeechJobs = java.util.Collections.synchronizedSet(mutableSetOf<Job>())
+    private val pendingCompletions = java.util.Collections.synchronizedSet(mutableSetOf<CompletionOnce>())
 
     @Volatile var isSpeaking: Boolean = false
         private set
@@ -70,6 +72,16 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     var onSpeakingStateChanged: ((Boolean) -> Unit)? = null
     var onAudioChunkStarted: ((String) -> Unit)? = null
     var onSpeechError: ((String) -> Unit)? = null
+
+    private inner class CompletionOnce(private val callback: () -> Unit) : () -> Unit {
+        private val fired = AtomicBoolean(false)
+        override fun invoke() {
+            if (fired.compareAndSet(false, true)) {
+                pendingCompletions.remove(this)
+                callback()
+            }
+        }
+    }
 
     @Synchronized
     fun attachAudioPlayer(audioPlayer: GeminiAudioPlayer?) {
@@ -115,6 +127,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
             return
         }
         if (!enqueue) stop()
+        val completion = onComplete?.let { CompletionOnce(it).also { item -> pendingCompletions.add(item) } }
 
         Log.d(TAG, "Routing speech through " + engine.displayName)
         val speechJob = scope.launch(Dispatchers.IO) {
@@ -133,7 +146,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                                 sampleRate = IndicTinyTtsEngine.SAMPLE_RATE,
                                 text = text,
                                 enqueue = enqueue,
-                                onComplete = onComplete
+                                onComplete = completion
                             )
                             playbackQueued = true
                         }
@@ -151,7 +164,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                                         wavBytes = result.audioBytes,
                                         text = text,
                                         enqueue = enqueue,
-                                        onComplete = onComplete
+                                        onComplete = completion
                                     )
                                     playbackQueued = true
                                 }
@@ -164,14 +177,14 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                 }
             } catch (cancelled: CancellationException) {
                 updateSpeakingState(false)
-                if (!playbackQueued) withContext(Dispatchers.Main) { onComplete?.invoke() }
+                if (!playbackQueued) withContext(Dispatchers.Main) { completion?.invoke() }
                 throw cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "Speech synthesis failed with " + engine.displayName, e)
                 if (!player.isSpeaking()) updateSpeakingState(false)
                 withContext(Dispatchers.Main) {
                     onSpeechError?.invoke(e.message ?: "Speech generation failed.")
-                    if (!playbackQueued) onComplete?.invoke()
+                    if (!playbackQueued) completion?.invoke()
                 }
             }
         }
@@ -193,6 +206,10 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         jobs.forEach { it.cancel() }
         activeSpeechJob = null
         player.stop()
+        val callbacks = synchronized(pendingCompletions) { pendingCompletions.toList() }
+        callbacks.forEach { completion ->
+            scope.launch(Dispatchers.Main) { completion.invoke() }
+        }
         updateSpeakingState(false)
     }
 
