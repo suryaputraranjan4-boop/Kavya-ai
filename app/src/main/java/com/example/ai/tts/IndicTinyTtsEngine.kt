@@ -145,9 +145,13 @@ class IndicTinyTtsEngine(private val context: Context) {
         for (part in sentences) {
             var remaining = part.trim()
             while (remaining.length > MAX_CHUNK) {
-                var cut = remaining.lastIndexOf(',', MAX_CHUNK)
-                if (cut <= 0) cut = remaining.lastIndexOf(' ', MAX_CHUNK)
-                if (cut <= 0) cut = MAX_CHUNK
+                val comma = remaining.lastIndexOf(',', MAX_CHUNK - 1)
+                val cut = if (comma > 0) {
+                    comma + 1
+                } else {
+                    val space = remaining.lastIndexOf(' ', MAX_CHUNK - 1)
+                    if (space > 0) space else MAX_CHUNK
+                }
                 result.add(remaining.substring(0, cut).trim())
                 remaining = remaining.substring(cut).trim()
             }
@@ -214,6 +218,7 @@ class IndicTinyTtsEngine(private val context: Context) {
             ceil(exp(logW[0][0][index].toDouble())).toFloat() * lengthScale
         }
         val melLength = max(1, durations.sum().toInt())
+        if (melLength < 2) return FloatArray(0)
         val paddedLength = ((melLength + FRAME_MULTIPLE - 1) / FRAME_MULTIPLE) * FRAME_MULTIPLE
         require(paddedLength <= 12000) { "Generated speech chunk is too long for the device." }
 
@@ -322,6 +327,8 @@ class IndicTinyTtsEngine(private val context: Context) {
                 re[k] = real[k][frameIndex].toDouble()
                 im[k] = imag[k][frameIndex].toDouble()
             }
+            im[0] = 0.0
+            im[N_FFT / 2] = 0.0
             for (k in 1 until N_FFT / 2) {
                 re[N_FFT - k] = re[k]
                 im[N_FFT - k] = -im[k]
