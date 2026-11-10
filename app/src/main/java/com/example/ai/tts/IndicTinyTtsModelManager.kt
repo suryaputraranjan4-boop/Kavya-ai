@@ -45,6 +45,7 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
             TtsModelFileSpec("vocoder", "onnx/vocoder.onnx", "onnx/vocoder.onnx", 54_150_036L, "44d36238a761750447038895ab194e2378f6f4ba2c2d089a4766fa52810ef353"),
             TtsModelFileSpec("onnx_manifest", "onnx/onnx_manifest.json", "onnx/onnx_manifest.json", 0L),
             TtsModelFileSpec("config", "config.json", "config.json", 0L),
+            TtsModelFileSpec("release_manifest", "MANIFEST.json", "MANIFEST.json", 0L),
             TtsModelFileSpec("license", "LICENSE.md", "LICENSE.md", 0L)
         )
 
