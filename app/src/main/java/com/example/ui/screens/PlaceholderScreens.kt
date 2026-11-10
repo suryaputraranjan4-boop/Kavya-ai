@@ -385,6 +385,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
     val activeEngineState = remember { mutableStateOf(voiceEngineManager.getActiveEngine()) }
     var isPreviewing by remember { mutableStateOf(false) }
     var previewError by remember { mutableStateOf<String?>(null) }
+    val previewingNow = androidx.compose.runtime.rememberUpdatedState(isPreviewing)
 
     androidx.compose.runtime.DisposableEffect(voiceEngineManager) {
         voiceEngineManager.onSpeechError = { message ->
@@ -393,7 +394,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
         }
         onDispose {
             voiceEngineManager.onSpeechError = null
-            voiceEngineManager.stop()
+            if (previewingNow.value) voiceEngineManager.stop()
         }
     }
 
