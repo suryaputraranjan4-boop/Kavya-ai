@@ -148,7 +148,12 @@ object HindiTextNormalizer {
         if (number < 0L) return "माइनस " + speakDigits(number.toString().removePrefix("-"))
         if (number > 999_999_999L) return speakDigits(number.toString())
         if (number in 1100L..1999L) {
-            return cardinal(number / 100) + " सौ " + cardinal(number % 100)
+            val remainder = number % 100
+            return if (remainder == 0L) {
+                cardinal(number / 100) + " सौ"
+            } else {
+                cardinal(number / 100) + " सौ " + cardinal(remainder)
+            }
         }
         return cardinal(number)
     }

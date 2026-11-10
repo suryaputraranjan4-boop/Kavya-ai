@@ -46,5 +46,7 @@ class HindiTextNormalizerTest {
     @Test
     fun readsYearsUsingHindiYearConvention() {
         assertEquals("उन्नीस सौ अट्ठानवे", HindiTextNormalizer.normalize("1998"))
+        assertEquals("उन्नीस सौ", HindiTextNormalizer.normalize("1900"))
+        assertEquals("ग्यारह सौ", HindiTextNormalizer.normalize("1100"))
     }
 }
