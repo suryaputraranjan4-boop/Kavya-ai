@@ -2,259 +2,409 @@ package com.example.ai.tts
 
 import android.content.Context
 import android.util.Log
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 
 data class TtsModelFileSpec(
     val id: String,
     val fileName: String,
     val remotePath: String,
-    val estimatedSizeBytes: Long,
-    val isMandatory: Boolean = true
-)
-
-enum class ModelDownloadStatus {
-    NOT_DOWNLOADED,
-    DOWNLOADING,
-    PAUSED,
-    VERIFYING,
-    READY,
-    ERROR
+    val expectedSizeBytes: Long,
+    val sha256: String? = null
+) {
+    // UI estimate only; exact byte checks use expectedSizeBytes when known.
+    val estimatedSizeBytes: Long
+        get() = if (expectedSizeBytes > 0L) expectedSizeBytes else when (id) {
+            "onnx_manifest" -> 3_120L
+            "config" -> 3_290L
+            "license" -> 2_980L
+            "release_manifest" -> 6_060L
+            else -> 0L
+        }
 }
 
-/**
- * Model Manager & Background Downloader for Indic Tiny TTS Hindi (ONNX).
- *
- * Repository: https://huggingface.co/sulabhkatiyar/indic-tiny-tts-hindi
- * Private Storage: context.filesDir/models/indic_tiny_tts_hindi/
- */
-class IndicTinyTtsModelManager private constructor(private val appContext: Context) {
+enum class ModelDownloadStatus { NOT_DOWNLOADED, DOWNLOADING, PAUSED, VERIFYING, READY, ERROR }
 
+/** Official Indic Tiny TTS Hindi ONNX model downloader and integrity verifier. */
+class IndicTinyTtsModelManager private constructor(private val appContext: Context) {
     companion object {
         private const val TAG = "IndicTinyTtsManager"
         private const val HF_BASE_URL = "https://huggingface.co/sulabhkatiyar/indic-tiny-tts-hindi/resolve/main/"
         private const val MODEL_DIR_NAME = "models/indic_tiny_tts_hindi"
 
         val MODEL_SPECS = listOf(
-            TtsModelFileSpec("text_encoder", "text_encoder.onnx", "onnx/text_encoder.onnx", 8_500_000L),
-            TtsModelFileSpec("flow_decoder", "flow_decoder.onnx", "onnx/flow_decoder.onnx", 11_800_000L),
-            TtsModelFileSpec("vocoder", "vocoder.onnx", "onnx/vocoder.onnx", 4_900_000L),
-            TtsModelFileSpec("config", "config.json", "config.json", 12_000L),
-            TtsModelFileSpec("vocab", "vocab.json", "vocab.json", 5_000L)
+            TtsModelFileSpec("text_encoder", "onnx/text_encoder.onnx", "onnx/text_encoder.onnx", 17_695_838L, "38df505ea822800d91a13bdc4a670f81ee964e9e0fe24a705590859fe7cfd08f"),
+            TtsModelFileSpec("flow_decoder", "onnx/flow_decoder.onnx", "onnx/flow_decoder.onnx", 19_169_253L, "923a0472ec4d4c05c43bfc8ea512f8f762cf447b9f6ce1f01043144e1f6d1252"),
+            TtsModelFileSpec("vocoder", "onnx/vocoder.onnx", "onnx/vocoder.onnx", 54_150_036L, "44d36238a761750447038895ab194e2378f6f4ba2c2d089a4766fa52810ef353"),
+            TtsModelFileSpec("onnx_manifest", "onnx/onnx_manifest.json", "onnx/onnx_manifest.json", 0L, "30ce6bb339f2d27b0aada791c57f4197b2dd9ddd7d710dbcb36eb095bd5f762f"),
+            TtsModelFileSpec("config", "config.json", "config.json", 0L, "8303f0f7f727c12cd6d4852317a75003d658370da354af2cc683b5db50165f1e"),
+            TtsModelFileSpec("release_manifest", "MANIFEST.json", "MANIFEST.json", 0L),
+            TtsModelFileSpec("license", "LICENSE.md", "LICENSE.md", 0L, "64fa648284b590c9e62a0d40521ba8c40728ec16cfb485245ef620436f0579ed")
         )
 
-        @Volatile
-        private var instance: IndicTinyTtsModelManager? = null
-
-        fun getInstance(context: Context): IndicTinyTtsModelManager {
-            return instance ?: synchronized(this) {
+        @Volatile private var instance: IndicTinyTtsModelManager? = null
+        fun getInstance(context: Context): IndicTinyTtsModelManager =
+            instance ?: synchronized(this) {
                 instance ?: IndicTinyTtsModelManager(context.applicationContext).also { instance = it }
             }
-        }
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS)
         .build()
-
     private val _status = MutableStateFlow(ModelDownloadStatus.NOT_DOWNLOADED)
     val status: StateFlow<ModelDownloadStatus> = _status.asStateFlow()
-
-    private val _downloadProgress = MutableStateFlow(0.0f)
+    private val _downloadProgress = MutableStateFlow(0f)
     val downloadProgress: StateFlow<Float> = _downloadProgress.asStateFlow()
-
     private val _progressText = MutableStateFlow("Model not installed")
     val progressText: StateFlow<String> = _progressText.asStateFlow()
-
     private var downloadJob: Job? = null
-    @Volatile private var isPaused = false
+    @Volatile private var activeCall: Call? = null
+    @Volatile private var paused = false
 
     val modelDir: File
         get() = File(appContext.filesDir, MODEL_DIR_NAME).apply { if (!exists()) mkdirs() }
 
-    init {
-        checkInstalledState()
-    }
+    init { checkInstalledState() }
+
+    fun getInstalledSizeBytes(): Long = modelDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
     fun isModelReady(): Boolean {
-        return MODEL_SPECS.all { spec ->
+        val filesPresent = MODEL_SPECS.all { spec ->
             val file = File(modelDir, spec.fileName)
-            file.exists() && file.length() > 0
+            file.isFile && file.length() > 0L &&
+                (spec.expectedSizeBytes == 0L || file.length() == spec.expectedSizeBytes)
+        }
+        if (!filesPresent) return false
+        return try {
+            val config = JSONObject(File(modelDir, "config.json").readText(Charsets.UTF_8))
+            val onnxManifest = JSONObject(File(modelDir, "onnx/onnx_manifest.json").readText(Charsets.UTF_8))
+            val releaseManifest = JSONObject(File(modelDir, "MANIFEST.json").readText(Charsets.UTF_8))
+            config.optString("language") == "hi" &&
+                config.optInt("sample_rate") == 24000 &&
+                config.optString("format") == "indic-tiny-tts/1" &&
+                config.optString("default_voice") == "female" &&
+                config.getJSONObject("voices").has("female") &&
+                config.getJSONObject("voices").has("male") &&
+                config.getJSONObject("vocab").optString("normalizer") == "textnorm" &&
+                config.getJSONObject("vocab").optString("normalization_version") == "4" &&
+                config.getJSONObject("vocab").optString("hash") == "beab22b4be22bb49" &&
+                onnxManifest.optString("format") == "indic-tiny-tts-onnx/1" &&
+                onnxManifest.optInt("opset") == 18 &&
+                onnxManifest.getJSONObject("graphs").length() == 3 &&
+                releaseManifest.optString("build_code_sha") == "gd0099827" &&
+                releaseManifest.getJSONObject("files").has("config.json")
+        } catch (_: Exception) { false }
+    }
+
+    fun verifyModelIntegrity(): Boolean {
+        if (!isModelReady()) return false
+        return try {
+            for (spec in MODEL_SPECS.filter { it.sha256 != null }) {
+                val file = File(modelDir, spec.fileName)
+                if (sha256(file) != spec.sha256) return false
+            }
+            val releaseManifest = JSONObject(File(modelDir, "MANIFEST.json").readText(Charsets.UTF_8))
+            val releaseFiles = releaseManifest.getJSONObject("files")
+            for (spec in MODEL_SPECS.filter { it.sha256 != null }) {
+                val declared = releaseFiles.optString(spec.remotePath)
+                if (!declared.equals(spec.sha256, ignoreCase = true)) return false
+            }
+            val onnxManifest = JSONObject(File(modelDir, "onnx/onnx_manifest.json").readText(Charsets.UTF_8))
+            for (spec in MODEL_SPECS.filter { it.id in setOf("text_encoder", "flow_decoder", "vocoder") }) {
+                val graphSha = onnxManifest.getJSONObject("graphs").getJSONObject(spec.id).optString("sha256")
+                if (!graphSha.equals(spec.sha256, ignoreCase = true)) return false
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Model integrity verification failed", e)
+            false
         }
     }
 
-    fun getInstalledSizeBytes(): Long {
-        return modelDir.walk().filter { it.isFile }.sumOf { it.length() }
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+
+    private fun isDownloadedFileValid(spec: TtsModelFileSpec, file: File): Boolean {
+        if (!file.isFile || file.length() <= 0L) return false
+        if (spec.expectedSizeBytes > 0L && file.length() != spec.expectedSizeBytes) return false
+        if (spec.sha256 != null && !sha256(file).equals(spec.sha256, ignoreCase = true)) return false
+
+        if (spec.id == "release_manifest") {
+            return try {
+                val manifest = JSONObject(file.readText(Charsets.UTF_8))
+                val files = manifest.optJSONObject("files") ?: return false
+                manifest.optString("build_code_sha") == "gd0099827" &&
+                    MODEL_SPECS.filter { it.sha256 != null }.all { expected ->
+                        files.optString(expected.remotePath).equals(expected.sha256, ignoreCase = true)
+                    }
+            } catch (_: Exception) {
+                false
+            }
+        }
+        return true
     }
 
     fun checkInstalledState() {
         if (isModelReady()) {
             _status.value = ModelDownloadStatus.READY
-            _downloadProgress.value = 1.0f
-            val sizeMb = getInstalledSizeBytes() / (1024.0 * 1024.0)
-            _progressText.value = "Installed & Verified (%.1f MB)".format(sizeMb)
+            _downloadProgress.value = 1f
+            _progressText.value = "Model files installed; integrity checked before synthesis"
         } else {
             _status.value = ModelDownloadStatus.NOT_DOWNLOADED
-            _downloadProgress.value = 0.0f
-            _progressText.value = "Ready to download (25.2 MB)"
+            _downloadProgress.value = 0f
+            _progressText.value = "Ready to download (approximately 91 MB)"
         }
     }
 
     fun downloadAll() {
         if (_status.value == ModelDownloadStatus.DOWNLOADING) return
-
-        isPaused = false
+        paused = false
         _status.value = ModelDownloadStatus.DOWNLOADING
-        _progressText.value = "Downloading Indic Tiny TTS Hindi ONNX files..."
-
+        _progressText.value = "Downloading official Indic Tiny TTS Hindi ONNX files..."
         downloadJob = scope.launch {
             try {
-                val totalEstimated = MODEL_SPECS.sumOf { it.estimatedSizeBytes }
-                var downloadedTotal = 0L
-
+                val totalBytes = MODEL_SPECS.sumOf { if (it.expectedSizeBytes > 0L) it.expectedSizeBytes else 4_000L }
+                val validTargets = MODEL_SPECS.associateWith { spec ->
+                    isDownloadedFileValid(spec, File(modelDir, spec.fileName))
+                }
+                var completedBytes = MODEL_SPECS.sumOf { spec ->
+                    val target = File(modelDir, spec.fileName)
+                    val partial = File(modelDir, spec.fileName + ".part")
+                    when {
+                        validTargets[spec] == true -> target.length()
+                        partial.isFile -> partial.length()
+                        else -> 0L
+                    }
+                }
                 for (spec in MODEL_SPECS) {
-                    if (isPaused) {
+                    if (paused) {
                         _status.value = ModelDownloadStatus.PAUSED
                         _progressText.value = "Download paused"
                         return@launch
                     }
-
-                    val targetFile = File(modelDir, spec.fileName)
-                    val url = HF_BASE_URL + spec.remotePath
-
-                    val success = downloadSingleFile(url, targetFile) { bytesRead ->
-                        downloadedTotal += bytesRead
-                        val progress = (downloadedTotal.toFloat() / totalEstimated.toFloat()).coerceIn(0.0f, 0.98f)
+                    val target = File(modelDir, spec.fileName)
+                    if (validTargets[spec] == true) continue
+                    if (target.exists() && !target.delete()) {
+                        throw IllegalStateException("Could not replace an invalid model file: " + spec.fileName)
+                    }
+                    val downloaded = downloadOne(spec, target) { bytes ->
+                        val progress = ((completedBytes + bytes).toFloat() / totalBytes.toFloat()).coerceIn(0f, 0.99f)
                         _downloadProgress.value = progress
-                        val mb = downloadedTotal / (1024.0 * 1024.0)
-                        _progressText.value = "Downloading ${spec.fileName} (%.1f MB)".format(mb)
+                        _progressText.value = "Downloading " + spec.fileName
                     }
-
-                    if (!success && !isPaused) {
-                        // File fetch error: try fallback bundler/local synthesis initialization
-                        Log.w(TAG, "Failed downloading ${spec.fileName} from Hugging Face.")
+                    if (!downloaded) {
+                        if (paused) {
+                            _status.value = ModelDownloadStatus.PAUSED
+                            _progressText.value = "Download paused"
+                            return@launch
+                        }
+                        throw IllegalStateException("Could not download or validate " + spec.fileName)
                     }
+                    completedBytes += if (spec.expectedSizeBytes > 0L) spec.expectedSizeBytes else target.length()
                 }
-
                 _status.value = ModelDownloadStatus.VERIFYING
-                _progressText.value = "Verifying ONNX model integrity..."
-                delay(300)
-
-                if (isModelReady()) {
-                    _status.value = ModelDownloadStatus.READY
-                    _downloadProgress.value = 1.0f
-                    val sizeMb = getInstalledSizeBytes() / (1024.0 * 1024.0)
-                    _progressText.value = "Indic Tiny TTS Hindi Ready (%.1f MB)".format(sizeMb)
-                } else {
-                    // Fallback to local high-performance synthesizer weights if remote network blocked
-                    createDefaultModelResources(modelDir)
-                    _status.value = ModelDownloadStatus.READY
-                    _downloadProgress.value = 1.0f
-                    _progressText.value = "Indic Tiny TTS Hindi Ready (Offline Mode)"
-                }
-
+                _progressText.value = "Checking model files and SHA-256..."
+                val valid = withContext(Dispatchers.IO) { verifyModelIntegrity() }
+                if (!valid) throw IllegalStateException("Model checksum or manifest validation failed. Delete the model and download it again.")
+                _status.value = ModelDownloadStatus.READY
+                _downloadProgress.value = 1f
+                _progressText.value = "Indic Tiny TTS Hindi installed and verified (approximately 91 MB)"
+            } catch (cancelled: CancellationException) {
+                _status.value = if (paused) ModelDownloadStatus.PAUSED else ModelDownloadStatus.NOT_DOWNLOADED
+                throw cancelled
             } catch (e: Exception) {
-                Log.e(TAG, "Error downloading model", e)
+                Log.e(TAG, "Model download failed", e)
                 _status.value = ModelDownloadStatus.ERROR
-                _progressText.value = "Download failed: ${e.message}"
+                _progressText.value = "Download failed: " + (e.message ?: "unknown error")
             }
         }
     }
 
+    /**
+     * Downloads atomically and resumes a paused partial file with HTTP Range when supported.
+     * A server that ignores Range (200 instead of 206) safely restarts the partial from byte 0.
+     */
+    private suspend fun downloadOne(spec: TtsModelFileSpec, target: File, onProgress: (Long) -> Unit): Boolean =
+        withContext(Dispatchers.IO) {
+            val parent = target.parentFile ?: return@withContext false
+            if (!parent.exists() && !parent.mkdirs()) return@withContext false
+            val partial = File(parent, target.name + ".part")
+            if (partial.isFile && spec.sha256 != null && sha256(partial) == spec.sha256) {
+                if (target.exists()) target.delete()
+                return@withContext partial.renameTo(target)
+            }
+            if (partial.isFile && spec.expectedSizeBytes > 0L && partial.length() > spec.expectedSizeBytes) {
+                partial.delete()
+            }
+            val existingBytes = if (partial.isFile) partial.length() else 0L
+            try {
+                val requestBuilder = Request.Builder().url(HF_BASE_URL + spec.remotePath).get()
+                if (existingBytes > 0L) requestBuilder.header("Range", "bytes=$existingBytes-")
+                val call = client.newCall(requestBuilder.build())
+                activeCall = call
+                call.execute().use { response ->
+                    if (response.code == 416 && existingBytes > 0L) {
+                        partial.delete()
+                        return@withContext false
+                    }
+                    if (!response.isSuccessful || (response.code != 200 && response.code != 206)) {
+                        return@withContext false
+                    }
+                    val append = existingBytes > 0L && response.code == 206
+                    if (response.code == 206) {
+                        val contentRange = response.header("Content-Range").orEmpty()
+                        if (!append || !contentRange.startsWith("bytes $existingBytes-")) {
+                            partial.delete()
+                            return@withContext false
+                        }
+                    }
+                    val body = response.body ?: return@withContext false
+                    val contentLength = body.contentLength()
+                    if (spec.expectedSizeBytes > 0L && contentLength > 0L) {
+                        val expectedResponseBytes = if (append) spec.expectedSizeBytes - existingBytes else spec.expectedSizeBytes
+                        if (contentLength != expectedResponseBytes) return@withContext false
+                    }
+                    FileOutputStream(partial, append).use { output ->
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                if (paused) return@withContext false
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                onProgress(count.toLong())
+                            }
+                            output.fd.sync()
+                        }
+                    }
+                }
+                if (paused) return@withContext false
+                if (!partial.isFile || partial.length() <= 0L ||
+                    (spec.expectedSizeBytes > 0L && partial.length() != spec.expectedSizeBytes)
+                ) return@withContext false
+                if (spec.sha256 != null && sha256(partial) != spec.sha256) {
+                    partial.delete()
+                    return@withContext false
+                }
+                if (target.exists() && !target.delete()) return@withContext false
+                if (!partial.renameTo(target)) return@withContext false
+                true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
+                Log.w(TAG, "Download interrupted for " + spec.fileName + "; partial data retained for resume", e)
+                false
+            } finally {
+                activeCall = null
+                // Keep .part on pause/network interruption; successful rename removes it.
+            }
+        }
+
     fun pauseDownload() {
-        isPaused = true
-        downloadJob?.cancel()
+        paused = true
+        activeCall?.cancel()
         _status.value = ModelDownloadStatus.PAUSED
         _progressText.value = "Download paused"
     }
 
     fun resumeDownload() {
-        downloadAll()
+        val previousJob = downloadJob
+        if (previousJob?.isActive == true) {
+            scope.launch {
+                previousJob.join()
+                downloadAll()
+            }
+        } else {
+            downloadAll()
+        }
     }
 
     fun cancelDownload() {
-        isPaused = true
+        paused = true
+        activeCall?.cancel()
         downloadJob?.cancel()
         downloadJob = null
         checkInstalledState()
     }
 
-    fun verifyModel(): Boolean {
+    fun verifyModel(): Boolean = verifyModelIntegrity()
+
+    fun verifyModelAsync() {
+        if (_status.value == ModelDownloadStatus.VERIFYING) return
         _status.value = ModelDownloadStatus.VERIFYING
-        val ready = isModelReady()
-        checkInstalledState()
-        return ready
-    }
-
-    fun deleteModel() {
-        downloadJob?.cancel()
-        modelDir.deleteRecursively()
-        checkInstalledState()
-    }
-
-    fun redownloadModel() {
-        deleteModel()
-        downloadAll()
-    }
-
-    private suspend fun downloadSingleFile(
-        url: String,
-        targetFile: File,
-        onProgress: (Long) -> Unit
-    ): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val request = Request.Builder().url(url).build()
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                response.close()
-                return@withContext false
+        _progressText.value = "Checking official SHA-256 checksums..."
+        scope.launch {
+            val valid = withContext(Dispatchers.IO) { verifyModelIntegrity() }
+            if (valid) {
+                _status.value = ModelDownloadStatus.READY
+                _downloadProgress.value = 1f
+                _progressText.value = "Model integrity verified"
+            } else {
+                _status.value = ModelDownloadStatus.ERROR
+                _progressText.value = "Model verification failed. Re-download the model."
             }
-
-            val body = response.body ?: return@withContext false
-            val inputStream: InputStream = body.byteStream()
-            val outputStream = FileOutputStream(targetFile)
-
-            val buffer = ByteArray(8192)
-            var bytesRead: Int
-            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                if (isPaused) {
-                    outputStream.close()
-                    inputStream.close()
-                    return@withContext false
-                }
-                outputStream.write(buffer, 0, bytesRead)
-                onProgress(bytesRead.toLong())
-            }
-
-            outputStream.flush()
-            outputStream.close()
-            inputStream.close()
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed downloading file from $url: ${e.message}")
-            false
         }
     }
 
-    private fun createDefaultModelResources(dir: File) {
-        for (spec in MODEL_SPECS) {
-            val f = File(dir, spec.fileName)
-            if (!f.exists()) {
-                try {
-                    f.writeText("{\"model\": \"indic_tiny_tts_hindi\", \"status\": \"ready\"}")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not write resource stub for ${spec.fileName}")
-                }
-            }
+    fun deleteModel() {
+        paused = true
+        activeCall?.cancel()
+        val previousJob = downloadJob
+        previousJob?.cancel()
+        downloadJob = null
+        _status.value = ModelDownloadStatus.VERIFYING
+        _progressText.value = "Removing model files..."
+        scope.launch {
+            previousJob?.join()
+            modelDir.deleteRecursively()
+            checkInstalledState()
+        }
+    }
+
+    fun redownloadModel() {
+        paused = true
+        activeCall?.cancel()
+        val previousJob = downloadJob
+        previousJob?.cancel()
+        downloadJob = null
+        _status.value = ModelDownloadStatus.VERIFYING
+        _progressText.value = "Preparing model re-download..."
+        scope.launch {
+            previousJob?.join()
+            modelDir.deleteRecursively()
+            checkInstalledState()
+            downloadAll()
         }
     }
 }
