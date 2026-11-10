@@ -1,134 +1,161 @@
 package com.example.ai.tts
 
+import java.text.Normalizer
 import java.util.Locale
 
 /**
- * Hindi Text Normalizer for Indic Tiny TTS.
- *
- * Converts numbers, symbols, abbreviations, and common English/Hinglish words
- * into readable Devanagari Hindi text for ONNX inference.
+ * Hindi character-path normalizer for the Indic Tiny TTS Hindi vocabulary.
+ * The released model reads Devanagari characters; Latin words and digits must
+ * be converted before tokenizer lookup or they become unknown/blank tokens.
  */
 object HindiTextNormalizer {
-
-    private val numberMap = mapOf(
-        "0" to "शून्य", "1" to "एक", "2" to "दो", "3" to "तीन", "4" to "चार",
-        "5" to "पाँच", "6" to "छह", "7" to "सात", "8" to "आठ", "9" to "नौ",
-        "10" to "दस", "11" to "ग्यारह", "12" to "बारह", "13" to "तेरह", "14" to "चौदह",
-        "15" to "पंद्रह", "16" to "सोलह", "17" to "सत्रह", "18" to "अठारह", "19" to "उन्नीस",
-        "20" to "बीस", "25" to "पच्चीस", "30" to "तीस", "50" to "पचास",
-        "75" to "पिचहत्तर", "80" to "अस्सी", "90" to "नब्बे", "100" to "सौ",
-        "1000" to "हज़ार"
+    private val units = listOf(
+        "शून्य", "एक", "दो", "तीन", "चार", "पाँच", "छह", "सात", "आठ", "नौ",
+        "दस", "ग्यारह", "बारह", "तेरह", "चौदह", "पंद्रह", "सोलह", "सत्रह", "अठारह", "उन्नीस",
+        "बीस", "इक्कीस", "बाईस", "तेईस", "चौबीस", "पच्चीस", "छब्बीस", "सत्ताईस", "अट्ठाईस", "उनतीस",
+        "तीस", "इकतीस", "बत्तीस", "तैंतीस", "चौंतीस", "पैंतीस", "छत्तीस", "सैंतीस", "अड़तीस", "उनतालीस",
+        "चालीस", "इकतालीस", "बयालीस", "तैंतालीस", "चवालीस", "पैंतालीस", "छियालीस", "सैंतालीस", "अड़तालीस", "उनचास",
+        "पचास", "इक्यावन", "बावन", "तिरेपन", "चौवन", "पचपन", "छप्पन", "सत्तावन", "अट्ठावन", "उनसठ",
+        "साठ", "इकसठ", "बासठ", "तिरेसठ", "चौंसठ", "पैंसठ", "छियासठ", "सरसठ", "अड़सठ", "उनहत्तर",
+        "सत्तर", "इकहत्तर", "बहत्तर", "तिहत्तर", "चौहत्तर", "पचहत्तर", "छिहत्तर", "सतहत्तर", "अठहत्तर", "उन्यासी",
+        "अस्सी", "इक्यासी", "बयासी", "तिरासी", "चौरासी", "पचासी", "छियासी", "सत्तासी", "अठासी", "नवासी",
+        "नब्बे", "इक्यानवे", "बानवे", "तिरानवे", "चौरानवे", "पचानवे", "छियानवे", "सत्तानवे", "अट्ठानवे", "निन्यानवे"
     )
 
-    private val symbolMap = mapOf(
-        "%" to " प्रतिशत",
-        "₹" to " रुपये ",
-        "$" to " डॉलर ",
-        "+" to " प्लस ",
-        "=" to " बराबर "
+    private val commonWords = mapOf(
+        "kavya" to "काव्या", "ai" to "एआई", "assistant" to "असिस्टेंट",
+        "hello" to "हेलो", "hi" to "हाय", "ok" to "ओके", "okay" to "ओके",
+        "phone" to "फ़ोन", "battery" to "बैटरी", "status" to "स्टेटस",
+        "time" to "टाइम", "yes" to "हाँ", "no" to "नहीं", "model" to "मॉडल",
+        "system" to "सिस्टम", "chatterbox" to "चैटरबॉक्स", "indic" to "इंडिक",
+        "tts" to "टीटीएस", "onnx" to "ओएनएनएक्स", "google" to "गूगल",
+        "gemini" to "जेमिनी", "android" to "एंड्रॉइड", "app" to "ऐप",
+        "update" to "अपडेट", "voice" to "वॉइस", "studio" to "स्टूडियो",
+        "download" to "डाउनलोड", "install" to "इंस्टॉल", "internet" to "इंटरनेट",
+        "online" to "ऑनलाइन", "offline" to "ऑफलाइन", "bluetooth" to "ब्लूटूथ",
+        "wifi" to "वाईफाई", "camera" to "कैमरा", "message" to "मैसेज",
+        "notification" to "नोटिफिकेशन", "settings" to "सेटिंग्स", "help" to "हेल्प",
+        "start" to "स्टार्ट", "stop" to "स्टॉप", "play" to "प्ले", "pause" to "पॉज़",
+        "resume" to "रिज़्यूम", "volume" to "वॉल्यूम", "music" to "म्यूज़िक",
+        "song" to "सॉन्ग", "video" to "वीडियो", "photo" to "फोटो",
+        "file" to "फ़ाइल", "folder" to "फ़ोल्डर", "upload" to "अपलोड",
+        "delete" to "डिलीट", "remove" to "रिमूव", "change" to "चेंज",
+        "select" to "सिलेक्ट", "default" to "डिफ़ॉल्ट", "female" to "फीमेल",
+        "male" to "मेल", "speech" to "स्पीच", "text" to "टेक्स्ट",
+        "language" to "लैंग्वेज", "hindi" to "हिंदी", "english" to "इंग्लिश",
+        "test" to "टेस्ट", "good" to "गुड", "morning" to "मॉर्निंग",
+        "evening" to "ईवनिंग", "night" to "नाइट", "today" to "आज",
+        "tomorrow" to "कल", "please" to "प्लीज़", "thanks" to "थैंक्स",
+        "thank" to "थैंक", "sorry" to "सॉरी", "weather" to "वेदर",
+        "search" to "सर्च", "cpu" to "सीपीयू", "ram" to "रैम",
+        "api" to "एपीआई", "percent" to "प्रतिशत", "rupees" to "रुपये",
+        "dollar" to "डॉलर", "internet" to "इंटरनेट", "call" to "कॉल",
+        "open" to "ओपन", "close" to "क्लोज़", "smart" to "स्मार्ट",
+        "fast" to "फास्ट", "slow" to "स्लो", "natural" to "नेचुरल"
     )
 
-    private val englishToDevanagariMap = mapOf(
-        "kavya" to "काव्या",
-        "ai" to "एआई",
-        "hello" to "हेलो",
-        "hi" to "हाय",
-        "ok" to "ओके",
-        "okay" to "ओके",
-        "phone" to "फ़ोन",
-        "battery" to "बैटरी",
-        "status" to "स्टेटस",
-        "time" to "टाइम",
-        "yes" to "हाँ",
-        "no" to "नहीं",
-        "model" to "मॉडल",
-        "system" to "सिस्टम",
-        "chatterbox" to "चैटरबॉक्स",
-        "indic" to "इंडिक",
-        "tts" to "टीटीएस",
-        "google" to "गूगल",
-        "app" to "ऐप",
-        "update" to "अपडेट"
+    private val letterNames = mapOf(
+        'a' to "ए", 'b' to "बी", 'c' to "सी", 'd' to "डी", 'e' to "ई",
+        'f' to "एफ", 'g' to "जी", 'h' to "एच", 'i' to "आई", 'j' to "जे",
+        'k' to "के", 'l' to "एल", 'm' to "एम", 'n' to "एन", 'o' to "ओ",
+        'p' to "पी", 'q' to "क्यू", 'r' to "आर", 's' to "एस", 't' to "टी",
+        'u' to "यू", 'v' to "वी", 'w' to "डब्ल्यू", 'x' to "एक्स",
+        'y' to "वाई", 'z' to "ज़ेड"
     )
 
-    /**
-     * Normalizes an input string into clean Devanagari script suitable for Indic Tiny TTS.
-     */
+    private val latinWord = Regex("[A-Za-z]+")
+    private val numberToken = Regex("₹?\\s*\\d[\\d,]*(?:\\.\\d+)?%?")
+
     fun normalize(text: String): String {
         if (text.isBlank()) return ""
-
-        var result = text.trim()
-
-        // 1. Symbol replacements
-        for ((sym, dev) in symbolMap) {
-            result = result.replace(sym, dev)
-        }
-
-        // 2. Transliterate known Latin/English words
-        result = transliterateEnglishWords(result)
-
-        // 3. Convert numbers to Hindi Devanagari words
-        result = replaceNumbersWithHindiWords(result)
-
-        // 4. Remove unsupported non-Devanagari punctuation except standard pause markers (।, ,, ?)
-        result = cleanPunctuation(result)
-
-        return result.trim()
-    }
-
-    private fun transliterateEnglishWords(input: String): String {
-        val words = input.split(Regex("\\s+"))
-        return words.joinToString(" ") { word ->
-            val clean = word.lowercase(Locale.ROOT).replace(Regex("[^a-z]"), "")
-            val replacement = englishToDevanagariMap[clean]
-            if (replacement != null) {
-                // Preserve trailing punctuation
-                val punct = word.filter { !it.isLetterOrDigit() }
-                replacement + punct
-            } else {
-                word
-            }
-        }
-    }
-
-    private fun replaceNumbersWithHindiWords(input: String): String {
-        return Regex("\\b\\d+\\b").replace(input) { match ->
-            val numStr = match.value
-            numberMap[numStr] ?: convertNumberToHindi(numStr)
-        }
-    }
-
-    private fun convertNumberToHindi(numStr: String): String {
-        val n = numStr.toIntOrNull() ?: return numStr
-        return when {
-            n in 0..19 -> numberMap[n.toString()] ?: numStr
-            n in 20..99 -> {
-                val tens = (n / 10) * 10
-                val units = n % 10
-                val tensStr = numberMap[tens.toString()] ?: ""
-                val unitsStr = if (units > 0) numberMap[units.toString()] ?: "" else ""
-                "$tensStr $unitsStr".trim()
-            }
-            n in 100..999 -> {
-                val hundreds = n / 100
-                val rem = n % 100
-                val hStr = (numberMap[hundreds.toString()] ?: "") + " सौ"
-                if (rem > 0) "$hStr ${convertNumberToHindi(rem.toString())}" else hStr
-            }
-            n in 1000..99999 -> {
-                val thousands = n / 1000
-                val rem = n % 1000
-                val tStr = "${convertNumberToHindi(thousands.toString())} हज़ार"
-                if (rem > 0) "$tStr ${convertNumberToHindi(rem.toString())}" else tStr
-            }
-            else -> numStr
-        }
-    }
-
-    private fun cleanPunctuation(input: String): String {
-        return input
-            .replace(".", "। ")
-            .replace("!", "। ")
+        var value = Normalizer.normalize(text, Normalizer.Form.NFC)
+            .replace("[\\u200B\\uFEFF\\u2060\\u00AD\\u200C\\u200D]".toRegex(), "")
             .replace(Regex("\\s+"), " ")
+            .trim()
+
+        value = normalizeNumbers(value)
+        value = latinWord.replace(value) { match ->
+            val word = match.value
+            commonWords[word.lowercase(Locale.ROOT)] ?: word.lowercase(Locale.ROOT)
+                .mapNotNull { letterNames[it] }
+                .joinToString(" ")
+        }
+
+        // Apply the Hindi model's common nukta/matra repairs.
+        value = value
+            .replace("बडे़", "बड़े")
+            .replace("ाॅ", "ॉ")
+            .replace("ॅा", "ॉ")
+            .replace("ेा", "ो")
+            .replace("ाे", "ो")
+            .replace("ैा", "ौ")
+            .replace("ाै", "ौ")
+            .replace("ीे", "ी")
+            .replace("ेै", "े")
+
+        value = value
+            .replace(";", ",")
+            .replace(":", ",")
+            .replace("…", ".")
+            .replace("–", ",")
+            .replace("—", ",")
+            .replace("!", "।")
+            .replace(".", "।")
+            .replace(Regex("[()\\[\\]{}<>]"), " ")
+            .replace(Regex("[^\\u0900-\\u097F\\s,?।\\-\\\"'“”‘’]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        return value
+    }
+
+    private fun normalizeNumbers(input: String): String {
+        return numberToken.replace(input) { match ->
+            val token = match.value.trim()
+            val hasRupee = token.startsWith("₹")
+            val hasPercent = token.endsWith("%")
+            var digits = token.removePrefix("₹").removeSuffix("%").replace(",", "").trim()
+            val spoken = if (digits.contains(".")) {
+                val parts = digits.split(".", limit = 2)
+                val whole = parts[0].toLongOrNull()?.let { cardinal(it) } ?: digits
+                val fraction = parts[1].mapNotNull { it.digitToIntOrNull() }.joinToString(" ") { units[it] }
+                if (fraction.isBlank()) whole else whole + " दशमलव " + fraction
+            } else {
+                val n = digits.toLongOrNull()
+                if (n == null) digits else if (digits.length >= 10 || (digits.length > 1 && digits.startsWith("0"))) {
+                    digits.mapNotNull { it.digitToIntOrNull() }.joinToString(" ") { units[it] }
+                } else if (n in 1100L..1999L) {
+                    cardinal(n / 100) + " सौ " + cardinal(n % 100)
+                } else {
+                    cardinal(n)
+                }
+            }
+            spoken + when {
+                hasRupee -> " रुपये"
+                hasPercent -> " प्रतिशत"
+                else -> ""
+            }
+        }
+    }
+
+    private fun cardinal(number: Long): String {
+        if (number < 0L) return "माइनस " + cardinal(-number)
+        if (number < 100L) return units[number.toInt()]
+        require(number <= 999_999_999L) { "Number exceeds Hindi model normalizer range" }
+        var remaining = number
+        val parts = ArrayList<String>()
+        val crore = (remaining / 10_000_000L).toInt()
+        remaining %= 10_000_000L
+        val lakh = (remaining / 100_000L).toInt()
+        remaining %= 100_000L
+        val thousand = (remaining / 1_000L).toInt()
+        remaining %= 1_000L
+        val hundred = (remaining / 100L).toInt()
+        remaining %= 100L
+        if (crore > 0) parts += units[crore] + " करोड़"
+        if (lakh > 0) parts += units[lakh] + " लाख"
+        if (thousand > 0) parts += units[thousand] + " हज़ार"
+        if (hundred > 0) parts += units[hundred] + " सौ"
+        if (remaining > 0) parts += units[remaining.toInt()]
+        return parts.joinToString(" ")
     }
 }
