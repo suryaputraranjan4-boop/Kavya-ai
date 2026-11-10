@@ -50,9 +50,16 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     private val indicTinyEngine = IndicTinyTtsEngine(appContext)
     private val chatterboxClient = ChatterboxTtsClient(appContext)
     private val voiceProfileManager = VoiceProfileManager.getInstance(appContext)
-    private val player = GeminiAudioPlayer(appContext, onSpeakingStateChanged = { speaking ->
-        updateSpeakingState(speaking)
-    })
+    private val internalPlayer = GeminiAudioPlayer(
+        appContext,
+        onSpeakingStateChanged = { speaking -> updateSpeakingState(speaking) },
+        onAudioChunkStarted = { caption -> onAudioChunkStarted?.invoke(caption) }
+    )
+    @Volatile private var attachedPlayer: GeminiAudioPlayer? = null
+    private val player: GeminiAudioPlayer
+        get() = attachedPlayer ?: internalPlayer
+    private val playerSpeakingListener: (Boolean) -> Unit = { speaking -> updateSpeakingState(speaking) }
+    private val playerCaptionListener: (String) -> Unit = { caption -> onAudioChunkStarted?.invoke(caption) }
     private val synthesisMutex = Mutex()
     private var activeSpeechJob: Job? = null
     private val activeSpeechJobs = java.util.Collections.synchronizedSet(mutableSetOf<Job>())
@@ -61,7 +68,19 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         private set
 
     var onSpeakingStateChanged: ((Boolean) -> Unit)? = null
+    var onAudioChunkStarted: ((String) -> Unit)? = null
     var onSpeechError: ((String) -> Unit)? = null
+
+    @Synchronized
+    fun attachAudioPlayer(audioPlayer: GeminiAudioPlayer?) {
+        if (audioPlayer == null || audioPlayer === internalPlayer || audioPlayer === attachedPlayer) return
+        attachedPlayer?.removeSpeakingStateListener(playerSpeakingListener)
+        attachedPlayer?.removeCaptionListener(playerCaptionListener)
+        attachedPlayer = audioPlayer
+        audioPlayer.addSpeakingStateListener(playerSpeakingListener)
+        audioPlayer.addCaptionListener(playerCaptionListener)
+        updateSpeakingState(audioPlayer.isSpeaking())
+    }
 
     fun getActiveEngine(): VoiceEngine =
         VoiceEngine.fromId(AppPreferences.getSpeechEngine(appContext))
@@ -112,6 +131,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                             player.playPcm(
                                 pcmBytes = pcm,
                                 sampleRate = IndicTinyTtsEngine.SAMPLE_RATE,
+                                text = text,
                                 enqueue = enqueue,
                                 onComplete = onComplete
                             )
@@ -129,6 +149,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                                 is ChatterboxResult.Success -> {
                                     player.playWav(
                                         wavBytes = result.audioBytes,
+                                        text = text,
                                         enqueue = enqueue,
                                         onComplete = onComplete
                                     )
