@@ -81,6 +81,10 @@ class GeminiLiveClient(context: Context) {
 
     fun isActive(): Boolean = active.get()
 
+    fun reportError(message: String) {
+        fail(message)
+    }
+
     /**
      * Use the user's configured credential. Never log or commit this key.
      * Public multi-user releases should exchange a server-issued ephemeral token.
