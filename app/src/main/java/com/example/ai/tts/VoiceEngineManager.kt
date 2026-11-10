@@ -128,7 +128,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                 throw cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "Speech synthesis failed with " + engine.displayName, e)
-                updateSpeakingState(false)
+                if (!player.isSpeaking()) updateSpeakingState(false)
                 withContext(Dispatchers.Main) {
                     onSpeechError?.invoke(e.message ?: "Speech generation failed.")
                     if (!playbackQueued) onComplete?.invoke()
