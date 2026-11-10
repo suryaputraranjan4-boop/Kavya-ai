@@ -84,6 +84,7 @@ class GeminiLiveClient(context: Context) {
     private val outputText = StringBuilder()
     private val pendingAudioFrames = java.util.ArrayDeque<ByteArray>()
     private val pendingToolCallJobs = ConcurrentHashMap<String, Job>()
+    @Volatile private var pendingTurnFinalizeJob: Job? = null
     private val audioPlayer = LivePcmAudioPlayer { speaking ->
         micEngine.setAssistantSpeaking(speaking)
         if (active.get()) {
@@ -341,7 +342,15 @@ class GeminiLiveClient(context: Context) {
         serverContent.optJSONObject("inputTranscription")?.optString("text")
             ?.takeIf { it.isNotBlank() }?.let { appendTranscript(inputText, it, _inputTranscript) }
         serverContent.optJSONObject("interimInputTranscription")?.optString("text")
-            ?.takeIf { it.isNotBlank() }?.let { _inputTranscript.value = it }
+            ?.takeIf { it.isNotBlank() }?.let {
+                // A new speech segment means any delayed prior-turn transcript flush is complete.
+                if (pendingTurnFinalizeJob?.isActive == true) {
+                    pendingTurnFinalizeJob?.cancel()
+                    pendingTurnFinalizeJob = null
+                    finishCurrentTurn()
+                }
+                _inputTranscript.value = it
+            }
         serverContent.optJSONObject("outputTranscription")?.optString("text")
             ?.takeIf { it.isNotBlank() }?.let { appendTranscript(outputText, it, _outputTranscript) }
 
@@ -359,7 +368,15 @@ class GeminiLiveClient(context: Context) {
 
         // Transcription events are independent of audio events. Google guarantees
         // the final output transcript before turnComplete, so finalize only there.
-        if (serverContent.optBoolean("turnComplete", false)) finishCurrentTurn()
+        if (serverContent.optBoolean("turnComplete", false)) {
+            pendingTurnFinalizeJob?.cancel()
+            pendingTurnFinalizeJob = scope.launch {
+                // Input transcription is delivered independently and can arrive just after turnComplete.
+                delay(300)
+                finishCurrentTurn()
+                pendingTurnFinalizeJob = null
+            }
+        }
     }
 
     private fun handleToolCall(toolCall: JSONObject) {
@@ -423,6 +440,8 @@ class GeminiLiveClient(context: Context) {
     }
 
     private fun finishCurrentTurn() {
+        pendingTurnFinalizeJob?.cancel()
+        pendingTurnFinalizeJob = null
         val userText = synchronized(inputText) {
             inputText.toString().ifBlank { _inputTranscript.value }.trim()
                 .also { inputText.setLength(0) }
@@ -522,6 +541,8 @@ class GeminiLiveClient(context: Context) {
         synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
         pendingToolCallJobs.values.toSet().forEach { it.cancel() }
         pendingToolCallJobs.clear()
+        pendingTurnFinalizeJob?.cancel()
+        pendingTurnFinalizeJob = null
         micEngine.setLiveConversationActive(false)
         micEngine.setAssistantSpeaking(false)
         audioPlayer.stop()
