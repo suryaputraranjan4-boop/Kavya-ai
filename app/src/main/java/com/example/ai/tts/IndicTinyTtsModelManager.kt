@@ -284,31 +284,53 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
         checkInstalledState()
     }
 
-    fun verifyModel(): Boolean {
+    fun verifyModel(): Boolean = verifyModelIntegrity()
+
+    fun verifyModelAsync() {
+        if (_status.value == ModelDownloadStatus.VERIFYING) return
         _status.value = ModelDownloadStatus.VERIFYING
-        val valid = verifyModelIntegrity()
-        if (valid) {
-            _status.value = ModelDownloadStatus.READY
-            _downloadProgress.value = 1f
-            _progressText.value = "Model integrity verified"
-        } else {
-            _status.value = ModelDownloadStatus.ERROR
-            _progressText.value = "Model verification failed. Re-download the model."
+        _progressText.value = "Checking official SHA-256 checksums..."
+        scope.launch {
+            val valid = withContext(Dispatchers.IO) { verifyModelIntegrity() }
+            if (valid) {
+                _status.value = ModelDownloadStatus.READY
+                _downloadProgress.value = 1f
+                _progressText.value = "Model integrity verified"
+            } else {
+                _status.value = ModelDownloadStatus.ERROR
+                _progressText.value = "Model verification failed. Re-download the model."
+            }
         }
-        return valid
     }
 
     fun deleteModel() {
         paused = true
         activeCall?.cancel()
-        downloadJob?.cancel()
+        val previousJob = downloadJob
+        previousJob?.cancel()
         downloadJob = null
-        modelDir.deleteRecursively()
-        checkInstalledState()
+        _status.value = ModelDownloadStatus.VERIFYING
+        _progressText.value = "Removing model files..."
+        scope.launch {
+            previousJob?.join()
+            modelDir.deleteRecursively()
+            checkInstalledState()
+        }
     }
 
     fun redownloadModel() {
-        deleteModel()
-        downloadAll()
+        paused = true
+        activeCall?.cancel()
+        val previousJob = downloadJob
+        previousJob?.cancel()
+        downloadJob = null
+        _status.value = ModelDownloadStatus.VERIFYING
+        _progressText.value = "Preparing model re-download..."
+        scope.launch {
+            previousJob?.join()
+            modelDir.deleteRecursively()
+            checkInstalledState()
+            downloadAll()
+        }
     }
 }
