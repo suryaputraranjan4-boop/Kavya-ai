@@ -62,6 +62,11 @@ class GeminiLiveClient(context: Context) {
     private val setupReady = AtomicBoolean(false)
     private val socketGeneration = AtomicLong(0L)
     @Volatile private var webSocket: WebSocket? = null
+    @Volatile private var currentApiKey: String? = null
+    @Volatile private var currentModel: String = GeminiModelRegistry.LIVE_STREAM_MODEL
+    @Volatile private var currentConversationContext: String = ""
+    @Volatile private var sessionResumeHandle: String? = null
+    @Volatile private var reconnectAttempts = 0
 
     private val _state = MutableStateFlow(LiveVoiceState.DISCONNECTED)
     val state: StateFlow<LiveVoiceState> = _state.asStateFlow()
@@ -115,6 +120,11 @@ class GeminiLiveClient(context: Context) {
         synchronized(outputText) { outputText.setLength(0) }
         setupReady.set(false)
         _state.value = LiveVoiceState.CONNECTING
+        currentApiKey = apiKey.trim()
+        currentModel = model
+        currentConversationContext = conversationContext
+        sessionResumeHandle = null
+        reconnectAttempts = 0
         configureVoiceAudioRoute()
         micEngine.setLiveConversationActive(true)
         synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
@@ -132,9 +142,18 @@ class GeminiLiveClient(context: Context) {
             }
         }
 
+        connectWebSocket(apiKey.trim(), model, conversationContext, resumeHandle = null)
+    }
+
+    private fun connectWebSocket(
+        apiKey: String,
+        model: String,
+        conversationContext: String,
+        resumeHandle: String?
+    ) {
         val generation = socketGeneration.incrementAndGet()
         val httpsUrl = LIVE_ENDPOINT.toHttpUrl().newBuilder()
-            .addQueryParameter("key", apiKey.trim())
+            .addQueryParameter("key", apiKey)
             .build()
         val request = Request.Builder()
             .url(httpsUrl.toString().replaceFirst("https://", "wss://"))
@@ -147,7 +166,7 @@ class GeminiLiveClient(context: Context) {
                     return
                 }
                 webSocket = socket
-                if (!socket.send(buildSetupMessage(model, conversationContext).toString())) {
+                if (!socket.send(buildSetupMessage(model, conversationContext, resumeHandle).toString())) {
                     fail("Could not send Gemini Live session setup.")
                 }
             }
@@ -165,23 +184,48 @@ class GeminiLiveClient(context: Context) {
             override fun onFailure(socket: WebSocket, t: Throwable, response: Response?) {
                 if (generation != socketGeneration.get()) return
                 Log.e(TAG, "Gemini Live WebSocket failed (HTTP ${response?.code ?: "n/a"})", t)
-                val message = when (response?.code) {
-                    400, 401, 403 -> "Gemini Live rejected the API key or model access."
-                    429 -> "Gemini Live is rate-limited. Please try again shortly."
-                    else -> "Gemini Live connection failed: ${t.localizedMessage ?: "network error"}"
+                when (response?.code) {
+                    400, 401, 403 -> fail("Gemini Live rejected the API key or model access.")
+                    429 -> fail("Gemini Live is rate-limited. Please try again shortly.")
+                    else -> scheduleReconnect("Gemini Live connection dropped: ${t.localizedMessage ?: "network error"}")
                 }
-                fail(message)
             }
 
             override fun onClosed(socket: WebSocket, code: Int, reason: String) {
                 if (generation != socketGeneration.get()) return
-                cleanupSession()
-                if (active.get()) fail("Gemini Live session closed: $reason")
+                if (active.get()) scheduleReconnect("Gemini Live session closed: $reason")
             }
         })
     }
 
-    private fun buildSetupMessage(model: String, conversationContext: String): JSONObject {
+    private fun scheduleReconnect(reason: String) {
+        if (!active.get()) return
+        val handle = sessionResumeHandle
+        if (handle.isNullOrBlank() || reconnectAttempts >= 3) {
+            fail("$reason. Tap the microphone to start a new Live session.")
+            return
+        }
+        reconnectAttempts++
+        setupReady.set(false)
+        audioPlayer.flush()
+        synchronized(pendingAudioFrames) { pendingAudioFrames.clear() }
+        val staleSocket = webSocket
+        webSocket = null
+        socketGeneration.incrementAndGet()
+        staleSocket?.cancel()
+        scope.launch {
+            delay(350)
+            if (!active.get()) return@launch
+            val key = currentApiKey
+            if (key.isNullOrBlank()) {
+                fail("Gemini Live could not resume because its credential is unavailable.")
+                return@launch
+            }
+            connectWebSocket(key, currentModel, currentConversationContext, handle)
+        }
+    }
+
+    private fun buildSetupMessage(model: String, conversationContext: String, resumeHandle: String?): JSONObject {
         val persona = """
             You are Kavya, a warm, intelligent, natural female AI assistant.
             Speak in the user's language and naturally mirror Hindi, Hinglish, or English.
@@ -232,11 +276,17 @@ class GeminiLiveClient(context: Context) {
                         )
                 ))
             ))
-            .put("sessionResumption", JSONObject())
+            .put("sessionResumption", JSONObject().apply {
+                if (!resumeHandle.isNullOrBlank()) put("handle", resumeHandle)
+            })
         return JSONObject().put("setup", setup)
     }
 
     private fun handleServerMessage(message: JSONObject) {
+        message.optJSONObject("sessionResumptionUpdate")?.let { update ->
+            val handle = update.optString("newHandle").ifBlank { update.optString("token") }
+            sessionResumeHandle = if (update.optBoolean("resumable", false) && handle.isNotBlank()) handle else null
+        }
         if (message.has("toolCall")) {
             handleToolCall(message.optJSONObject("toolCall") ?: return)
             return
@@ -248,6 +298,7 @@ class GeminiLiveClient(context: Context) {
                     sendAudioFrame(pendingAudioFrames.removeFirst())
                 }
             }
+            reconnectAttempts = 0
             _state.value = LiveVoiceState.LISTENING
             return
         }
@@ -438,6 +489,8 @@ class GeminiLiveClient(context: Context) {
         micEngine.setAssistantSpeaking(false)
         audioPlayer.stop()
         restoreVoiceAudioRoute()
+        sessionResumeHandle = null
+        currentApiKey = null
     }
 
     private fun fail(message: String) {
