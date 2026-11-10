@@ -355,6 +355,12 @@ class GeminiLiveClient(context: Context) {
 
     private fun sendAudioFrame(pcmData: ByteArray) {
         if (!active.get() || !setupReady.get() || pcmData.isEmpty()) return
+        val socket = webSocket ?: return
+        // Avoid building seconds of stale audio if the network is congested.
+        if (socket.queueSize() > 128 * 1024) {
+            Log.w(TAG, "Dropping a live audio frame because the WebSocket send queue is congested.")
+            return
+        }
         val payload = JSONObject().put(
             "realtimeInput",
             JSONObject().put(
@@ -364,7 +370,7 @@ class GeminiLiveClient(context: Context) {
                     .put("data", Base64.encodeToString(pcmData, Base64.NO_WRAP))
             )
         )
-        if (webSocket?.send(payload.toString()) != true) {
+        if (!socket.send(payload.toString())) {
             Log.w(TAG, "Live audio frame was not queued by WebSocket.")
         }
     }
@@ -484,7 +490,7 @@ private class LivePcmAudioPlayer(
                     val written = try {
                         audioTrack.write(
                             chunk.bytes, offset, chunk.bytes.size - offset,
-                            AudioTrack.WRITE_BLOCKING
+                            AudioTrack.WRITE_NON_BLOCKING
                         )
                     } catch (e: Exception) {
                         Log.e("GeminiLiveAudio", "AudioTrack write failed", e)
@@ -493,6 +499,8 @@ private class LivePcmAudioPlayer(
                     if (written > 0) {
                         offset += written
                         framesWritten += written / 2
+                    } else if (written == 0) {
+                        delay(5)
                     } else break
                 }
             }
@@ -554,7 +562,7 @@ private class LivePcmAudioPlayer(
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build()
                 )
-                .setBufferSizeInBytes(maxOf(minBuffer * 2, 24000))
+                .setBufferSizeInBytes(maxOf(minBuffer * 2, 4800))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
                 .also { track = it }
