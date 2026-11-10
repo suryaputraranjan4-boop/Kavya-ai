@@ -103,9 +103,11 @@ class KavyaMicrophoneEngine private constructor(context: Context) {
                     MicrophoneEngine.State.LISTENING,
                     MicrophoneEngine.State.SPEECH_DETECTED,
                     MicrophoneEngine.State.PROCESSING,
-                    MicrophoneEngine.State.TTS_PLAYBACK,
-                    MicrophoneEngine.State.MUTED -> EngineState.MIC_ACTIVE
+                    MicrophoneEngine.State.TTS_PLAYBACK -> {
+                        if (micEngine.isRecording) EngineState.MIC_ACTIVE else EngineState.MIC_OFF
+                    }
 
+                    MicrophoneEngine.State.MUTED -> EngineState.MIC_ACTIVE
                     MicrophoneEngine.State.SLEEPING -> EngineState.MIC_SLEEPING
                     MicrophoneEngine.State.ERROR -> EngineState.MIC_ERROR
                 }
