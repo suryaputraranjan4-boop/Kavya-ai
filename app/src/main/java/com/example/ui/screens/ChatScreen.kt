@@ -368,6 +368,16 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
             }
 
+            // JARVIS Visual Explanation Card Banner
+            val jarvisExplanation by com.example.visual.JarvisGuidanceEngine.activeExplanation.collectAsState()
+            jarvisExplanation?.let { exp ->
+                com.example.ui.components.JarvisExplanationCardView(
+                    card = exp,
+                    onDismiss = { com.example.visual.JarvisGuidanceEngine.dismissExplanation() },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()

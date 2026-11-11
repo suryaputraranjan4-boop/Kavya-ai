@@ -37,8 +37,10 @@ class VoiceActivityDetector(
     var onSpeechStart: (() -> Unit)? = null
     var onSpeechActiveFrame: ((ByteArray) -> Unit)? = null
     var onSpeechEnd: ((ByteArray) -> Unit)? = null
+    var onUserInterruption: (() -> Unit)? = null
 
     @Volatile private var isGated: Boolean = false
+    @Volatile private var isAssistantSpeaking: Boolean = false
     @Volatile private var isSpeechDetected: Boolean = false
 
     private var noiseFloor: Float = 120.0f
@@ -56,7 +58,7 @@ class VoiceActivityDetector(
     private val utteranceStream = ByteArrayOutputStream()
 
     /**
-     * Set playback gate (e.g., when Kavya is speaking via TTS) to suppress speech detection.
+     * Explicit user mute gate.
      */
     fun setGated(gated: Boolean) {
         if (this.isGated != gated) {
@@ -64,6 +66,17 @@ class VoiceActivityDetector(
             if (gated) {
                 resetUtterance()
             }
+        }
+    }
+
+    /**
+     * Informs VAD whether assistant is currently speaking for full-duplex interruption detection.
+     */
+    fun setAssistantSpeaking(speaking: Boolean) {
+        this.isAssistantSpeaking = speaking
+        if (!speaking && isSpeechDetected && silenceStartTimeMs > 0L) {
+            // Re-evaluate silence window after assistant finishes speaking
+            silenceStartTimeMs = timeProvider()
         }
     }
 
@@ -79,12 +92,14 @@ class VoiceActivityDetector(
         val rms = calculateRms(frame, length)
         val now = timeProvider()
 
-        // Adaptive noise floor update (only when no active speech is detected)
-        if (!isSpeechDetected && rms < (noiseFloor * 2.0f)) {
+        // Adaptive noise floor update (only when no active speech is detected and assistant is silent)
+        if (!isSpeechDetected && !isAssistantSpeaking && rms < (noiseFloor * 2.0f)) {
             noiseFloor = (0.96f * noiseFloor + 0.04f * rms).coerceIn(MIN_NOISE_FLOOR, MAX_NOISE_FLOOR)
         }
 
-        val dynamicStartThreshold = maxOf(speechStartRmsThreshold, noiseFloor * 2.2f)
+        // When assistant is speaking, raise onset threshold to prevent speaker echo false-starts
+        val startMultiplier = if (isAssistantSpeaking) 3.2f else 2.2f
+        val dynamicStartThreshold = maxOf(speechStartRmsThreshold * (if (isAssistantSpeaking) 1.5f else 1.0f), noiseFloor * startMultiplier)
         val dynamicEndThreshold = maxOf(speechEndRmsThreshold, noiseFloor * 1.4f)
 
         val frameCopy = frame.copyOf(length)
@@ -106,7 +121,7 @@ class VoiceActivityDetector(
                     isSpeechDetected = true
                     lastSpeechTimeMs = now
                     silenceStartTimeMs = 0L
-                    Log.d(TAG, "Speech START detected (RMS: %.1f, NoiseFloor: %.1f)".format(rms, noiseFloor))
+                    Log.d(TAG, "Speech START detected (RMS: %.1f, AssistantSpeaking: %b)".format(rms, isAssistantSpeaking))
 
                     // Flush pre-roll buffer into utterance stream
                     utteranceStream.reset()
@@ -116,6 +131,10 @@ class VoiceActivityDetector(
                     preRollBuffer.clear()
                     currentPreRollBytes = 0
 
+                    if (isAssistantSpeaking) {
+                        Log.i(TAG, "User interrupted assistant speaking!")
+                        onUserInterruption?.invoke()
+                    }
                     onSpeechStart?.invoke()
                 }
             } else {

@@ -45,7 +45,7 @@ object JarvisIntelligencePlanner {
             "explain", "what is this", "what does this mean", "summarize", "break down",
             "analyze", "graph", "chart", "read this", "kya hai", "samjhao", "screen"
         )
-        if (explainPatterns.any { q.contains(it) } || q.length > 5) {
+        if (explainPatterns.any { q.contains(it) }) {
             return JarvisMode.EXPLAINS_ANYTHING
         }
 
@@ -227,14 +227,19 @@ object JarvisIntelligencePlanner {
             targetLabel = resolved.targetText
             clickPoint = resolved.clickPoint
         } else {
-            // Fallback to closest match in semantic map or first action button
+            // Fallback to closest match in semantic map
             val fallback = screenMap.findElementMatching(targetQuery)
                 ?: screenMap.actionButtons.firstOrNull()
-                ?: screenMap.elements.firstOrNull()
 
-            targetBounds = fallback?.bounds ?: Rect(100, 300, 300, 420)
-            targetLabel = fallback?.displayLabel ?: targetQuery
-            clickPoint = Pair(targetBounds.centerX(), targetBounds.centerY())
+            if (fallback != null && fallback.bounds.width() > 0 && fallback.bounds.height() > 0) {
+                targetBounds = fallback.bounds
+                targetLabel = fallback.displayLabel.ifBlank { targetQuery }
+                clickPoint = Pair(targetBounds.centerX(), targetBounds.centerY())
+            } else {
+                targetBounds = Rect(0, 0, 0, 0)
+                targetLabel = "Target '$targetQuery' not found on current screen"
+                clickPoint = Pair(0, 0)
+            }
         }
 
         instructions.add(

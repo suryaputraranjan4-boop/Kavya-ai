@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.ai.KavyaAI
@@ -55,6 +57,8 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 instance ?: MicrophoneEngine(context.applicationContext).also { instance = it }
             }
         }
+
+        fun getExistingInstance(): MicrophoneEngine? = instance
     }
 
     private val engineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -117,6 +121,14 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
         vad.onSpeechStart = {
             if (_engineState.value == State.LISTENING) {
                 _engineState.value = State.SPEECH_DETECTED
+            }
+        }
+
+        // Wire VAD user interruption event (full-duplex playback cancellation)
+        vad.onUserInterruption = {
+            if (isAssistantSpeaking) {
+                Log.i(TAG, "User speech interruption detected during assistant playback. Stopping TTS!")
+                setAssistantSpeaking(false)
             }
         }
 
@@ -290,6 +302,19 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 candidate.release()
                 false
             } else {
+                try {
+                    if (AcousticEchoCanceler.isAvailable()) {
+                        AcousticEchoCanceler.create(candidate.audioSessionId)?.enabled = true
+                        Log.d(TAG, "AcousticEchoCanceler enabled on session ${candidate.audioSessionId}")
+                    }
+                    if (NoiseSuppressor.isAvailable()) {
+                        NoiseSuppressor.create(candidate.audioSessionId)?.enabled = true
+                        Log.d(TAG, "NoiseSuppressor enabled on session ${candidate.audioSessionId}")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not enable audio effects on session ${candidate.audioSessionId}", e)
+                }
+
                 candidate.startRecording()
                 if (candidate.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                     Log.e(TAG, "AudioRecord failed to start recording")

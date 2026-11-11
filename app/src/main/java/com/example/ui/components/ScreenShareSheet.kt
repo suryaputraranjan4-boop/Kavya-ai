@@ -50,10 +50,32 @@ fun ScreenShareSheet(
     onNavigateToChat: () -> Unit
 ) {
     val context = LocalContext.current
-    val isSharing by viewModel.isScreenSharing.collectAsState()
+    val shareState by viewModel.screenShareState.collectAsState()
+    val isSharing = shareState is com.example.services.ScreenShareManager.ScreenShareState.Active || shareState is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame
     val screenContext by viewModel.screenContextText.collectAsState()
-    val voiceState by viewModel.voiceState.collectAsState()
     val scrollState = rememberScrollState()
+
+    // Status description from actual state
+    val statusText = when (val s = shareState) {
+        is com.example.services.ScreenShareManager.ScreenShareState.Active -> "Active • ${s.width}x${s.height} @ ${s.fps} FPS (${s.framesCaptured} frames)"
+        is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame -> "Warning • Screen frame stream is stale"
+        is com.example.services.ScreenShareManager.ScreenShareState.WaitingForFirstFrame -> "Connecting • Waiting for first frame..."
+        is com.example.services.ScreenShareManager.ScreenShareState.StartingService -> "Starting foreground capture service..."
+        is com.example.services.ScreenShareManager.ScreenShareState.RequestingPermission -> "Requesting system consent..."
+        is com.example.services.ScreenShareManager.ScreenShareState.PermissionDenied -> "Permission Denied: ${s.reason}"
+        is com.example.services.ScreenShareManager.ScreenShareState.Error -> "Error: ${s.message}"
+        else -> "Inactive • Ready to share screen"
+    }
+
+    val statusDotColor = when (shareState) {
+        is com.example.services.ScreenShareManager.ScreenShareState.Active -> SuccessGreen
+        is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame -> Color(0xFFFFB300)
+        is com.example.services.ScreenShareManager.ScreenShareState.StartingService,
+        is com.example.services.ScreenShareManager.ScreenShareState.WaitingForFirstFrame -> AccentCyan
+        is com.example.services.ScreenShareManager.ScreenShareState.PermissionDenied,
+        is com.example.services.ScreenShareManager.ScreenShareState.Error -> Error
+        else -> TextTertiary
+    }
 
     // Android Official Screen Capture Consent Launcher (MediaProjection)
     val mediaProjectionManager = remember {
@@ -126,11 +148,11 @@ fun ScreenShareSheet(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(if (isSharing) SuccessGreen else TextTertiary)
+                                    .background(statusDotColor)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (isSharing) "Active • Kavya is observing & listening" else "Inactive • Ready to share",
+                                text = statusText,
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                                 color = if (isSharing) SuccessGreenGlow else TextSecondary
                             )

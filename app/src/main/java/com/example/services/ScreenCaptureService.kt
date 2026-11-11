@@ -97,8 +97,9 @@ class ScreenCaptureService : Service() {
                 return START_NOT_STICKY
             }
 
+            val sessionId = intent.getStringExtra("EXTRA_SESSION_ID") ?: java.util.UUID.randomUUID().toString()
             startForegroundWithNotification()
-            startCapture(resultCode, resultData)
+            startCapture(resultCode, resultData, sessionId)
         }
 
         return START_NOT_STICKY
@@ -144,11 +145,11 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun startCapture(resultCode: Int, resultData: Intent) {
+    private fun startCapture(resultCode: Int, resultData: Intent, sessionId: String) {
         try {
             val projection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
             if (projection == null) {
-                ScreenShareManager.reportServiceError("Unable to initialize MediaProjection token.")
+                ScreenShareManager.reportServiceError("Unable to initialize MediaProjection token.", isFatal = true)
                 stopSelf()
                 return
             }
@@ -206,6 +207,8 @@ class ScreenCaptureService : Service() {
                 }
             }, backgroundHandler)
 
+            ScreenShareManager.onServiceStarted(sessionId)
+
             virtualDisplay = projection.createVirtualDisplay(
                 "KavyaPerceptionDisplay",
                 targetWidth,
@@ -220,7 +223,7 @@ class ScreenCaptureService : Service() {
             Log.i(TAG, "VirtualDisplay created successfully (${targetWidth}x${targetHeight} @ ${densityDpi}dpi). Screen capture active.")
         } catch (e: Exception) {
             Log.e(TAG, "Fatal failure starting virtual screen capture", e)
-            ScreenShareManager.reportServiceError("Capture failed: ${e.message}")
+            ScreenShareManager.reportServiceError("Capture failed: ${e.message}", isFatal = true)
             stopSelf()
         }
     }

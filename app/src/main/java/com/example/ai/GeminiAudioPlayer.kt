@@ -2,6 +2,8 @@ package com.example.ai
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
@@ -105,6 +107,8 @@ class GeminiAudioPlayer(
         }
     }
 
+    @Volatile private var audioTrack: AudioTrack? = null
+
     fun playWav(wavBytes: ByteArray, text: String? = null, enqueue: Boolean = false, onComplete: (() -> Unit)? = null) {
         playAudioBytes(wavBytes, text, enqueue, onComplete)
     }
@@ -114,11 +118,66 @@ class GeminiAudioPlayer(
             onComplete?.invoke()
             return
         }
-        val header = createWavHeader(pcmBytes.size, sampleRate)
-        val wavBytes = ByteArray(header.size + pcmBytes.size)
-        System.arraycopy(header, 0, wavBytes, 0, header.size)
-        System.arraycopy(pcmBytes, 0, wavBytes, header.size, pcmBytes.size)
-        playAudioBytes(wavBytes, text, enqueue, onComplete)
+        // Use low-latency streaming AudioTrack for live PCM chunks
+        playPcmStreaming(pcmBytes, sampleRate, text, enqueue, onComplete)
+    }
+
+    @Synchronized
+    private fun playPcmStreaming(
+        pcmBytes: ByteArray,
+        sampleRate: Int,
+        text: String?,
+        enqueue: Boolean,
+        onComplete: (() -> Unit)?
+    ) {
+        if (!enqueue) {
+            stop()
+        }
+        text?.let { notifyCaption(it) }
+
+        val currentGen = playbackGeneration
+        Thread {
+            try {
+                notifySpeaking(true)
+                val minBufSize = AudioTrack.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                val bufSize = maxOf(minBufSize, pcmBytes.size)
+
+                val track = AudioTrack(
+                    AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .build(),
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                    bufSize,
+                    AudioTrack.MODE_STREAM,
+                    android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
+                )
+
+                audioTrack = track
+                track.play()
+                track.write(pcmBytes, 0, pcmBytes.size)
+
+                // Wait for playback to complete if generation hasn't changed
+                while (track.playState == AudioTrack.PLAYSTATE_PLAYING && currentGen == playbackGeneration) {
+                    Thread.sleep(20)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "AudioTrack streaming error", e)
+            } finally {
+                if (currentGen == playbackGeneration) {
+                    notifySpeaking(false)
+                    onComplete?.invoke()
+                }
+            }
+        }.start()
     }
 
     private fun createWavHeader(pcmLength: Int, sampleRate: Int): ByteArray {
@@ -291,6 +350,18 @@ class GeminiAudioPlayer(
         audioQueue.clear()
         isProcessingQueue = false
         try {
+            audioTrack?.let { track ->
+                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    track.pause()
+                    track.flush()
+                }
+                track.release()
+            }
+            audioTrack = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping AudioTrack: ${e.message}")
+        }
+        try {
             currentTempFile?.delete()
             currentTempFile = null
         } catch (_: Exception) {}
@@ -311,6 +382,8 @@ class GeminiAudioPlayer(
 
     private fun cleanupAndNotify(onComplete: (() -> Unit)?) {
         try {
+            audioTrack?.release()
+            audioTrack = null
             mediaPlayer?.release()
             mediaPlayer = null
         } catch (e: Exception) {

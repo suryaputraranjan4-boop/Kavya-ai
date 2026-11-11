@@ -734,9 +734,27 @@ object UniversalTaskDecomposer {
     }
 
     private fun splitIntoClauses(input: String): List<String> {
-        val pattern = "(?:\\s+(?:और|फिर|उसके बाद|and|then|aur|phir|after that|finally|ant me|अंत में)\\s+|[,;\\n]+)".toRegex(RegexOption.IGNORE_CASE)
-        return input.split(pattern)
+        val placeholderMap = mutableMapOf<String, String>()
+        var protectedInput = input
+        val quoteRegex = Regex("""['"]([^'"]+)['"]""")
+        var quoteIdx = 0
+        protectedInput = quoteRegex.replace(protectedInput) { match ->
+            val placeholder = "___QUOTE_${quoteIdx++}___"
+            placeholderMap[placeholder] = match.value
+            placeholder
+        }
+
+        val pattern = "(?:\\s+(?:और|फिर|उसके बाद|then|phir|after that|finally|ant me|अंत में|and then|aur phir)\\s+|[;\\n]+|\\s*,\\s*)".toRegex(RegexOption.IGNORE_CASE)
+        val rawClauses = protectedInput.split(pattern)
             .map { it.trim() }
             .filter { it.isNotBlank() }
+
+        return rawClauses.map { clause ->
+            var restored = clause
+            placeholderMap.forEach { (ph, original) ->
+                restored = restored.replace(ph, original)
+            }
+            restored
+        }
     }
 }

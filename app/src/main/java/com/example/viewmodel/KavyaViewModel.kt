@@ -434,13 +434,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleScreenSharing(enabled: Boolean? = null) {
-        val target = enabled ?: !_isScreenSharing.value
+        val target = enabled ?: !com.example.services.ScreenShareManager.isScreenSharingActive
         if (!target) {
             stopScreenShare()
-        } else {
-            // Request system consent through UI launcher
-            _isScreenSharing.value = true
-            refreshScreenContext()
         }
     }
 
@@ -459,11 +455,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun analyzeScreenWithKavya(prompt: String = "What's on my screen right now? Please guide me.") {
-        if (!_isScreenSharing.value) {
-            toggleScreenSharing(true)
-        } else {
-            refreshScreenContext()
-        }
+        refreshScreenContext()
         sendMessage(prompt)
     }
 
@@ -476,6 +468,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             com.example.services.ScreenShareManager.state.collect { state ->
                 when (state) {
                     is com.example.services.ScreenShareManager.ScreenShareState.Active -> {
+                        _isScreenSharing.value = true
+                        refreshScreenContext()
+                    }
+                    is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame -> {
                         _isScreenSharing.value = true
                         refreshScreenContext()
                     }
@@ -509,7 +505,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             _messages.value = _messages.value + errMsg
                         }
                     }
-                    else -> {}
+                    else -> {
+                        _isScreenSharing.value = false
+                    }
                 }
             }
         }
@@ -1040,144 +1038,56 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     viewModelScope.launch(Dispatchers.IO) {
                         durableTaskEngine.createAndPersistTask(prompt, gateDecision.category, gateDecision.steps)
                     }
-                    val firstStep = classified.steps[0]
-                    val secondStep = classified.steps.getOrNull(1)
 
-                    val appTarget = classified.targetApp ?: firstStep.targetApp ?: ""
-                    val taskCtx = ActionEventBus.startNewTask(prompt, CommandCategory.OPEN_APP, appTarget)
-                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
-                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PLANNED, ActionEvent.TaskPlanned(taskCtx, classified.steps.size))
-
-                    com.example.agent.TaskStateMachine.update(
-                        phase = com.example.agent.TaskPhase.APP_RESOLUTION,
-                        currentApp = appTarget,
-                        stepIndex = 1,
-                        totalSteps = classified.steps.size
-                    )
-
-                    val resolution = commandRouter.appResolver.resolve(appTarget)
-                    if (resolution.confidence == com.example.utils.MatchConfidence.NONE) {
-                        val isHindiOrHinglish = prompt.any { it in '\u0900'..'\u097F' } || prompt.lowercase(java.util.Locale.ROOT).let {
-                            it.contains("kholo") || it.contains("khol") || it.contains("chalao") || it.contains("jao") || it.contains("open")
-                        }
-                        cleanResponse = if (isHindiOrHinglish) "मुझे '$appTarget' app नहीं मिला।" else "I couldn't find the '$appTarget' app."
-                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "App not installed", cleanResponse))
-                        com.example.agent.TaskStateMachine.update(phase = com.example.agent.TaskPhase.FAILED, lastError = cleanResponse)
-                        com.example.agent.AutomationEventLogger.error("App not found: $appTarget")
+                    val decompPlan = com.example.agent.UniversalTaskDecomposer.decompose(prompt)
+                    val taskPlan = if (decompPlan != null) {
+                        decompPlan
                     } else {
-                        val matched = resolution.matchedApp!!
-                        com.example.agent.TaskStateMachine.update(
-                            phase = com.example.agent.TaskPhase.APP_OPENING,
-                            currentApp = matched.appName,
-                            currentStep = "Launching ${matched.appName}"
+                        val appTarget = classified.targetApp ?: classified.steps.firstOrNull()?.targetApp ?: ""
+                        val steps = classified.steps.mapIndexed { idx, step ->
+                            val actionType = when (step.category) {
+                                CommandCategory.OPEN_APP -> com.example.agent.UniversalActionType.OPEN_APP
+                                CommandCategory.PLAY_MEDIA -> com.example.agent.UniversalActionType.PLAY
+                                CommandCategory.SEARCH_IN_APP -> com.example.agent.UniversalActionType.TYPE
+                                CommandCategory.SEND_MESSAGE -> if (appTarget.contains("WhatsApp", ignoreCase = true)) com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE else com.example.agent.UniversalActionType.SEND_MESSAGE
+                                CommandCategory.CALL -> if (appTarget.contains("WhatsApp", ignoreCase = true)) com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL else com.example.agent.UniversalActionType.MAKE_PHONE_CALL
+                                CommandCategory.INTERACT_IN_APP -> com.example.agent.UniversalActionType.TAP
+                                else -> com.example.agent.UniversalActionType.SYSTEM_CONTROL
+                            }
+                            com.example.agent.TaskStep(
+                                id = idx + 1,
+                                actionType = actionType,
+                                targetAppOrUrl = appTarget,
+                                param = step.query ?: step.param ?: "",
+                                actionDescription = "Execute ${step.category.name}"
+                            )
+                        }
+                        com.example.agent.TaskPlan(
+                            originalPrompt = prompt,
+                            targetAppName = appTarget,
+                            steps = steps,
+                            isMultiStep = true
                         )
-                        com.example.agent.AutomationEventLogger.app("Launching ${matched.appName} (${matched.packageName})")
+                    }
 
-                        val launchResult = commandRouter.launchSpecificApp(matched)
-                        launchDiagnostic = launchResult.diagnostic
-
-                        if (!launchResult.success) {
-                            cleanResponse = launchResult.output
-                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Launch failed", cleanResponse))
-                            com.example.agent.TaskStateMachine.update(phase = com.example.agent.TaskPhase.FAILED, lastError = cleanResponse)
-                            com.example.agent.AutomationEventLogger.error("Launch failed: $cleanResponse")
-                        } else {
-                            com.example.agent.AutomationEventLogger.verify("Verified app in foreground: ${matched.appName}")
-                            delay(400)
-                            if (secondStep != null) {
-                                com.example.agent.TaskStateMachine.update(
-                                    phase = com.example.agent.TaskPhase.ACTION_EXECUTION,
-                                    stepIndex = 2,
-                                    currentStep = secondStep.category.name
-                                )
-                                com.example.agent.AutomationEventLogger.action("Executing step 2: ${secondStep.category}")
-                                var step2Success = true
-                                when (secondStep.category) {
-                                    CommandCategory.PLAY_MEDIA -> {
-                                        val mediaQuery = secondStep.query ?: secondStep.param ?: ""
-                                        val mediaResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, mediaQuery, "PLAY"))
-                                        step2Success = mediaResult.success
-                                        cleanResponse = if (mediaResult.success) {
-                                            "$appTarget par $mediaQuery play kar diya hai."
-                                        } else {
-                                            mediaResult.output
-                                        }
-                                        com.example.agent.TaskStateMachine.update(phase = if (mediaResult.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
-                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
-                                    }
-                                    CommandCategory.SEARCH_IN_APP -> {
-                                        val searchQ = secondStep.query ?: secondStep.param ?: ""
-                                        val searchResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, searchQ, "SEARCH"))
-                                        step2Success = searchResult.success
-                                        cleanResponse = if (searchResult.success) {
-                                            "$appTarget par $searchQ search kar diya hai."
-                                        } else {
-                                            searchResult.output
-                                        }
-                                        com.example.agent.TaskStateMachine.update(phase = if (searchResult.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
-                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
-                                    }
-                                    CommandCategory.SEND_MESSAGE -> {
-                                        val rawParam = secondStep.param ?: ""
-                                        val stepObj = com.example.agent.TaskStep(
-                                            id = 2,
-                                            actionType = if (appTarget.contains("WhatsApp", ignoreCase = true)) com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE else com.example.agent.UniversalActionType.SEND_MESSAGE,
-                                            targetAppOrUrl = appTarget,
-                                            param = rawParam
-                                        )
-                                        val agentRes = androidAgent.executeAtomicStep(stepObj)
-                                        step2Success = agentRes.success
-                                        cleanResponse = agentRes.output
-                                        com.example.agent.TaskStateMachine.update(phase = if (agentRes.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
-                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
-                                    }
-                                    CommandCategory.CALL -> {
-                                        val rawParam = secondStep.param ?: ""
-                                        val stepObj = com.example.agent.TaskStep(
-                                            id = 2,
-                                            actionType = if (appTarget.contains("WhatsApp", ignoreCase = true)) com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL else com.example.agent.UniversalActionType.MAKE_PHONE_CALL,
-                                            targetAppOrUrl = appTarget,
-                                            param = rawParam
-                                        )
-                                        val agentRes = androidAgent.executeAtomicStep(stepObj)
-                                        step2Success = agentRes.success
-                                        cleanResponse = agentRes.output
-                                        com.example.agent.TaskStateMachine.update(phase = if (agentRes.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
-                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
-                                    }
-                                    CommandCategory.INTERACT_IN_APP -> {
-                                        val rawParam = secondStep.param ?: ""
-                                        val isOrdinalFirst = rawParam.contains("first", ignoreCase = true) || rawParam.contains("pehla", ignoreCase = true) || rawParam.contains("1st", ignoreCase = true)
-                                        val tapResult = if (isOrdinalFirst) {
-                                            TapEngine.tapFirstResult(KavyaAccessibilityService.instance, matched.packageName)
-                                        } else {
-                                            TapEngine.tapElement(KavyaAccessibilityService.instance, matched.packageName, rawParam)
-                                        }
-                                        step2Success = tapResult.success
-                                        cleanResponse = if (tapResult.success) {
-                                            "$appTarget par '${tapResult.targetLabel}' select kar diya hai."
-                                        } else {
-                                            "$appTarget open ho gaya hai, lekin target locate nahi ho paya."
-                                        }
-                                        com.example.agent.TaskStateMachine.update(phase = if (step2Success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED, actionResult = cleanResponse)
-                                        com.example.agent.AutomationEventLogger.verify(cleanResponse)
-                                    }
-                                    else -> {
-                                        cleanResponse = launchResult.output
-                                    }
-                                }
-                                if (step2Success) {
-                                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
-                                } else {
-                                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Step 2 failed", cleanResponse))
-                                }
-                            } else {
-                                cleanResponse = launchResult.output
-                                ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
+                    val outcome = androidAgent.executeTaskPlan(
+                        taskPlan,
+                        onSpeakProgress = { spokenAnnouncement ->
+                            _agentActionStatus.value = spokenAnnouncement
+                            if (_autoSpeak.value) {
+                                voiceEngine.processAndSpeak(spokenAnnouncement, enqueue = false)
+                                alreadySpoken = true
                             }
                         }
+                    )
+                    _agentActionStatus.value = null
+                    cleanResponse = if (outcome.success) {
+                        outcome.finalSpokenMessage.ifBlank { "Task completed successfully." }
+                    } else {
+                        outcome.finalSpokenMessage.ifBlank { "Task stopped: ${outcome.failureReason ?: "Execution incomplete"}" }
                     }
-                    if (_autoSpeak.value) {
+
+                    if (_autoSpeak.value && !alreadySpoken) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
                     }
