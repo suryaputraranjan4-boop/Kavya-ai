@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import okhttp3.*
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -41,8 +42,12 @@ class GeminiLiveClient(
     private val _connectionState = MutableStateFlow(false)
     val connectionState: StateFlow<Boolean> = _connectionState.asStateFlow()
 
+    private val _lastServerText = MutableStateFlow("")
+    val lastServerText: StateFlow<String> = _lastServerText.asStateFlow()
+
     private var okHttpClient: OkHttpClient? = null
     private var webSocket: WebSocket? = null
+    private var screenStreamJob: kotlinx.coroutines.Job? = null
 
     /**
      * Connects to Gemini Live session via OkHttp WebSocket and registers as an audio subscriber
@@ -111,6 +116,7 @@ class GeminiLiveClient(
 
                 webSocket.send(setupJson.toString())
                 Log.d(TAG, "Setup frame sent successfully.")
+                startPeriodicScreenFrameLoop()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -150,11 +156,44 @@ class GeminiLiveClient(
             Log.w(TAG, "Failed unregistering subscriber", e)
         }
 
+        screenStreamJob?.cancel()
+        screenStreamJob = null
         try {
             webSocket?.close(1000, "Client disconnect requested")
         } catch (_: Exception) {}
         webSocket = null
         okHttpClient = null
+    }
+
+    private fun startPeriodicScreenFrameLoop() {
+        screenStreamJob?.cancel()
+        screenStreamJob = scope.launch {
+            while (isConnected.get()) {
+                kotlinx.coroutines.delay(2000L)
+                val now = System.currentTimeMillis()
+                if (now - lastScreenFrameSentAt >= 1800L &&
+                    com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.Active
+                ) {
+                    val jpegBytes = com.example.visual.VisionPipeline.getCompressedJpegFrame()
+                    val currentWs = webSocket
+                    if (jpegBytes != null && jpegBytes.isNotEmpty() && currentWs != null) {
+                        lastScreenFrameSentAt = now
+                        val base64Jpeg = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+                        val frameJson = JSONObject().apply {
+                            put("realtimeInput", JSONObject().apply {
+                                put("mediaChunks", org.json.JSONArray().apply {
+                                    put(JSONObject().apply {
+                                        put("mimeType", "image/jpeg")
+                                        put("data", base64Jpeg)
+                                    })
+                                })
+                            })
+                        }
+                        currentWs.send(frameJson.toString())
+                    }
+                }
+            }
+        }
     }
 
     @Volatile private var lastScreenFrameSentAt = 0L
@@ -210,6 +249,12 @@ class GeminiLiveClient(
                         val parts = modelTurn.getJSONArray("parts")
                         for (i in 0 until parts.length()) {
                             val part = parts.getJSONObject(i)
+                            if (part.has("text")) {
+                                val textChunk = part.optString("text", "")
+                                if (textChunk.isNotBlank()) {
+                                    _lastServerText.value = textChunk
+                                }
+                            }
                             if (part.has("inlineData")) {
                                 val inlineData = part.getJSONObject("inlineData")
                                 val mimeType = inlineData.optString("mimeType", "")

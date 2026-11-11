@@ -72,14 +72,22 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
     var showHistory by remember { mutableStateOf(false) }
     var showScreenShareSheet by remember { mutableStateOf(false) }
     var showAttachmentPopup by remember { mutableStateOf(false) }
+    var showLiveCameraModal by remember { mutableStateOf(false) }
+    var showDocScannerModal by remember { mutableStateOf(false) }
+    var initialScannedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var showVoiceNoteModal by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
 
-    // Option 1: Camera
+    // Option 1: Camera Photo Analysis
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
         if (bitmap != null) {
-            viewModel.analyzeImage(bitmap, "Analyze this camera photo and describe its contents.")
+            viewModel.analyzeImage(
+                bitmap = bitmap,
+                sourceName = "Camera Photo",
+                customPrompt = "Analyze this camera photo and describe its contents accurately."
+            )
         }
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
@@ -92,65 +100,72 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         }
     }
 
-    // Option 2: PDF Scanner (Real document scanner creating PDF)
+    val liveCameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            showLiveCameraModal = true
+        } else {
+            Toast.makeText(context, "Camera permission required for Live Camera Vision", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val voiceNotePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            showVoiceNoteModal = true
+        } else {
+            Toast.makeText(context, "Microphone permission required to record voice messages", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Option 2: Multi-Page PDF Document Scanner
     val pdfScanLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
-        if (bitmap != null) {
-            try {
-                val pdfDocument = PdfDocument()
-                val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, 1).create()
-                val page = pdfDocument.startPage(pageInfo)
-                page.canvas.drawBitmap(bitmap, 0f, 0f, null)
-                pdfDocument.finishPage(page)
-
-                val fileName = "scanned_doc_${System.currentTimeMillis()}.pdf"
-                val file = File(context.cacheDir, fileName)
-                FileOutputStream(file).use { out ->
-                    pdfDocument.writeTo(out)
-                }
-                pdfDocument.close()
-                viewModel.analyzePdf(file, fileName)
-            } catch (e: Exception) {
-                viewModel.sendMessage("PDF scan failed: ${e.localizedMessage}")
-            }
-        }
+        initialScannedBitmap = bitmap
+        showDocScannerModal = true
     }
     val pdfScanPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            pdfScanLauncher.launch(null)
+            initialScannedBitmap = null
+            showDocScannerModal = true
         } else {
-            Toast.makeText(context, "Camera permission required for PDF scanning", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Camera permission required for document scanning", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // Option 4: Gallery Photo Picker
+    // Option 4: Gallery Photo Picker (Connected to real Gemini Vision / KavyaViewModel.analyzeImage)
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
             try {
-                var displayName = "image.jpg"
+                var displayName = "gallery_image.jpg"
                 context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                     if (cursor.moveToFirst()) {
                         val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                         if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
                     }
                 }
-                Toast.makeText(
-                    context,
-                    "Image selected ($displayName), but image upload is not connected to chat yet. The model did not receive this image.",
-                    Toast.LENGTH_LONG
-                ).show()
+                val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    android.graphics.BitmapFactory.decodeStream(stream)
+                }
+                if (bitmap != null && bitmap.width > 0 && bitmap.height > 0) {
+                    viewModel.analyzeImage(bitmap, displayName)
+                } else {
+                    Toast.makeText(context, "Selected image could not be decoded.", Toast.LENGTH_SHORT).show()
+                }
             } catch (e: Exception) {
-                Toast.makeText(context, "Image could not be prepared for chat. No image data was sent.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Failed to load image: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    // Option 5: PDF Files Picker
+    // Option 5: PDF Files Picker (Connected to real PdfRenderer / KavyaViewModel.analyzePdf)
     val pdfFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -163,18 +178,25 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                         if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
                     }
                 }
-                Toast.makeText(
-                    context,
-                    "PDF selected ($displayName), but PDF upload/text extraction is not connected to chat yet. The model did not receive this PDF.",
-                    Toast.LENGTH_LONG
-                ).show()
+                val safeFileName = displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val tempPdfFile = File(context.cacheDir, "picked_${System.currentTimeMillis()}_$safeFileName")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(tempPdfFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                if (tempPdfFile.exists() && tempPdfFile.length() > 0L) {
+                    viewModel.analyzePdf(tempPdfFile, displayName)
+                } else {
+                    Toast.makeText(context, "Selected PDF file is empty or unreadable.", Toast.LENGTH_SHORT).show()
+                }
             } catch (e: Exception) {
-                Toast.makeText(context, "PDF could not be prepared for chat. No PDF data was sent.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Failed to read PDF: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    // Option 6: Documents Picker with real text extraction
+    // Option 6: Documents Picker with bounded multi-chunk text extraction + PDF routing
     val docFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -188,26 +210,39 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                     }
                 }
                 val mimeType = context.contentResolver.getType(uri) ?: ""
-                val isText = mimeType.startsWith("text/") || 
-                        displayName.endsWith(".txt", true) || 
-                        displayName.endsWith(".md", true) || 
-                        displayName.endsWith(".csv", true) || 
-                        displayName.endsWith(".json", true) || 
-                        displayName.endsWith(".xml", true)
+                val isPdf = mimeType.equals("application/pdf", ignoreCase = true) || displayName.endsWith(".pdf", ignoreCase = true)
+                val isText = mimeType.startsWith("text/") ||
+                        displayName.endsWith(".txt", true) ||
+                        displayName.endsWith(".md", true) ||
+                        displayName.endsWith(".csv", true) ||
+                        displayName.endsWith(".json", true) ||
+                        displayName.endsWith(".xml", true) ||
+                        displayName.endsWith(".log", true) ||
+                        displayName.endsWith(".html", true)
 
-                if (isText) {
+                if (isPdf) {
+                    val safeFileName = displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                    val tempPdfFile = File(context.cacheDir, "doc_${System.currentTimeMillis()}_$safeFileName")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(tempPdfFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (tempPdfFile.exists() && tempPdfFile.length() > 0L) {
+                        viewModel.analyzePdf(tempPdfFile, displayName)
+                    }
+                } else if (isText) {
                     val rawText = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                    val snippet = if (rawText.length > 2500) rawText.take(2500) + "\n...[truncated for length]" else rawText
-                    viewModel.sendMessage("[Document Attached: $displayName]\n\nDocument Contents:\n$snippet\n\nPlease review and explain this document.")
+                    viewModel.analyzeTextDocument(displayName, rawText)
                 } else {
                     Toast.makeText(
                         context,
-                        "Only text-based documents are extracted. This file type ($mimeType) was not uploaded or analyzed.",
+                        "Unsupported file format ($mimeType). Please select a PDF or text/markdown/CSV/JSON document.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
             } catch (e: Exception) {
-                Toast.makeText(context, "Document could not be read. No document data was sent.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Document could not be read: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -281,6 +316,28 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             onClick = {
                                 showScreenShareSheet = true
                                 menuExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Live Camera Vision 📷", color = TextPrimary) },
+                            onClick = {
+                                menuExpanded = false
+                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                    showLiveCameraModal = true
+                                } else {
+                                    liveCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Record Voice Message 🎤", color = TextPrimary) },
+                            onClick = {
+                                menuExpanded = false
+                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                    showVoiceNoteModal = true
+                                } else {
+                                    voiceNotePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
                             }
                         )
                         DropdownMenuItem(
@@ -490,7 +547,8 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                                 onClick = {
                                     showAttachmentPopup = false
                                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                                        pdfScanLauncher.launch(null)
+                                        initialScannedBitmap = null
+                                        showDocScannerModal = true
                                     } else {
                                         pdfScanPermissionLauncher.launch(Manifest.permission.CAMERA)
                                     }
@@ -538,6 +596,39 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                                 }
                             )
                         }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Row 3: Live Camera Vision & Voice Message Note
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            AttachmentOptionItem(
+                                icon = Icons.Default.Videocam,
+                                label = "Live Camera",
+                                onClick = {
+                                    showAttachmentPopup = false
+                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                        showLiveCameraModal = true
+                                    } else {
+                                        liveCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                }
+                            )
+                            AttachmentOptionItem(
+                                icon = Icons.Default.Mic,
+                                label = "Voice Note",
+                                onClick = {
+                                    showAttachmentPopup = false
+                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                        showVoiceNoteModal = true
+                                    } else {
+                                        voiceNotePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -549,6 +640,41 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                 viewModel = viewModel,
                 onDismiss = { showScreenShareSheet = false },
                 onNavigateToChat = { showScreenShareSheet = false }
+            )
+        }
+
+        if (showLiveCameraModal) {
+            com.example.ui.components.LiveCameraVisionModal(
+                onDismiss = { showLiveCameraModal = false },
+                onAnalyzeFrame = { bitmap, customPrompt ->
+                    viewModel.analyzeImage(
+                        bitmap = bitmap,
+                        sourceName = "Live Camera Frame",
+                        customPrompt = customPrompt
+                    )
+                }
+            )
+        }
+
+        if (showDocScannerModal) {
+            com.example.ui.components.MultiPageDocumentScannerModal(
+                initialBitmap = initialScannedBitmap,
+                onDismiss = {
+                    showDocScannerModal = false
+                    initialScannedBitmap = null
+                },
+                onExportAndAnalyzePdf = { pdfFile, fileName ->
+                    viewModel.analyzePdf(pdfFile, fileName)
+                }
+            )
+        }
+
+        if (showVoiceNoteModal) {
+            com.example.ui.components.VoiceMessageRecorderModal(
+                onDismiss = { showVoiceNoteModal = false },
+                onSendVoiceMessage = { wavFile, durationSec, pcmBytes ->
+                    viewModel.sendVoiceMessage(wavFile, durationSec, pcmBytes)
+                }
             )
         }
 
@@ -683,8 +809,24 @@ fun MessageBubble(
                         )
                     }
                 } else {
+                    val voiceTagMatch = remember(message.text) {
+                        Regex("^\\[VOICE_MESSAGE:([^|]+)\\|([^\\]]+)\\]\\n?").find(message.text)
+                    }
+                    val displayMessageText = if (voiceTagMatch != null) {
+                        message.text.removePrefix(voiceTagMatch.value).trim()
+                    } else {
+                        message.text
+                    }
+
+                    if (voiceTagMatch != null) {
+                        com.example.ui.components.VoiceNotePlayerBar(
+                            audioFilePath = voiceTagMatch.groupValues[1],
+                            durationLabel = voiceTagMatch.groupValues[2]
+                        )
+                    }
+
                     Text(
-                        text = message.text,
+                        text = displayMessageText,
                         color = if (isUser) Color.White else TextPrimary,
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontSize = 14.5.sp,

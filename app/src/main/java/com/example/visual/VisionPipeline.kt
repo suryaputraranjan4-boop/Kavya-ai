@@ -128,6 +128,18 @@ object VisionPipeline {
         )
     }
 
+    fun getFrameAgeMs(): Long {
+        return if (lastProcessTimestamp > 0L) {
+            (System.currentTimeMillis() - lastProcessTimestamp).coerceAtLeast(0L)
+        } else {
+            0L
+        }
+    }
+
+    fun clearFrame() {
+        reset()
+    }
+
     fun reset() {
         cachedLatestFrame = null
         previousFrameHash = ""

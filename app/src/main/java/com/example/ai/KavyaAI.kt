@@ -229,7 +229,16 @@ class KavyaAI(private val context: android.content.Context? = null) {
         }
     }
 
+    fun isStrictOfflineMode(): Boolean {
+        val ctx = context ?: return false
+        return com.example.utils.AppPreferences.getAiProvider(ctx) == "GEMMA_OFFLINE" ||
+            com.example.utils.AppPreferences.isOfflineFallbackEnabled(ctx)
+    }
+
     suspend fun analyzeVisualUI(bitmap: android.graphics.Bitmap, prompt: String): String {
+        if (isStrictOfflineMode()) {
+            return "Offline Mode is active: Cloud visual analysis is disabled to guarantee zero network usage."
+        }
         try {
             val key = if (context != null) {
                 val secureKey = com.example.security.SecureStorage.getSecret(context, "gemini_api_key")
@@ -403,7 +412,13 @@ class KavyaAI(private val context: android.content.Context? = null) {
         val startTime = System.currentTimeMillis()
         try {
             val mediaType = "application/json; charset=utf-8".toMediaType()
-            val requestBuilder = Request.Builder().url(api.endpointUrl.trim())
+            val rawUrl = api.endpointUrl.trim().trimEnd('/')
+            val resolvedUrl = if (api.model.isNotBlank() && !rawUrl.endsWith("/chat/completions") && !rawUrl.contains("generateContent")) {
+                "$rawUrl/chat/completions"
+            } else {
+                api.endpointUrl.trim()
+            }
+            val requestBuilder = Request.Builder().url(resolvedUrl)
 
             if (api.apiKey.isNotBlank()) {
                 requestBuilder.addHeader("Authorization", "Bearer ${api.apiKey.trim()}")
@@ -516,16 +531,40 @@ class KavyaAI(private val context: android.content.Context? = null) {
         try {
             if (context != null) {
                 val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
-                val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
+                val isExplicitOffline = isStrictOfflineMode()
                 val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
 
-                if ((isExplicitOffline || !isApiKeyConfigured()) && gemmaProvider.isConfigured(context)) {
+                if (isExplicitOffline) {
+                    if (gemmaProvider.isConfigured(context)) {
+                        val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+                        val gemmaResult = gemmaProvider.generate(prompt, sysPrompt, context)
+                        if (gemmaResult.success && gemmaResult.text.isNotBlank()) {
+                            return@withContext gemmaResult.text
+                        }
+                        return@withContext gemmaResult.error ?: "Offline local model failed to generate response."
+                    } else {
+                        val localFast = LocalAssistantEngine.handleFastQuery(prompt)
+                        if (localFast != null) return@withContext localFast
+                        return@withContext "Offline Mode is active (zero network calls), but no local GGUF/LiteRT-LM model is installed. Please import a local model in AI API Hub or disable Offline Mode."
+                    }
+                }
+
+                if (selectedProvider == "CUSTOM_API") {
+                    val customReply = consultCustomApis(prompt)
+                    if (!customReply.isNullOrBlank()) return@withContext customReply
+                    return@withContext "Custom API provider is selected, but no enabled Custom API returned a valid response. Check your endpoint and key in AI API Hub."
+                }
+
+                if (selectedProvider == "OPENROUTER") {
+                    val openRouterReply = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
+                    if (!openRouterReply.isNullOrBlank()) return@withContext openRouterReply
+                }
+
+                if (!isApiKeyConfigured() && gemmaProvider.isConfigured(context)) {
                     val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
                     val gemmaResult = gemmaProvider.generate(prompt, sysPrompt, context)
                     if (gemmaResult.success && gemmaResult.text.isNotBlank()) {
                         return@withContext gemmaResult.text
-                    } else if (isExplicitOffline) {
-                        return@withContext gemmaResult.error ?: "Offline Gemma 4 E4B model failed to generate response."
                     }
                 }
             }
@@ -536,10 +575,13 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 BuildConfig.GEMINI_API_KEY
             }
 
-            // If Gemini API key is missing, check if OpenRouter is configured as emergency fallback
+            // If Gemini API key is missing, check if OpenRouter or Custom API is configured as fallback
             if (apiKey.isBlank()) {
                 val openRouterBackup = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
                 if (openRouterBackup != null) return@withContext openRouterBackup
+
+                val customBackup = consultCustomApis(prompt)
+                if (!customBackup.isNullOrBlank()) return@withContext customBackup
 
                 return@withContext "AI model is currently unavailable."
             }
@@ -846,23 +888,35 @@ class KavyaAI(private val context: android.content.Context? = null) {
         
         if (context != null) {
             val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
-            val isExplicitOffline = selectedProvider == "GEMMA_OFFLINE" || com.example.utils.AppPreferences.isOfflineFallbackEnabled(context)
+            val isExplicitOffline = isStrictOfflineMode()
             val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
 
-            if ((isExplicitOffline || !isApiKeyConfigured()) && gemmaProvider.isConfigured(context)) {
+            if (isExplicitOffline) {
+                if (gemmaProvider.isConfigured(context)) {
+                    val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+                    gemmaProvider.streamGenerate(prompt, sysPrompt, context).collect { chunk ->
+                        emit(chunk)
+                    }
+                } else {
+                    val localFast = LocalAssistantEngine.handleFastQuery(prompt)
+                    emit(localFast ?: "Offline Mode is active (zero network calls), but no local GGUF/LiteRT-LM model is installed. Please import a local model in AI API Hub or disable Offline Mode.")
+                }
+                return@flow
+            }
+
+            if (selectedProvider == "CUSTOM_API" || selectedProvider == "OPENROUTER") {
+                val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode, imageBytes)
+                emit(responseText)
+                return@flow
+            }
+
+            if (!isApiKeyConfigured() && gemmaProvider.isConfigured(context)) {
                 val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
                 gemmaProvider.streamGenerate(prompt, sysPrompt, context).collect { chunk ->
                     emit(chunk)
                 }
                 return@flow
             }
-        }
-
-        val isUsingOpenRouter = context != null && com.example.utils.AppPreferences.getAiProvider(context) == "OPENROUTER"
-        if (isUsingOpenRouter) {
-            val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode, imageBytes)
-            emit(responseText)
-            return@flow
         }
 
         val contents = mutableListOf<Content>()
@@ -981,6 +1035,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
     suspend fun transcribeAudio(pcmData: ByteArray, sampleRate: Int = 16000): String = withContext(Dispatchers.IO) {
         if (pcmData.isEmpty()) return@withContext ""
+        if (isStrictOfflineMode()) {
+            Log.i(TAG, "Strict Offline Mode active: skipping cloud audio transcription.")
+            return@withContext ""
+        }
         val wavBytes = createWavBytes(pcmData, sampleRate)
         val base64Wav = Base64.encodeToString(wavBytes, Base64.NO_WRAP)
         val request = GenerateContentRequest(

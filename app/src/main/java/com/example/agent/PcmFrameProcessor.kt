@@ -106,6 +106,10 @@ class PcmFrameProcessor(
         vad.setGated(isGated)
     }
 
+    fun setAssistantSpeaking(isSpeaking: Boolean) {
+        vad.setAssistantSpeaking(isSpeaking)
+    }
+
     fun reset() {
         vad.reset()
     }

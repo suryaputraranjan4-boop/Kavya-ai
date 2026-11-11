@@ -201,18 +201,57 @@ object CommandInterpreter {
         // ====================================================
         // 6. WHATSAPP / SMS SEND MESSAGE (Rule 6)
         // "WhatsApp par Rohan ko hello message karo"
-        // "WhatsApp kholo aur Rohan ko hello message karo"
+        // "WhatsApp par Rohan ko hello bhejo"
+        // "Rohan ko WhatsApp pe hi likh do"
+        // "Send hello to Rohan on WhatsApp"
         // ====================================================
-        val isWhatsAppMsg = lower.contains("whatsapp") || lower.contains("व्हाट्सएप") || lower.contains("वाट्सएप")
-        val isExplicitMsg = lower.contains("message") || lower.contains("msg") || lower.contains("मैसेज") ||
-                lower.contains("bhejo") || lower.contains("send karo") || lower.contains("भेजो")
+        val cleanTrimmed = trimmed.trimEnd('?', '!', '.')
+        val cleanLower = cleanTrimmed.lowercase(Locale.ROOT)
+        val isWhatsAppMsg = cleanLower.contains("whatsapp") || cleanLower.contains("व्हाट्सएप") || cleanLower.contains("वाट्सएप")
+        val isExplicitMsg = cleanLower.contains("message") || cleanLower.contains("msg") || cleanLower.contains("मैसेज") ||
+                cleanLower.contains("bhejo") || cleanLower.contains("bhej do") || cleanLower.contains("send karo") ||
+                cleanLower.contains("likh do") || cleanLower.contains("likho") || cleanLower.contains("text karo") ||
+                cleanLower.startsWith("send ") || cleanLower.contains(" send ") || cleanLower.contains("भेजो")
 
-        if (isExplicitMsg && (isWhatsAppMsg || lower.contains("sms") || lower.contains("ko ") || lower.contains("to "))) {
+        if (isExplicitMsg && (isWhatsAppMsg || cleanLower.contains("sms") || cleanLower.contains("ko ") || cleanLower.contains("to "))) {
             val app = if (isWhatsAppMsg) "WhatsApp" else "SMS"
+
+            // Pattern C2: "Send hello to Rohan on WhatsApp"
+            val patternC2 = Regex("(?i)^(?:kavya\\s+)?(?:please\\s+)?send\\s+(.+?)\\s+to\\s+(.+?)(?:\\s+(?:on|in|via)\\s+(?:whatsapp|sms))?$")
+            patternC2.find(cleanTrimmed)?.let { m ->
+                val rawMsg = m.groupValues[1]
+                    .replace("(?i)^(?:a\\s+)?(?:whatsapp\\s+|sms\\s+)?(?:message|msg)\\s*".toRegex(), "")
+                    .trim()
+                val rawRecipient = m.groupValues[2]
+                    .replace("(?i)\\s+(?:on|in|via)\\s+(?:whatsapp|sms)$".toRegex(), "")
+                    .trim()
+                if (rawMsg.isNotBlank() && rawRecipient.isNotBlank() &&
+                    !rawMsg.equals("message", ignoreCase = true) &&
+                    !rawMsg.equals("a message", ignoreCase = true) &&
+                    !rawRecipient.contains(" saying ", ignoreCase = true)
+                ) {
+                    return CommandIntent.SendMessage(app, rawRecipient, rawMsg)
+                }
+            }
+
+            // Pattern B2: "WhatsApp par Rohan ko hello bhejo" / "Rohan ko WhatsApp pe hi likh do"
+            val patternB2 = Regex("(?i)^(?:kavya\\s+)?(?:please\\s+)?(?:(?:whatsapp|sms|व्हाट्सएप|वाट्सएप)\\s+(?:par|pe|me|mein|on)\\s+)?(.+?)\\s+(?:ko|को)\\s+(?:(?:whatsapp|sms|व्हाट्सएप|वाट्सएप)\\s+(?:par|pe|me|mein|on)\\s+)?(.+?)\\s+(?:message\\s+karo|message\\s+bhejo|msg\\s+karo|msg\\s+bhejo|message|msg|मैसेज|संदेश|bhejo|bhej\\s+do|likh\\s+do|likho|send\\s+karo|भेजो|लिख\\s+दो)(?:\\s+(?:karo|bhejo|bhej\\s+do|send\\s+karo|भेजो|करो))?$")
+            patternB2.find(cleanTrimmed)?.let { m ->
+                val recipient = m.groupValues[1]
+                    .replace("(?i)^(?:whatsapp|sms|व्हाट्सएप|वाट्सएप)\\s+(?:par|pe|me|mein|on|kholo\\s+aur)\\s*".toRegex(), "")
+                    .trim()
+                val message = m.groupValues[2]
+                    .replace("(?i)^(?:whatsapp|sms|व्हाट्सएप|वाट्सएप)\\s+(?:par|pe|me|mein|on)\\s*".toRegex(), "")
+                    .replace("(?i)\\s+(?:message|msg|मैसेज|संदेश)$".toRegex(), "")
+                    .trim()
+                if (recipient.isNotBlank() && message.isNotBlank()) {
+                    return CommandIntent.SendMessage(app, recipient, message)
+                }
+            }
 
             // Pattern 0: "[Recipient] ko [App] (par|pe|me) message karo: [Message]" or "[Recipient] ko message karo: [Message]"
             val pattern0 = Regex("(?i)^(.+?)\\s+(?:ko|को)\\s+(?:(?:whatsapp|sms)\\s+(?:par|pe|me|mein)?\\s*)?(?:yeh\\s+|ye\\s+)?(?:message|msg|मैसेज)?\\s*(?:bhejo|karo|bhej do|send karo|भेजो|करो)?\\s*[:\\s]+(.+)$")
-            pattern0.find(trimmed)?.let { m ->
+            pattern0.find(cleanTrimmed)?.let { m ->
                 val recipient = m.groupValues[1]
                     .replace("(?i)^(?:kavya\\s+)?(?:please\\s+)?".toRegex(), "")
                     .replace("(?i)^(?:whatsapp\\s+(?:par|pe|me|mein|kholo\\s+aur)?\\s*)".toRegex(), "")
@@ -225,7 +264,7 @@ object CommandInterpreter {
 
             // Pattern A: "WhatsApp par Rohan ko hello message karo" / "WhatsApp par Rohan ko hello bhejo"
             val patternA = Regex("(?i)(?:whatsapp\\s+(?:par|pe|me|mein|kholo\\s+aur)?\\s*)?(.+?)\\s+(?:ko|को)\\s+(?:yeh\\s+|ye\\s+)?(?:message|msg|मैसेज)?\\s*(?:bhejo|karo|bhej do|send karo|भेजो|करो)?\\s*[:\\s]+(.+)$")
-            patternA.find(trimmed)?.let { m ->
+            patternA.find(cleanTrimmed)?.let { m ->
                 val recipient = m.groupValues[1].replace("(?i)^(?:whatsapp\\s+(?:par|pe|me|mein|kholo\\s+aur)?\\s*)".toRegex(), "").trim()
                 val message = m.groupValues[2].trim()
                 if (recipient.isNotBlank() && message.isNotBlank()) {
@@ -235,7 +274,7 @@ object CommandInterpreter {
 
             // Pattern B: "WhatsApp par Rohan ko [msg] message karo"
             val patternB = Regex("(?i)(?:whatsapp\\s+(?:par|pe|me|mein)?\\s*)?(.+?)\\s+ko\\s+(.+?)\\s+(?:message|msg|मैसेज|संदेश)\\s*(?:karo|bhejo|send karo|भेजो|करो)?$")
-            patternB.find(trimmed)?.let { m ->
+            patternB.find(cleanTrimmed)?.let { m ->
                 val recipient = m.groupValues[1].replace("(?i)^(?:whatsapp\\s+(?:par|pe|me|mein)?\\s*)".toRegex(), "").trim()
                 val message = m.groupValues[2].trim()
                 if (recipient.isNotBlank() && message.isNotBlank()) {
@@ -245,7 +284,7 @@ object CommandInterpreter {
 
             // Pattern C: "send message to [recipient] [message]"
             val patternC = Regex("(?i)send\\s+(?:a\\s+)?(?:whatsapp\\s+)?message\\s+to\\s+(.+?)\\s+(?:saying|that|with\\s+text|ki)?\\s*(.+)$")
-            patternC.find(trimmed)?.let { m ->
+            patternC.find(cleanTrimmed)?.let { m ->
                 val recipient = m.groupValues[1].trim()
                 val message = m.groupValues[2].trim()
                 if (recipient.isNotBlank() && message.isNotBlank()) {
@@ -255,7 +294,7 @@ object CommandInterpreter {
 
             // Pattern D: "Open WhatsApp and message [recipient] [message]" / "message [recipient] [message]"
             val patternD1 = Regex("(?i)(?:open\\s+(?:whatsapp|sms)\\s+and\\s+)?message\\s+(.+?)\\s+(hello|hi|hey|how\\s+are\\s+you|good\\s+morning|good\\s+night)$")
-            patternD1.find(trimmed)?.let { m ->
+            patternD1.find(cleanTrimmed)?.let { m ->
                 val recipient = m.groupValues[1].trim()
                 val message = m.groupValues[2].trim()
                 if (recipient.isNotBlank() && message.isNotBlank()) {
@@ -264,7 +303,7 @@ object CommandInterpreter {
             }
 
             val patternD = Regex("(?i)(?:open\\s+(?:whatsapp|sms)\\s+and\\s+)?message\\s+(.+?)\\s+(.+)$")
-            patternD.find(trimmed)?.let { m ->
+            patternD.find(cleanTrimmed)?.let { m ->
                 val recipient = m.groupValues[1].trim()
                 val message = m.groupValues[2].trim()
                 if (recipient.isNotBlank() && message.isNotBlank()) {
@@ -277,35 +316,39 @@ object CommandInterpreter {
         // 7. PLAY MEDIA (SPOTIFY / YOUTUBE) (Rule 8)
         // "Spotify par Arijit Singh ka song chalao"
         // "Spotify pe Believer play karo"
-        // "YouTube par Kesariya video chalao"
+        // "Arijit ke gaane baja do Spotify par"
+        // "Play something on YouTube"
         // ====================================================
-        val isSpotifyMention = lower.contains("spotify") || lower.contains("स्पॉटिफ़ाई") || lower.contains("स्पॉटीफाई")
-        val isYouTubeMention = lower.contains("youtube") || lower.contains("यूट्यूब") || lower.contains("yt")
-        val isPlayVerb = lower.contains("chalao") || lower.contains("play") || lower.contains("bajao") ||
-                lower.contains("sunao") || lower.contains("चलाओ") || lower.contains("बजाओ") ||
-                lower.contains("song") || lower.contains("gana") || lower.contains("gaana") || lower.contains("music") ||
-                lower.contains("video") || lower.contains("वीडियो") || lower.contains("open karke do")
+        val isSpotifyMention = cleanLower.contains("spotify") || cleanLower.contains("स्पॉटिफ़ाई") || cleanLower.contains("स्पॉटीफाई")
+        val isYouTubeMention = cleanLower.contains("youtube") || cleanLower.contains("यूट्यूब") || cleanLower.contains("yt")
+        val isPlayVerb = cleanLower.contains("chalao") || cleanLower.contains("chala do") || cleanLower.contains("play") ||
+                cleanLower.contains("bajao") || cleanLower.contains("baja do") ||
+                cleanLower.contains("sunao") || cleanLower.contains("चलाओ") || cleanLower.contains("बजाओ") ||
+                cleanLower.contains("song") || cleanLower.contains("songs") ||
+                cleanLower.contains("gana") || cleanLower.contains("gaana") || cleanLower.contains("gaane") ||
+                cleanLower.contains("music") || cleanLower.contains("video") || cleanLower.contains("वीडियो") ||
+                cleanLower.contains("open karke do")
 
-        if (isPlayVerb && (isSpotifyMention || isYouTubeMention || lower.startsWith("play "))) {
+        if (isPlayVerb && (isSpotifyMention || isYouTubeMention || cleanLower.startsWith("play "))) {
             val app = if (isSpotifyMention) "Spotify" else "YouTube"
 
-            var query = trimmed
-                // Remove app mentions
-                .replace("(?i)^(?:kavya\\s+)?(?:please\\s+)?".toRegex(), "")
+            var query = cleanTrimmed
+                // Remove polite prefixes & app mentions
+                .replace("(?i)^(?:kavya\\s+)?(?:please\\s+|zara\\s+)?".toRegex(), "")
                 .replace("(?i)(?:open\\s+)?(?:spotify|youtube|yt|स्पॉटिफ़ाई|यूट्यूब)\\s+(?:par|pe|me|mein|on|in|and)?\\s*".toRegex(), "")
-                .replace("(?i)\\s+(?:spotify|youtube|yt|स्पॉटिफ़ाई|यूट्यूब)\\s*(?:par|pe|me|mein|on|in)?$".toRegex(), "")
+                .replace("(?i)\\s+(?:on|in)?\\s*(?:spotify|youtube|yt|स्पॉटिफ़ाई|यूट्यूब)\\s*(?:par|pe|me|mein|on|in)?$".toRegex(), "")
                 // Remove action verbs
-                .replace("(?i)^(?:play|chalao|bajao|sunao|open|and|and\\s+play)\\s+".toRegex(), "")
-                .replace("(?i)\\s+(?:chalao|chala do|play karo|play kar|play|bajao|baja do|sunao|open karke do|karke do|karo|do|लगाओ|चलाओ|बजाओ)$".toRegex(), "")
-                // Remove wrappers like "ka song", "ka video", "ka gana"
-                .replace("(?i)\\s+(?:ka|ki|ke)?\\s*(?:song|gana|gaana|music|video|track)$".toRegex(), "")
+                .replace("(?i)^(?:play|chalao|chala do|bajao|baja do|sunao|open|and|and\\s+play)\\s+".toRegex(), "")
+                .replace("(?i)\\s+(?:chalao|chala do|play karo|play kar do|play kar|play|bajao|baja do|sunao|open karke do|karke do|karo|do|लगाओ|चलाओ|बजाओ)$".toRegex(), "")
+                // Remove wrappers like "ka song", "ke gaane", "ka video", "ka gana"
+                .replace("(?i)\\s+(?:ka|ki|ke)?\\s*(?:song|songs|gana|gaana|gaane|music|video|videos|track|tracks)$".toRegex(), "")
                 .trim()
 
-            val effectiveQuery = if (query.isBlank() || query.equals("koi", ignoreCase = true)) "video" else query
+            val effectiveQuery = if (query.isBlank() || query.equals("koi", ignoreCase = true) || query.equals("something", ignoreCase = true)) "video" else query
             val targetType = when {
-                lower.contains("artist") -> "ARTIST"
-                lower.contains("album") -> "ALBUM"
-                lower.contains("playlist") -> "PLAYLIST"
+                cleanLower.contains("artist") -> "ARTIST"
+                cleanLower.contains("album") -> "ALBUM"
+                cleanLower.contains("playlist") -> "PLAYLIST"
                 else -> "TRACK"
             }
             return CommandIntent.PlayMedia(
@@ -319,15 +362,15 @@ object CommandInterpreter {
         // 8. OPEN WEBSITE (CHROME / BROWSER) (Rule 9)
         // "Chrome par Amazon kholo", "Chrome par YouTube kholo", "open Amazon in Chrome"
         // ====================================================
-        val isChromeMention = lower.contains("chrome") || lower.contains("क्रोम") || lower.contains("browser") || lower.contains("ब्राउज़र")
-        val isWebsiteTrigger = isChromeMention || lower.contains("website") || lower.contains(".com") || lower.contains("site") || lower.startsWith("www.")
+        val isChromeMention = cleanLower.contains("chrome") || cleanLower.contains("क्रोम") || cleanLower.contains("browser") || cleanLower.contains("ब्राउज़र")
+        val isWebsiteTrigger = isChromeMention || cleanLower.contains("website") || cleanLower.contains(".com") || cleanLower.contains("site") || cleanLower.startsWith("www.")
 
-        if (isWebsiteTrigger && !lower.contains("search") && !lower.contains("dhoondo") && !lower.contains("khojo")) {
+        if (isWebsiteTrigger && !cleanLower.contains("search") && !cleanLower.contains("dhoondo") && !cleanLower.contains("khojo")) {
             // Check for known website names
             for ((name, url) in KNOWN_WEBSITES) {
-                if (lower.contains(name) && !lower.equals("chrome", ignoreCase = true) && !lower.equals("chrome kholo", ignoreCase = true)) {
+                if (cleanLower.contains(name) && !cleanLower.equals("chrome", ignoreCase = true) && !cleanLower.equals("chrome kholo", ignoreCase = true)) {
                     // Make sure user is not asking to open the standalone app if not mentioning Chrome
-                    if (isChromeMention || lower.contains("website") || lower.contains("site") || lower.contains(".com")) {
+                    if (isChromeMention || cleanLower.contains("website") || cleanLower.contains("site") || cleanLower.contains(".com")) {
                         return CommandIntent.OpenWebsite(
                             app = "Google Chrome",
                             destinationUrl = url,
@@ -338,7 +381,7 @@ object CommandInterpreter {
             }
 
             // Direct URL (e.g. "google.com kholo", "https://xyz.com")
-            val words = trimmed.split("\\s+".toRegex())
+            val words = cleanTrimmed.split("\\s+".toRegex())
             for (w in words) {
                 val clean = w.trim(',', '.', ';', '"', '\'', '(', ')')
                 if (clean.contains(".com") || clean.contains(".org") || clean.contains(".in") || clean.contains(".net") || clean.startsWith("http")) {
@@ -357,22 +400,22 @@ object CommandInterpreter {
         // "Google pe GTA 5 search karo", "search GTA 5 on Google"
         // Extract ONLY query, NOT entire sentence!
         // ====================================================
-        val isExplicitSearch = lower.contains("search") || lower.contains("सर्च") ||
-                lower.contains("dhoondo") || lower.contains("dhundo") || lower.contains("ढूँढो") || lower.contains("ढूंढो") ||
-                lower.contains("khojo") || lower.contains("खोजो") || lower.startsWith("find ") || lower.startsWith("look for ")
+        val isExplicitSearch = cleanLower.contains("search") || cleanLower.contains("सर्च") ||
+                cleanLower.contains("dhoondo") || cleanLower.contains("dhundo") || cleanLower.contains("ढूँढो") || cleanLower.contains("ढूंढो") ||
+                cleanLower.contains("khojo") || cleanLower.contains("खोजो") || cleanLower.startsWith("find ") || cleanLower.startsWith("look for ")
 
         if (isExplicitSearch) {
             val detectedEngineOrApp = when {
-                lower.contains("youtube") || lower.contains("यूट्यूब") || lower.startsWith("yt ") || lower.contains(" yt") -> "YouTube"
-                lower.contains("chrome") || lower.contains("क्रोम") -> "Google Chrome"
-                lower.contains("play store") || lower.contains("playstore") || lower.contains("प्ले स्टोर") -> "Google Play Store"
-                lower.contains("spotify") || lower.contains("स्पॉटिफ़ाई") -> "Spotify"
-                lower.contains("instagram") || lower.contains("इंस्टाग्राम") -> "Instagram"
-                lower.contains("google") || lower.contains("गूगल") -> "Google"
+                cleanLower.contains("youtube") || cleanLower.contains("यूट्यूब") || cleanLower.startsWith("yt ") || cleanLower.contains(" yt") -> "YouTube"
+                cleanLower.contains("chrome") || cleanLower.contains("क्रोम") -> "Google Chrome"
+                cleanLower.contains("play store") || cleanLower.contains("playstore") || cleanLower.contains("प्ले स्टोर") -> "Google Play Store"
+                cleanLower.contains("spotify") || cleanLower.contains("स्पॉटिफ़ाई") -> "Spotify"
+                cleanLower.contains("instagram") || cleanLower.contains("इंस्टाग्राम") -> "Instagram"
+                cleanLower.contains("google") || cleanLower.contains("गूगल") -> "Google"
                 else -> ""
             }
 
-            var query = trimmed
+            var query = cleanTrimmed
                 .replace("(?i)^(?:kavya\\s+)?(?:please\\s+)?".toRegex(), "")
                 .replace("(?i)(?:open\\s+)?(?:google|chrome|browser|youtube|yt|play\\s*store|spotify|instagram|गूगल|यूट्यूब|क्रोम)\\s+(?:pe|par|me|mein|on|in|and)?\\s*".toRegex(), "")
                 .replace("(?i)\\s+(?:google|chrome|browser|youtube|yt|play\\s*store|spotify|instagram|गूगल|यूट्यूब|क्रोम)\\s*(?:pe|par|me|mein|on|in)?$".toRegex(), "")
@@ -390,20 +433,29 @@ object CommandInterpreter {
 
         // ====================================================
         // 10. EXPLICIT APP LAUNCH (Rule 3 & 10)
-        // "Chrome kholo", "YouTube kholo", "WhatsApp kholo", "YouTube Create kholo"
+        // "Chrome kholo", "Zara YouTube open kar do", "Can you launch YouTube please?",
+        // "Mujhe YouTube dikhao", "WhatsApp kholo"
         // MUST have explicit opening evidence!
         // ====================================================
-        val naturalExtracted = com.example.utils.AppResolver.extractAppNameFromNaturalLanguage(trimmed)
+        val strippedPolite = cleanTrimmed
+            .replace("(?i)^(?:kavya\\s+)?(?:please\\s+|zara\\s+|mujhe\\s+|kripya\\s+|can\\s+you\\s+|could\\s+you\\s+|would\\s+you\\s+)+".toRegex(), "")
+            .replace("(?i)\\s+(?:please|plz|zara|na)$".toRegex(), "")
+            .trim()
+        val strippedLower = strippedPolite.lowercase(Locale.ROOT)
 
-        val isExplicitAppOpen = lower.startsWith("open ") || lower.startsWith("launch ") ||
-                lower.startsWith("start ") || lower.startsWith("run ") ||
-                lower.startsWith("go to ") || lower.startsWith("can you open ") ||
-                lower.startsWith("can you launch ") || lower.startsWith("please open ") ||
-                lower.endsWith(" kholo") || lower.endsWith(" khol do") ||
-                lower.endsWith(" open karo") || lower.endsWith(" open kar") ||
-                lower.endsWith(" खोलो") || lower.endsWith(" चालू करो") ||
-                lower.endsWith(" app") || lower.endsWith(" ऐप") ||
-                (naturalExtracted.isNotBlank() && naturalExtracted.lowercase(java.util.Locale.ROOT) != lower)
+        val naturalExtracted = com.example.utils.AppResolver.extractAppNameFromNaturalLanguage(strippedPolite)
+
+        val isExplicitAppOpen = strippedLower.startsWith("open ") || strippedLower.startsWith("launch ") ||
+                strippedLower.startsWith("start ") || strippedLower.startsWith("run ") ||
+                strippedLower.startsWith("go to ") || strippedLower.startsWith("show me ") ||
+                strippedLower.endsWith(" kholo") || strippedLower.endsWith(" khol do") ||
+                strippedLower.endsWith(" open karo") || strippedLower.endsWith(" open kar do") ||
+                strippedLower.endsWith(" open kar") || strippedLower.endsWith(" dikhao") ||
+                strippedLower.endsWith(" dikha do") || strippedLower.endsWith(" chalu karo") ||
+                strippedLower.endsWith(" खोलो") || strippedLower.endsWith(" चालू करो") ||
+                strippedLower.endsWith(" दिखाओ") ||
+                strippedLower.endsWith(" app") || strippedLower.endsWith(" ऐप") ||
+                (naturalExtracted.isNotBlank() && naturalExtracted.lowercase(java.util.Locale.ROOT) != strippedLower)
 
         val knownCanonicalApps = listOf(
             "youtube create" to "YouTube Create",
@@ -436,20 +488,29 @@ object CommandInterpreter {
             "x" to "Twitter"
         )
 
-        // Check canonical apps with explicit launch intent
-        val candidateLower = naturalExtracted.lowercase(java.util.Locale.ROOT)
+        val candidateFromPolite = strippedPolite
+            .replace("(?i)^(?:open|launch|start|run|take\\s+me\\s+to|show\\s+me|go\\s+to)\\s+".toRegex(), "")
+            .replace("(?i)\\s+(?:kholo|khol do|open karo|open kar do|open kar|dikhao|dikha do|chalu karo|खोलो|चालू करो|दिखाओ|app|ऐप)$".toRegex(), "")
+            .trim()
+        val candidateLower = naturalExtracted.lowercase(java.util.Locale.ROOT).ifBlank { candidateFromPolite.lowercase(java.util.Locale.ROOT) }
+
         for ((alias, canonical) in knownCanonicalApps) {
-            val matchesAlias = isExplicitAppOpen && (candidateLower == alias ||
-                    lower == "open $alias" ||
-                    lower == "launch $alias" ||
-                    lower == "start $alias" ||
-                    lower == "$alias kholo" ||
-                    lower == "$alias open karo" ||
-                    lower == "$alias khol do" ||
-                    lower == "$alias chalao" ||
-                    lower == "$alias chalaye" ||
-                    lower == "खोलो $alias" ||
-                    lower == "$alias खोलो")
+            val matchesAlias = isExplicitAppOpen && (
+                    candidateLower == alias ||
+                    candidateFromPolite.equals(alias, ignoreCase = true) ||
+                    strippedLower == "open $alias" ||
+                    strippedLower == "launch $alias" ||
+                    strippedLower == "start $alias" ||
+                    strippedLower == "$alias kholo" ||
+                    strippedLower == "$alias open karo" ||
+                    strippedLower == "$alias open kar do" ||
+                    strippedLower == "$alias khol do" ||
+                    strippedLower == "$alias dikhao" ||
+                    strippedLower == "$alias chalao" ||
+                    strippedLower == "$alias chalaye" ||
+                    strippedLower == "खोलो $alias" ||
+                    strippedLower == "$alias खोलो"
+            )
 
             if (matchesAlias) {
                 return CommandIntent.OpenApp(
@@ -459,10 +520,7 @@ object CommandInterpreter {
         }
 
         if (isExplicitAppOpen) {
-            val extracted = trimmed
-                .replace("(?i)^(?:open|launch|start|run|take\\s+me\\s+to)\\s+".toRegex(), "")
-                .replace("(?i)\\s+(?:kholo|khol do|open karo|open kar|खोलो|चालू करो|app|ऐप)$".toRegex(), "")
-                .trim()
+            val extracted = candidateFromPolite
             if (extracted.isNotBlank() && !CONVERSATIONAL_GREETINGS.contains(extracted.lowercase(Locale.ROOT))) {
                 return CommandIntent.OpenApp(appName = extracted)
             }

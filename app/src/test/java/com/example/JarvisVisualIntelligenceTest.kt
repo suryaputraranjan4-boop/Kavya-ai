@@ -299,4 +299,62 @@ class JarvisVisualIntelligenceTest {
         assertTrue(JarvisThemePreset.entries.contains(JarvisThemePreset.HOLOGRAPHIC_VIOLET))
         assertTrue(JarvisThemePreset.entries.contains(JarvisThemePreset.EMERALD_MATRIX))
     }
+
+    // -------------------------------------------------------------------------
+    // TEST 9: Truthful Inactive Screen Perception & Non-Screen General Queries
+    // -------------------------------------------------------------------------
+    @Test
+    fun testInactiveScreenPerceptionTruthfulness() {
+        // General knowledge query must NOT trigger screen overlay EXPLAINS_ANYTHING
+        assertEquals(JarvisMode.IDLE, JarvisIntelligencePlanner.classifyMode("Explain recursion in programming"))
+
+        // Empty screen map & no live frame must report 0.0f confidence and Screen Perception Inactive
+        VisionPipeline.clearFrame()
+        val emptyMap = SemanticScreenMap(
+            packageName = "",
+            elements = emptyList(),
+            primaryHeading = null,
+            actionButtons = emptyList(),
+            inputFields = emptyList(),
+            contentBlocks = emptyList(),
+            mediaRegions = emptyList(),
+            layoutZones = ScreenLayoutZones(1080, 2400)
+        )
+        val inactivePlan = JarvisIntelligencePlanner.createPlan(
+            userQuery = "What is on my screen?",
+            screenMap = emptyMap
+        )
+        assertEquals(JarvisMode.EXPLAINS_ANYTHING, inactivePlan.mode)
+        assertEquals(0.0f, inactivePlan.cards.first().confidence, 0.001f)
+        assertEquals("Screen Perception Inactive", inactivePlan.cards.first().title)
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST 10: Hindi, English & Hinglish Natural-Language Paraphrase Suite
+    // -------------------------------------------------------------------------
+    @Test
+    fun testNaturalLanguageParaphrasesHindiEnglishHinglish() {
+        val openYt1 = com.example.agent.CommandInterpreter.interpret("YouTube kholo")
+        val openYt2 = com.example.agent.CommandInterpreter.interpret("Zara YouTube open kar do")
+        val openYt3 = com.example.agent.CommandInterpreter.interpret("Can you launch YouTube please?")
+        val openYt4 = com.example.agent.CommandInterpreter.interpret("Mujhe YouTube dikhao")
+        assertTrue(openYt1 is com.example.agent.CommandIntent.OpenApp && openYt1.appName == "YouTube")
+        assertTrue(openYt2 is com.example.agent.CommandIntent.OpenApp && openYt2.appName == "YouTube")
+        assertTrue(openYt3 is com.example.agent.CommandIntent.OpenApp && openYt3.appName == "YouTube")
+        assertTrue(openYt4 is com.example.agent.CommandIntent.OpenApp && openYt4.appName == "YouTube")
+
+        val msg1 = com.example.agent.CommandInterpreter.interpret("WhatsApp par Rohan ko hello bhejo")
+        val msg2 = com.example.agent.CommandInterpreter.interpret("Rohan ko WhatsApp pe hi likh do")
+        val msg3 = com.example.agent.CommandInterpreter.interpret("Send hello to Rohan on WhatsApp")
+        assertTrue(msg1 is com.example.agent.CommandIntent.SendMessage && msg1.recipient.equals("Rohan", true) && msg1.messageText.equals("hello", true))
+        assertTrue(msg2 is com.example.agent.CommandIntent.SendMessage && msg2.recipient.equals("Rohan", true) && msg2.messageText.equals("hi", true))
+        assertTrue(msg3 is com.example.agent.CommandIntent.SendMessage && msg3.recipient.equals("Rohan", true) && msg3.messageText.equals("hello", true))
+
+        val play1 = com.example.agent.CommandInterpreter.interpret("Spotify pe Arijit Singh chalao")
+        val play2 = com.example.agent.CommandInterpreter.interpret("Arijit ke gaane baja do Spotify par")
+        val play3 = com.example.agent.CommandInterpreter.interpret("Play something on YouTube")
+        assertTrue(play1 is com.example.agent.CommandIntent.PlayMedia && play1.app == "Spotify" && play1.mediaQuery.contains("Arijit", true))
+        assertTrue(play2 is com.example.agent.CommandIntent.PlayMedia && play2.app == "Spotify" && play2.mediaQuery.contains("Arijit", true))
+        assertTrue(play3 is com.example.agent.CommandIntent.PlayMedia && play3.app == "YouTube")
+    }
 }

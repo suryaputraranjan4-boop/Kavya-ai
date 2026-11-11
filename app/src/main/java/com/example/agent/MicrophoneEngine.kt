@@ -89,6 +89,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     @Volatile private var isAssistantSpeaking = false
 
     private var commandListener: ((String) -> Unit)? = null
+    private var userInterruptionListener: (() -> Unit)? = null
 
     private val wakeWords = setOf(
         "hey kavya", "hi kavya", "hello kavya",
@@ -129,6 +130,8 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             if (isAssistantSpeaking) {
                 Log.i(TAG, "User speech interruption detected during assistant playback. Stopping TTS!")
                 setAssistantSpeaking(false)
+                _engineState.value = State.SPEECH_DETECTED
+                userInterruptionListener?.invoke()
             }
         }
 
@@ -140,6 +143,10 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     fun setCommandListener(listener: (String) -> Unit) {
         this.commandListener = listener
+    }
+
+    fun setUserInterruptionListener(listener: (() -> Unit)?) {
+        this.userInterruptionListener = listener
     }
 
     /**
@@ -157,21 +164,32 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     }
 
     /**
-     * Controls assistant TTS speaking gate.
-     * Keeps physical AudioRecord alive while suppressing VAD speech detection.
+     * Controls assistant TTS speaking state for full-duplex barge-in.
+     * Keeps physical AudioRecord alive and elevates VAD threshold instead of gating frames,
+     * allowing user speech to interrupt TTS playback immediately.
      */
     fun setAssistantSpeaking(speaking: Boolean) {
         isAssistantSpeaking = speaking
-        pcmProcessor.setPlaybackGated(speaking)
+        pcmProcessor.setAssistantSpeaking(speaking)
         if (speaking) {
             _engineState.value = State.TTS_PLAYBACK
-            _amplitude.value = 0.0f
         } else {
             _engineState.value = if (isRecordingActive) {
                 if (isSleeping) State.SLEEPING else State.LISTENING
             } else {
                 State.IDLE
             }
+        }
+    }
+
+    /**
+     * Deterministically feeds a raw 16kHz 16-bit mono PCM frame into the engine pipeline.
+     * Used by unit/Robolectric tests to validate full-duplex barge-in and utterance segmentation
+     * even when physical AudioRecord is unavailable on JVM.
+     */
+    fun injectPcmFrameForTest(pcmData: ByteArray, length: Int = pcmData.size) {
+        if (!isMuted) {
+            pcmProcessor.processRawFrame(pcmData, length)
         }
     }
 
@@ -355,7 +373,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 val bytesRead = record.read(readBuffer, 0, readBuffer.size)
                 if (bytesRead > 0) {
                     consecutiveReadErrors = 0
-                    if (!isMuted && !isAssistantSpeaking) {
+                    if (!isMuted) {
                         pcmProcessor.processRawFrame(readBuffer, bytesRead)
                     }
                 } else if (bytesRead < 0) {

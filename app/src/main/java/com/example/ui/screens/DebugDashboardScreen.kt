@@ -57,18 +57,24 @@ fun DebugDashboardScreen(onBack: (() -> Unit)? = null) {
         val globalState by com.example.state.KavyaStateManager.state.collectAsState()
         val context = androidx.compose.ui.platform.LocalContext.current
         val gemmaStatus by com.example.ai.offline.GemmaModelManager.status.collectAsState()
+        val gemmaDiagnostics = com.example.ai.offline.Gemma4E4BEngine.getInstance().diagnostics
         val gemmaFile = com.example.ai.offline.GemmaModelManager.getModelFile(context)
-        val isOfflineMode = com.example.utils.AppPreferences.isOfflineFallbackEnabled(context) || com.example.utils.AppPreferences.getAiProvider(context) == "GEMMA_OFFLINE"
+        val gemmaFormat = com.example.ai.offline.GemmaModelManager.cachedInfo?.format ?: gemmaDiagnostics.detectedFormat
+        val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
+        val isOfflineMode = com.example.utils.AppPreferences.isOfflineFallbackEnabled(context) || selectedProvider == "GEMMA_OFFLINE"
+        val availRamMb = com.example.ai.offline.GemmaDiagnostics.getAvailableSystemMemoryMB(context)
 
-        DashboardCard("Local AI Model Status (Gemma 4 E4B)") {
-            StatRow("Offline Mode", if (isOfflineMode) "ENABLED (Gemma 4 E4B Active)" else "DISABLED (Gemini Active)")
-            StatRow("Model Status", gemmaStatus.name)
-            StatRow("Model File", gemmaFile?.name ?: "Not installed")
-            StatRow("File Size", if (gemmaFile != null) "${gemmaFile.length() / (1024 * 1024)} MB" else "N/A")
-            StatRow("Storage Location", gemmaFile?.absolutePath ?: "Not Found")
-            if (com.example.ai.offline.GemmaModelManager.lastError != null) {
-                StatRow("Status Message", com.example.ai.offline.GemmaModelManager.lastError ?: "")
-            }
+        DashboardCard("Offline LLM & Runtime Diagnostics (Gemma / LiteRT-LM / GGUF)") {
+            StatRow("Selected Provider", if (isOfflineMode) "GEMMA_OFFLINE (Strict Local)" else selectedProvider)
+            StatRow("Selected Model", gemmaFile?.name ?: "None (No model imported)")
+            StatRow("Detected Format", gemmaFormat.name)
+            StatRow("Runtime", gemmaDiagnostics.runtimeSelected.ifBlank { "Uninitialized" })
+            StatRow("Model File Status", if (gemmaFile != null) "${gemmaStatus.name} (${gemmaFile.length() / (1024 * 1024)} MB)" else gemmaStatus.name)
+            StatRow("Health-Check Status", gemmaDiagnostics.healthCheckState)
+            StatRow("Actual Inference Status", if (gemmaDiagnostics.inferenceSucceeded) "VERIFIED (Real Tokens)" else "NOT YET VERIFIED")
+            StatRow("Network Usage Status", if (isOfflineMode && !gemmaDiagnostics.networkUsed) "0 Calls (100% Offline)" else if (gemmaDiagnostics.networkUsed) "VIOLATION DETECTED" else "Cloud Enabled")
+            StatRow("Memory Usage / Free RAM", "$availRamMb MB Free")
+            StatRow("Last Error", gemmaDiagnostics.lastError ?: com.example.ai.offline.GemmaModelManager.lastError ?: "None")
         }
         
         DashboardCard("Global State Manager (KAVYA_STATE_MANAGER)") {

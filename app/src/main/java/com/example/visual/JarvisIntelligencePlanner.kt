@@ -40,12 +40,14 @@ object JarvisIntelligencePlanner {
             return JarvisMode.DO_IT
         }
 
-        // Mode A: "Explains Anything" (Default for queries asking about screen, understanding, or analysis)
-        val explainPatterns = listOf(
-            "explain", "what is this", "what does this mean", "summarize", "break down",
-            "analyze", "graph", "chart", "read this", "kya hai", "samjhao", "screen"
+        // Mode A: "Explains Anything" (Only for queries explicitly referencing screen, visible UI, or visual artifacts)
+        val screenContextMarkers = listOf(
+            "screen", "on my screen", "screen pe", "screen par", "is page", "this page",
+            "what is this", "what's this", "what does this mean", "read this",
+            "summarize this", "analyze this", "ye graph", "this graph", "this chart",
+            "ye chart", "yahan kya", "dikha raha", "visible", "kya likha hai"
         )
-        if (explainPatterns.any { q.contains(it) }) {
+        if (screenContextMarkers.any { q.contains(it) }) {
             return JarvisMode.EXPLAINS_ANYTHING
         }
 
@@ -99,46 +101,94 @@ object JarvisIntelligencePlanner {
 
         val anchorBounds = primaryTarget?.bounds
 
-        // 1. Primary Summary Card
-        val appName = screenMap.packageName.substringAfterLast(".").replaceFirstChar { it.uppercase() }
-        val headingText = primaryTarget?.displayLabel?.take(60) ?: "Active Interface"
+        val hasAccessibilityData = screenMap.elements.isNotEmpty()
+        val hasLiveFrame = VisionPipeline.getLatestFrame() != null
+
+        if (!hasAccessibilityData && !hasLiveFrame) {
+            cards.add(
+                VisualCardData(
+                    type = VisualCardType.SUMMARY,
+                    title = "Screen Perception Inactive",
+                    summary = "No live screen frame or Accessibility UI tree is currently available.",
+                    bullets = listOf(
+                        "Enable Screen Share or Accessibility Service to let Kavya see your screen",
+                        "Once active, ask 'What is on my screen?' or 'Explain this page'"
+                    ),
+                    targetAnchorBounds = null,
+                    confidence = 0.0f
+                )
+            )
+            return JarvisVisualPlan(
+                userQuery = userQuery,
+                mode = JarvisMode.EXPLAINS_ANYTHING,
+                title = title,
+                instructions = emptyList(),
+                cards = cards,
+                fullScreenExplainerEnabled = false
+            )
+        }
+
+        // 1. Primary Summary Card grounded in actual screen nodes/frame
+        val appName = screenMap.packageName.substringAfterLast(".").ifBlank { "Current App" }.replaceFirstChar { it.uppercase() }
+        val headingText = primaryTarget?.displayLabel?.take(60)
+            ?: if (hasLiveFrame) "Live Screen Frame Captured" else "Active Interface"
         val actionCount = screenMap.actionButtons.size
+        val computedConfidence = when {
+            hasAccessibilityData && hasLiveFrame -> 0.95f
+            hasAccessibilityData || hasLiveFrame -> 0.85f
+            else -> 0.0f
+        }
 
         cards.add(
             VisualCardData(
                 type = VisualCardType.SUMMARY,
                 title = "Screen Overview",
-                summary = "Active screen in $appName focuses on '$headingText' with $actionCount interactive controls detected.",
-                bullets = listOf(
-                    "Detected ${screenMap.elements.size} UI nodes with high perceptual fidelity",
-                    "Primary action targets: ${screenMap.actionButtons.take(3).joinToString { it.displayLabel.take(20) }.ifBlank { "Standard controls" }}",
-                    "Status: Real-time screen telemetry mapped without cloud latency"
-                ),
+                summary = if (hasAccessibilityData) {
+                    "Active screen in $appName focuses on '$headingText' with $actionCount interactive controls detected."
+                } else {
+                    "Live visual frame captured from $appName. Analyzing visible content with Vision AI."
+                },
+                bullets = buildList {
+                    if (hasAccessibilityData) {
+                        add("Detected ${screenMap.elements.size} UI nodes in Accessibility hierarchy")
+                        val topButtons = screenMap.actionButtons.take(3).joinToString { it.displayLabel.take(20) }
+                        if (topButtons.isNotBlank()) {
+                            add("Interactive controls: $topButtons")
+                        }
+                    }
+                    if (hasLiveFrame) {
+                        add("Live MediaProjection frame available (${VisionPipeline.getFrameAgeMs()}ms age)")
+                    }
+                },
                 targetAnchorBounds = anchorBounds,
-                confidence = 0.96f
+                confidence = computedConfidence
             )
         )
 
         // 2. Detailed Breakdown with Typewriter Reveal
         val detailsText = buildString {
-            append("Kavya JARVIS visual perception analyzed this layout. ")
-            if (screenMap.inputFields.isNotEmpty()) {
-                append("Detected text entry fields suitable for user input. ")
+            if (hasAccessibilityData) {
+                append("Extracted ${screenMap.elements.size} UI elements from $appName. ")
+                if (screenMap.inputFields.isNotEmpty()) {
+                    append("Detected ${screenMap.inputFields.size} text input field(s). ")
+                }
+                if (screenMap.contentBlocks.isNotEmpty()) {
+                    val sampleContent = screenMap.contentBlocks.take(3).joinToString(" | ") { it.displayLabel.take(40) }
+                    append("Visible text blocks: $sampleContent.")
+                }
+            } else {
+                append("Visual frame captured via MediaProjection. Vision analysis is inspecting the rendered pixels.")
             }
-            if (screenMap.contentBlocks.isNotEmpty()) {
-                append("Extracted ${screenMap.contentBlocks.size} content sections for contextual reading. ")
-            }
-            append("All elements have been spatially indexed for touch guidance and explanation.")
         }
 
         cards.add(
             VisualCardData(
                 type = VisualCardType.DETAIL_TYPEWRITER,
                 title = "Semantic Breakdown",
-                summary = "Detailed analysis of on-screen components.",
+                summary = "Grounded analysis of on-screen components.",
                 detailText = detailsText,
                 targetAnchorBounds = anchorBounds,
-                confidence = 0.94f
+                confidence = computedConfidence
             )
         )
 
@@ -286,7 +336,7 @@ object JarvisIntelligencePlanner {
         val targetElem = screenMap.findElementMatching(targetQuery)
             ?: screenMap.actionButtons.firstOrNull()
 
-        val bounds = targetElem?.bounds ?: Rect(120, 400, 320, 520)
+        val bounds = targetElem?.bounds ?: Rect(0, 0, 0, 0)
         val clickPoint = Pair(bounds.centerX(), bounds.centerY())
 
         val instruction = VisualInstruction(

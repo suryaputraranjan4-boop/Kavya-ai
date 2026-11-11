@@ -230,6 +230,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             com.example.voice.KavyaMicrophoneEngine.onKavyaSpeakingChanged(isSpeaking)
         }
 
+        com.example.voice.KavyaMicrophoneEngine.init(application)
+        com.example.voice.KavyaMicrophoneEngine.setUserInterruptionListener {
+            bargeInController.onUserInterrupted()
+            voiceEngine.stop()
+        }
+
         com.example.voice.KavyaMicrophoneEngine.setCommandListener { recognizedText ->
             viewModelScope.launch {
                 sendMessage(recognizedText)
@@ -443,14 +449,16 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshScreenContext() {
         val liveContext = com.example.services.KavyaAccessibilityService.instance?.getScreenContext()
         val perceptionSnapshot = com.example.visual.VisionPipeline.getUnifiedPerceptionSnapshot()
-        _screenContextText.value = if (!liveContext.isNullOrBlank() && !liveContext.contains("Root node is null")) {
-            if (perceptionSnapshot.isVisualCaptureActive) {
+        val hasAccessibility = !liveContext.isNullOrBlank() && !liveContext.contains("Root node is null")
+        _screenContextText.value = when {
+            hasAccessibility && perceptionSnapshot.isVisualCaptureActive ->
                 "$liveContext\n[Vision: Real-time screen capture feed active]"
-            } else {
+            hasAccessibility ->
                 liveContext
-            }
-        } else {
-            "Active Screen: Home / App Overview\nStatus: Screen Perception is active."
+            perceptionSnapshot.isVisualCaptureActive ->
+                "[Vision: Real-time screen capture feed active]"
+            else ->
+                "Status: Screen Perception is inactive. Enable Screen Share or Accessibility Service to analyze live screen content."
         }
     }
 
@@ -616,11 +624,17 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    @Volatile private var lastAnalyzedImageBytes: ByteArray? = null
+
     /**
      * Sends actual image pixels to Gemini Vision instead of only sending a filename.
      * Images are never uploaded while explicit offline mode is enabled.
      */
-    fun analyzeImage(bitmap: android.graphics.Bitmap, sourceName: String = "image") {
+    fun analyzeImage(
+        bitmap: android.graphics.Bitmap,
+        sourceName: String = "image",
+        customPrompt: String? = null
+    ) {
         if (bitmap.width <= 0 || bitmap.height <= 0) return
         if (_isOfflineMode.value || aiClient.isOfflineMode()) {
             sendMessage("Image analysis is not available in Offline Mode. Switch to Online Mode to send this image to Gemini Vision.")
@@ -632,20 +646,30 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
         val safeName = sourceName.replace(Regex("[\\r\\n]"), " ").take(120)
         viewModelScope.launch(Dispatchers.IO) {
+            val stream = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, stream)
+            lastAnalyzedImageBytes = stream.toByteArray()
+
             val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also { id ->
                 _currentChatId.value = id
                 chatDao.insertChat(ChatEntity(id = id, title = "Image: " + safeName.take(20), timestamp = System.currentTimeMillis()))
             }
-            val userText = "Image attached: " + safeName + " (" + bitmap.width + " × " + bitmap.height + ")."
+            val userText = if (!customPrompt.isNullOrBlank()) {
+                "📷 Image attached: $safeName (${bitmap.width} × ${bitmap.height})\nPrompt: $customPrompt"
+            } else {
+                "📷 Image attached: $safeName (${bitmap.width} × ${bitmap.height})."
+            }
             val userId = UUID.randomUUID().toString()
             chatDao.insertMessage(MessageEntity(userId, chatId, userText, true, System.currentTimeMillis()))
             _messages.value = _messages.value + ChatMessage(userId, userText, true)
             val loadingId = UUID.randomUUID().toString()
             _messages.value = _messages.value + ChatMessage(loadingId, "Analyzing image…", false, isLoading = true)
             try {
+                val effectivePrompt = customPrompt?.takeIf { it.isNotBlank() }
+                    ?: "Carefully describe and analyze this user-provided image. Extract any visible text, numbers, labels, or objects. Answer questions about its contents. Distinguish visible facts from uncertainty and do not invent details."
                 val result = KavyaAI(getApplication<Application>()).analyzeVisualUI(
                     bitmap,
-                    "Carefully describe and analyze this user-provided image. Answer questions about its contents. Distinguish visible facts from uncertainty and do not invent details."
+                    effectivePrompt
                 )
                 val answer = result.takeIf { it.isNotBlank() } ?: "I could not analyze this image. Please try another image."
                 val assistantId = UUID.randomUUID().toString()
@@ -653,12 +677,99 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
                 _latestKavyaCaption.value = answer
             } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
+                throw cancelled
+            } catch (e: Exception) {
                 val answer = "Image analysis failed: " + (e.localizedMessage ?: "Unknown error")
                 val assistantId = UUID.randomUUID().toString()
                 _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
                 chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+            }
+        }
+    }
+
+    /**
+     * Processes a text document in bounded chunks so large documents are analyzed safely
+     * without silent single-chunk truncation.
+     */
+    fun analyzeTextDocument(fileName: String, rawText: String) {
+        val cleaned = rawText.trim()
+        if (cleaned.isBlank()) {
+            sendMessage("The selected document ($fileName) is empty or contains no readable text.")
+            return
+        }
+        val chunkSize = 3500
+        val maxChunks = 4
+        val chunks = cleaned.chunked(chunkSize).take(maxChunks)
+        val totalChars = cleaned.length
+        val analyzedChars = chunks.sumOf { it.length }
+        val structuredContent = buildString {
+            append("Please analyze and summarize the attached document ($fileName, $totalChars characters):\n\n")
+            chunks.forEachIndexed { idx, chunk ->
+                append("--- Section ${idx + 1} of ${chunks.size} ---\n")
+                append(chunk)
+                append("\n\n")
+            }
+            if (totalChars > analyzedChars) {
+                append("[Note: Showing first $analyzedChars of $totalChars characters across $maxChunks bounded chunks.]")
+            }
+        }
+        sendMessage(structuredContent)
+    }
+
+    /**
+     * Persists and processes a recorded voice message in Chat (Phase 8).
+     * Supports playback from private storage, transcription (when online), and AI response/summary.
+     */
+    fun sendVoiceMessage(audioFile: java.io.File, durationSec: Int, pcmData: ByteArray?) {
+        if (!audioFile.exists() || audioFile.length() <= 0L) {
+            sendMessage("Recorded voice message file is empty or missing.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also { id ->
+                _currentChatId.value = id
+                chatDao.insertChat(ChatEntity(id = id, title = "Voice Message", timestamp = System.currentTimeMillis()))
+            }
+            val safeDuration = durationSec.coerceAtLeast(1)
+            val transcript = if (pcmData != null && pcmData.isNotEmpty() && !_isOfflineMode.value && !aiClient.isOfflineMode()) {
+                try {
+                    KavyaAI(getApplication<Application>()).transcribeAudio(pcmData, 16000).trim()
+                } catch (_: Exception) {
+                    ""
+                }
+            } else {
+                ""
+            }
+
+            val voiceTag = "[VOICE_MESSAGE:${audioFile.absolutePath}|${safeDuration}s]"
+            val userBubbleText = if (transcript.isNotBlank()) {
+                "$voiceTag\n🎤 Voice Note (${safeDuration}s): \"$transcript\""
+            } else if (_isOfflineMode.value || aiClient.isOfflineMode()) {
+                "$voiceTag\n🎤 Voice Note (${safeDuration}s) [Saved locally — Offline Mode active]"
+            } else {
+                "$voiceTag\n🎤 Voice Note (${safeDuration}s)"
+            }
+
+            val userId = UUID.randomUUID().toString()
+            chatDao.insertMessage(MessageEntity(userId, chatId, userBubbleText, true, System.currentTimeMillis()))
+            _messages.value = _messages.value + ChatMessage(userId, userBubbleText, true)
+
+            if (transcript.isNotBlank()) {
+                processAgentLoop(
+                    prompt = "The user sent a ${safeDuration}-second voice message with transcript: \"$transcript\". Respond naturally to their message and provide a helpful answer or summary.",
+                    chatId = chatId,
+                    userMsgEntity = null,
+                    recursionDepth = 0
+                )
+            } else {
+                val replyText = if (_isOfflineMode.value || aiClient.isOfflineMode()) {
+                    "Your ${safeDuration}-second voice message has been saved locally. You can replay it anytime in chat. Switch to Online Mode if you want cloud speech transcription."
+                } else {
+                    "Your ${safeDuration}-second voice message has been saved to chat, but no clear speech transcript was detected. You can replay it above or record again."
+                }
+                val assistantId = UUID.randomUUID().toString()
+                chatDao.insertMessage(MessageEntity(assistantId, chatId, replyText, false, System.currentTimeMillis()))
+                _messages.value = _messages.value + ChatMessage(assistantId, replyText, false)
             }
         }
     }
@@ -1342,14 +1453,21 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
                 // 3b. JARVIS Screen Intelligence & Visual Guidance check
                 val jarvisMode = com.example.visual.JarvisIntelligencePlanner.classifyMode(prompt)
+                var isJarvisScreenExplain = false
                 if (!isFastChat && cleanResponse.isBlank() && (jarvisMode == com.example.visual.JarvisMode.EXPLAINS_ANYTHING || jarvisMode == com.example.visual.JarvisMode.SHOWS_YOU_HOW)) {
                     com.example.visual.JarvisGuidanceEngine.executeJarvisQuery(prompt)
                     val activeExp = com.example.visual.JarvisGuidanceEngine.activeExplanation.value
                     val guidance = com.example.visual.JarvisGuidanceEngine.guidanceState.value
-                    if (activeExp != null) {
-                        cleanResponse = "${activeExp.title}: ${activeExp.oneLineSummary}\n${activeExp.bulletChips.joinToString("\n• ", prefix = "• ")}"
-                    } else if (guidance.isActive) {
+                    if (jarvisMode == com.example.visual.JarvisMode.SHOWS_YOU_HOW && guidance.isActive) {
                         cleanResponse = guidance.instructionText
+                    } else if (jarvisMode == com.example.visual.JarvisMode.EXPLAINS_ANYTHING) {
+                        if (activeExp != null && activeExp.confidenceScore <= 0.0f) {
+                            // Neither Screen Share nor Accessibility is active: report honestly
+                            cleanResponse = "${activeExp.title}: ${activeExp.oneLineSummary}\n${activeExp.bulletChips.joinToString("\n• ", prefix = "• ")}"
+                        } else {
+                            // Real screen perception is active: let Step 5 multimodal LLM analyze the live frame + UI tree!
+                            isJarvisScreenExplain = true
+                        }
                     }
                     if (cleanResponse.isNotBlank() && _autoSpeak.value && !alreadySpoken) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
@@ -1383,7 +1501,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     val screenContext = if (!isFastChat) screenInspector.getScreenContextString() else ""
                     val liveScreenFrame = if (_isScreenSharing.value || com.example.services.ScreenShareManager.isScreenSharingActive) {
                         com.example.visual.VisionPipeline.getCompressedJpegFrame()
-                    } else null
+                    } else {
+                        lastAnalyzedImageBytes
+                    }
                     
                     // Retrieve only top relevant memories (semantic & keyword scored)
                     val relevantMemories = if (!isFastChat) memoryEngine.retrieveRelevantMemories(prompt, contextEngine.activeTargetAppName) else emptyList()
@@ -1484,6 +1604,19 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     val structuredActions = com.example.agent.StructuredActionParser.parseActions(fullResponse)
                     val extractedClean = voiceEngine.cleanText(fullResponse)
                     cleanResponse = if (extractedClean.isNotBlank()) extractedClean else cleanResponseBuilder.toString()
+                    if (isJarvisScreenExplain && cleanResponse.isNotBlank()) {
+                        val bulletLines = cleanResponse.lines()
+                            .map { it.trim().trimStart('•', '-', '*') }
+                            .filter { it.length > 8 }
+                            .take(3)
+                        com.example.visual.JarvisGuidanceEngine.publishExplanation(
+                            title = "Screen Visual Analysis",
+                            summary = cleanResponse.take(180),
+                            bulletPoints = bulletLines.ifEmpty { listOf("Real-time screen & vision analysis complete") },
+                            details = cleanResponse,
+                            confidence = 0.95f
+                        )
+                    }
                     
                     if (structuredActions.isNotEmpty() && !isConversationalTurn) {
                         val taskSteps = structuredActions.mapIndexed { index, action ->

@@ -120,6 +120,14 @@ class KavyaMicrophoneEngine : Service() {
             MicrophoneEngine.getExistingInstance()?.setAssistantSpeaking(isSpeaking)
         }
 
+        fun setUserInterruptionListener(listener: (() -> Unit)?) {
+            MicrophoneEngine.getExistingInstance()?.setUserInterruptionListener(listener)
+        }
+
+        fun injectPcmFrameForTest(pcmData: ByteArray, length: Int = pcmData.size) {
+            MicrophoneEngine.getExistingInstance()?.injectPcmFrameForTest(pcmData, length)
+        }
+
         fun getInstance(): KavyaMicrophoneEngine? = instance
     }
 

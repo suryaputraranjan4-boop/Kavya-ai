@@ -150,4 +150,67 @@ class MicrophoneEngineRobolectricTest {
         client.stopLiveSession()
         assertFalse("Client state should be inactive after stop", client.connectionState.value)
     }
+
+    @Test
+    fun testMicrophoneEngine_FullDuplexBargeInInterruptsAssistantSpeech() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val engine = MicrophoneEngine.getInstance(context)
+        engine.setMuted(false)
+
+        var bargeInTriggered = false
+        engine.setUserInterruptionListener {
+            bargeInTriggered = true
+        }
+
+        // Simulate assistant TTS playback active
+        engine.setAssistantSpeaking(true)
+        assertEquals(MicrophoneEngine.State.TTS_PLAYBACK, engine.engineState.value)
+
+        // Generate strong user speech frame (RMS ~ 2200, exceeding elevated 1.5x barge-in threshold)
+        val loudSpeechFrame = ByteArray(640)
+        val buffer = ByteBuffer.wrap(loudSpeechFrame).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until 320) {
+            buffer.putShort(2200)
+        }
+
+        // Inject frames across >150ms so VAD speech duration threshold is met during playback
+        for (i in 0 until 12) {
+            engine.injectPcmFrameForTest(loudSpeechFrame)
+            Thread.sleep(20)
+        }
+
+        assertTrue("Full-duplex barge-in must trigger userInterruptionListener when user speaks over TTS", bargeInTriggered)
+        assertEquals(
+            "MicrophoneEngine must transition from TTS_PLAYBACK to SPEECH_DETECTED on barge-in",
+            MicrophoneEngine.State.SPEECH_DETECTED,
+            engine.engineState.value
+        )
+
+        engine.setUserInterruptionListener(null)
+        engine.setAssistantSpeaking(false)
+    }
+
+    @Test
+    fun testMicrophoneEngine_MuteAndUnmuteBehavior() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val engine = MicrophoneEngine.getInstance(context)
+
+        var receivedFramesWhileMuted = 0
+        engine.registerFrameSubscriber("mute_test_sub") {
+            receivedFramesWhileMuted++
+        }
+
+        engine.setMuted(true)
+        val speechFrame = ByteArray(640) { 0x2A }
+        engine.injectPcmFrameForTest(speechFrame)
+        Thread.sleep(30)
+        assertEquals("No frames should be processed while microphone is muted", 0, receivedFramesWhileMuted)
+
+        engine.setMuted(false)
+        engine.injectPcmFrameForTest(speechFrame)
+        Thread.sleep(30)
+        assertEquals("Frames must resume flowing immediately after unmute", 1, receivedFramesWhileMuted)
+
+        engine.unregisterFrameSubscriber("mute_test_sub")
+    }
 }
