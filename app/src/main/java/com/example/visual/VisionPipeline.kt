@@ -43,15 +43,16 @@ object VisionPipeline {
     private var cachedLatestFrame: Bitmap? = null
     private var lastProcessTimestamp = 0L
     private var previousFrameHash = ""
+    private var previousPackage = ""
     private var framesProcessedCount = 0
 
     /**
      * Ingests a new raw frame from the ScreenCaptureService VirtualDisplay.
      */
     fun onNewFrame(bitmap: Bitmap) {
+        if (bitmap.isRecycled) return
         val now = System.currentTimeMillis()
         if (now - lastProcessTimestamp < MIN_FRAME_INTERVAL_MS) {
-            // Drop intermediate frames to protect CPU & memory
             return
         }
         lastProcessTimestamp = now
@@ -64,6 +65,10 @@ object VisionPipeline {
         previousFrameHash = frameHash
 
         val activePkg = KavyaAccessibilityService.instance?.getForegroundPackage() ?: "unknown"
+        if (previousPackage.isNotBlank() && activePkg != "unknown" && activePkg != previousPackage) {
+            ScreenAnnotationManager.onForegroundWindowChanged(activePkg)
+        }
+        previousPackage = activePkg
 
         _perceptionState.value = VisualPerceptionState(
             isPipelineActive = true,
@@ -75,14 +80,17 @@ object VisionPipeline {
         )
     }
 
-    fun getLatestFrame(): Bitmap? = cachedLatestFrame
+    fun getLatestFrame(): Bitmap? {
+        val frame = cachedLatestFrame
+        return if (frame != null && !frame.isRecycled) frame else null
+    }
 
     /**
      * Compresses the latest captured frame for Gemini Vision multimodal analysis
      * only when semantic visual reasoning is genuinely required.
      */
     fun getCompressedJpegFrame(maxDimension: Int = 720, quality: Int = 75): ByteArray? {
-        val frame = cachedLatestFrame ?: return null
+        val frame = getLatestFrame() ?: return null
         return try {
             val width = frame.width
             val height = frame.height
@@ -114,7 +122,7 @@ object VisionPipeline {
         val a11y = KavyaAccessibilityService.instance
         val freshScreen = FreshScreenRecognizer.inspectFreshScreenNow()
         val fingerprint = ScreenFingerprint.createFrom(freshScreen)
-        val hasVisualFrame = cachedLatestFrame != null
+        val hasVisualFrame = getLatestFrame() != null
 
         return UnifiedScreenPerception(
             packageName = freshScreen.foregroundPackage,
@@ -143,19 +151,24 @@ object VisionPipeline {
     fun reset() {
         cachedLatestFrame = null
         previousFrameHash = ""
+        previousPackage = ""
         framesProcessedCount = 0
         _perceptionState.value = VisualPerceptionState(isPipelineActive = false)
     }
 
     private fun computeFrameHash(bitmap: Bitmap): String {
         return try {
-            // Compute quick downsampled hash (16x16)
-            val small = Bitmap.createScaledBitmap(bitmap, 16, 16, false)
+            if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return ""
+            // Sample 16x16 grid directly without allocating a new Bitmap
             val bytes = ByteArray(256)
+            val w = bitmap.width
+            val h = bitmap.height
             var idx = 0
             for (y in 0 until 16) {
+                val py = ((y * h) / 16).coerceIn(0, h - 1)
                 for (x in 0 until 16) {
-                    val color = small.getPixel(x, y)
+                    val px = ((x * w) / 16).coerceIn(0, w - 1)
+                    val color = bitmap.getPixel(px, py)
                     val r = (color shr 16) and 0xFF
                     val g = (color shr 8) and 0xFF
                     val b = color and 0xFF

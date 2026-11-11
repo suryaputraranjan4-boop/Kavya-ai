@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
@@ -27,11 +29,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
+import com.example.services.KavyaAccessibilityService
+import com.example.services.ScreenShareManager
 import com.example.viewmodel.KavyaViewModel
 import com.example.visual.*
 
@@ -50,14 +57,38 @@ fun JarvisScreenIntelligenceScreen(
     }
 
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val orbState by JarvisOverlayController.orbState.collectAsState()
     val orbConfig by JarvisOverlayController.orbConfig.collectAsState()
     val isOverlayRunning by JarvisOverlayController.isOverlayRunning.collectAsState()
     val activePlan by JarvisOverlayController.activePlan.collectAsState()
+    val isScreenSharing by viewModel.isScreenSharing.collectAsState()
+    val annotationSteps by ExplanationStepController.steps.collectAsState()
+    val currentStepIdx by ExplanationStepController.currentStepIndex.collectAsState()
 
     var testQueryInput by remember { mutableStateOf("Explain this screen") }
     var hasOverlayPermission by remember {
         mutableStateOf(JarvisOverlayController.hasOverlayPermission(context))
+    }
+    var isAccessibilityActive by remember {
+        mutableStateOf(KavyaAccessibilityService.instance != null)
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasOverlayPermission = JarvisOverlayController.hasOverlayPermission(context)
+                isAccessibilityActive = KavyaAccessibilityService.instance != null
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val mediaProjectionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        viewModel.onScreenShareConsentResult(context, result.resultCode, result.data)
     }
 
     Scaffold(
@@ -167,14 +198,17 @@ fun JarvisScreenIntelligenceScreen(
                 }
             }
 
-            // 2. System Overlay Window Switch
+            // 2. System Overlay Window & Permissions Hub
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF101724)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -188,7 +222,7 @@ fun JarvisScreenIntelligenceScreen(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = "Shows floating orb & AR highlights across all external apps",
+                                    text = "Passive touch-through AR highlights + floating orb across all apps",
                                     color = Color.White.copy(alpha = 0.65f),
                                     fontSize = 11.5.sp
                                 )
@@ -214,6 +248,94 @@ fun JarvisScreenIntelligenceScreen(
                                     }
                                 }
                             )
+                        }
+
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
+                        // Permission & Capture Readiness Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    isAccessibilityActive = KavyaAccessibilityService.instance != null
+                                    if (!isAccessibilityActive) {
+                                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        })
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = if (isAccessibilityActive) "✓ UI Tree Ready" else "Enable Accessibility",
+                                    color = if (isAccessibilityActive) Color(0xFF00E676) else Color(0xFFFFB74D),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    if (isScreenSharing || ScreenShareManager.isScreenSharingActive) {
+                                        viewModel.stopScreenShare()
+                                    } else {
+                                        val consentIntent = viewModel.startScreenShareConsent(context)
+                                        if (consentIntent != null) {
+                                            mediaProjectionLauncher.launch(consentIntent)
+                                        }
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = if (isScreenSharing || ScreenShareManager.isScreenSharingActive) "● Screen Live (Stop)" else "Start Screen Share",
+                                    color = if (isScreenSharing || ScreenShareManager.isScreenSharingActive) Color(0xFF00E5FF) else Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        if (isOverlayRunning || annotationSteps.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (annotationSteps.size > 1) {
+                                    OutlinedButton(
+                                        onClick = { ExplanationStepController.previousStep() },
+                                        enabled = currentStepIdx > 0,
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("◀ Prev Step", color = Color.White, fontSize = 11.sp)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { ExplanationStepController.nextStep() },
+                                        enabled = currentStepIdx < annotationSteps.size - 1,
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Next Step ▶", color = orbConfig.theme.primaryColor, fontSize = 11.sp)
+                                    }
+                                }
+
+                                Button(
+                                    onClick = {
+                                        JarvisGuidanceEngine.dismissExplanation()
+                                        JarvisOverlayController.emergencyStopJarvis(context)
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD50000)),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("✕ Stop Jarvis", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
                 }

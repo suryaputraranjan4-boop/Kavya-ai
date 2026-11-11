@@ -150,6 +150,19 @@ object ScreenShareManager {
     }
 
     /**
+     * Lightweight heartbeat called when intermediate VirtualDisplay frames are throttled.
+     */
+    fun onFrameHeartbeat(width: Int, height: Int) {
+        val now = System.currentTimeMillis()
+        lastFrameTimeMs = now
+        activeResolution = Pair(width, height)
+        val current = _state.value
+        if (current is ScreenShareState.Active) {
+            _state.value = current.copy(lastFrameTimestamp = now)
+        }
+    }
+
+    /**
      * Invoked by ScreenCaptureService when a new frame is captured from the VirtualDisplay.
      */
     fun onFrameCaptured(bitmap: Bitmap, width: Int, height: Int) {
@@ -158,16 +171,9 @@ object ScreenShareManager {
         lastFrameTimeMs = now
         activeResolution = Pair(width, height)
 
-        // Maintain explicit bitmap ownership
-        val oldBitmap = latestFrameBitmap
+        // Do NOT call .recycle() on oldBitmap because it may be concurrently read by
+        // VisionPipeline, GeminiVisionAnalyzer, or Compose UI preview. Let GC reclaim safely.
         latestFrameBitmap = bitmap
-        if (oldBitmap != null && oldBitmap != bitmap && !oldBitmap.isRecycled) {
-            try {
-                oldBitmap.recycle()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error recycling previous frame bitmap", e)
-            }
-        }
 
         framesInLastSecond++
         if (now - lastFpsCalculationTime >= 1000L) {
@@ -266,14 +272,6 @@ object ScreenShareManager {
         frameCounter.set(0)
         currentFps = 0
         lastFrameTimeMs = 0L
-        val old = latestFrameBitmap
         latestFrameBitmap = null
-        if (old != null && !old.isRecycled) {
-            try {
-                old.recycle()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error recycling final frame bitmap", e)
-            }
-        }
     }
 }

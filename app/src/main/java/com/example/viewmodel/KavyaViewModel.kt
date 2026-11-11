@@ -184,6 +184,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun emergencyStop(reason: String = "User requested stop") {
         androidAgent.stopExecution(reason)
+        com.example.visual.ScreenAnnotationManager.clearAllAnnotations()
+        com.example.visual.JarvisGuidanceEngine.dismissExplanation()
         _isProcessing.value = false
         _agentActionStatus.value = "Action stopped."
         _latestKavyaCaption.value = "रुक गई हूँ। Action रोक दिया गया है।"
@@ -223,7 +225,31 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             com.example.state.KavyaStateManager.state.collect { global ->
                 _voiceState.value = global.voiceState
+                val currentOrb = com.example.visual.JarvisOverlayController.orbState.value
+                if (currentOrb != com.example.visual.JarvisOrbState.EXPLAINING &&
+                    currentOrb != com.example.visual.JarvisOrbState.GUIDING
+                ) {
+                    val mappedOrb = when (global.voiceState) {
+                        VoiceState.UNDERSTANDING -> com.example.visual.JarvisOrbState.LISTENING
+                        VoiceState.THINKING -> com.example.visual.JarvisOrbState.THINKING
+                        VoiceState.SPEAKING -> com.example.visual.JarvisOrbState.SPEAKING
+                        VoiceState.EXECUTING -> com.example.visual.JarvisOrbState.WORKING
+                        VoiceState.ERROR -> com.example.visual.JarvisOrbState.ERROR
+                        VoiceState.IDLE -> com.example.visual.JarvisOrbState.IDLE
+                        else -> com.example.visual.JarvisOrbState.IDLE
+                    }
+                    com.example.visual.JarvisOverlayController.setOrbState(mappedOrb)
+                }
             }
+        }
+
+        com.example.visual.ExplanationStepController.onSpeakStep = { textToSpeak ->
+            if (_autoSpeak.value && textToSpeak.isNotBlank()) {
+                voiceEngine.processAndSpeak(textToSpeak, enqueue = false)
+            }
+        }
+        com.example.visual.ExplanationStepController.onStopSpeaking = {
+            voiceEngine.stop()
         }
 
         voiceEngine.onSpeakingStateChanged = { isSpeaking ->
@@ -1455,6 +1481,18 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 val jarvisMode = com.example.visual.JarvisIntelligencePlanner.classifyMode(prompt)
                 var isJarvisScreenExplain = false
                 if (!isFastChat && cleanResponse.isBlank() && (jarvisMode == com.example.visual.JarvisMode.EXPLAINS_ANYTHING || jarvisMode == com.example.visual.JarvisMode.SHOWS_YOU_HOW)) {
+                    // Attempt Android 11+ Accessibility takeScreenshot fallback if MediaProjection frame is not active yet
+                    if (com.example.visual.VisionPipeline.getLatestFrame() == null &&
+                        com.example.services.KavyaAccessibilityService.instance != null
+                    ) {
+                        val fallbackShot = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.example.visual.ScreenshotManager(getApplication()).captureScreen()
+                        }
+                        if (fallbackShot != null) {
+                            com.example.visual.VisionPipeline.onNewFrame(fallbackShot)
+                        }
+                    }
+
                     com.example.visual.JarvisGuidanceEngine.executeJarvisQuery(prompt)
                     val activeExp = com.example.visual.JarvisGuidanceEngine.activeExplanation.value
                     val guidance = com.example.visual.JarvisGuidanceEngine.guidanceState.value
@@ -1467,6 +1505,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             // Real screen perception is active: let Step 5 multimodal LLM analyze the live frame + UI tree!
                             isJarvisScreenExplain = true
+                            com.example.visual.JarvisGuidanceEngine.explainActiveScreenAsync(getApplication(), prompt)
                         }
                     }
                     if (cleanResponse.isNotBlank() && _autoSpeak.value && !alreadySpoken) {
@@ -1499,8 +1538,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         .map { MessageEntity(it.id, chatId, it.text, it.isUser, 0) }
                     
                     val screenContext = if (!isFastChat) screenInspector.getScreenContextString() else ""
-                    val liveScreenFrame = if (_isScreenSharing.value || com.example.services.ScreenShareManager.isScreenSharingActive) {
-                        com.example.visual.VisionPipeline.getCompressedJpegFrame()
+                    val liveScreenFrame = if (_isScreenSharing.value || com.example.services.ScreenShareManager.isScreenSharingActive || isJarvisScreenExplain) {
+                        com.example.visual.VisionPipeline.getCompressedJpegFrame() ?: lastAnalyzedImageBytes
                     } else {
                         lastAnalyzedImageBytes
                     }

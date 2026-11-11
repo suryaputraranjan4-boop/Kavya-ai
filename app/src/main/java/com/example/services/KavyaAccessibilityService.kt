@@ -42,7 +42,8 @@ class KavyaAccessibilityService : AccessibilityService() {
             val pkg = event.packageName?.toString()
             if (!pkg.isNullOrBlank()) {
                 currentForegroundPackage = pkg
-                Log.d(TAG, "Foreground window changed.")
+                com.example.visual.ScreenAnnotationManager.onForegroundWindowChanged(pkg)
+                Log.d(TAG, "Foreground window changed: $pkg")
             }
         }
     }

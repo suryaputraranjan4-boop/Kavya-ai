@@ -131,12 +131,35 @@ data class SemanticScreenMap(
     }
 
     fun findElementMatching(query: String): SemanticElement? {
-        val q = query.trim().lowercase()
-        return elements.firstOrNull { elem ->
-            elem.text.lowercase().contains(q) ||
-            elem.contentDescription.lowercase().contains(q) ||
-            elem.resourceId.lowercase().contains(q)
+        val rawQ = query.trim().lowercase()
+        if (rawQ.isBlank()) return actionButtons.firstOrNull() ?: elements.firstOrNull()
+
+        // 1. Direct match
+        val direct = elements.firstOrNull { elem ->
+            elem.text.lowercase().contains(rawQ) ||
+            elem.contentDescription.lowercase().contains(rawQ) ||
+            elem.resourceId.lowercase().contains(rawQ)
         }
+        if (direct != null) return direct
+
+        // 2. Stripped keyword match (e.g. "the settings button" -> "settings")
+        val cleaned = rawQ
+            .replace(Regex("\\b(the|a|an|this|that|button|icon|option|tab|section|menu|field|element|control)\\b"), " ")
+            .trim()
+        val tokens = cleaned.split(Regex("\\s+")).filter { it.length >= 2 }
+        if (tokens.isNotEmpty()) {
+            return elements
+                .filter { elem ->
+                    val hay = "${elem.text} ${elem.contentDescription} ${elem.resourceId}".lowercase()
+                    tokens.any { hay.contains(it) }
+                }
+                .maxByOrNull { elem ->
+                    val hay = "${elem.text} ${elem.contentDescription} ${elem.resourceId}".lowercase()
+                    val matchCount = tokens.count { hay.contains(it) }
+                    matchCount * 10 + (if (elem.isClickable) 5 else 0) + elem.importanceScore
+                }
+        }
+        return null
     }
 }
 
@@ -153,8 +176,8 @@ object SemanticScreenAnalyzer {
      */
     fun analyzeScreen(
         freshScreen: FreshScreenState = FreshScreenRecognizer.inspectFreshScreenNow(),
-        screenWidth: Int = 1080,
-        screenHeight: Int = 2400
+        screenWidth: Int = ScreenAnnotationManager.coordinateMapper.getGeometry().width,
+        screenHeight: Int = ScreenAnnotationManager.coordinateMapper.getGeometry().height
     ): SemanticScreenMap {
         val zones = ScreenLayoutZones(screenWidth, screenHeight)
         val elements = mutableListOf<SemanticElement>()

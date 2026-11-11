@@ -174,9 +174,17 @@ class ScreenCaptureService : Service() {
             val reader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2)
             imageReader = reader
 
+            var lastFrameExtractMs = 0L
             reader.setOnImageAvailableListener({ imageReaderInstance ->
                 val image = imageReaderInstance.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
+                    val now = System.currentTimeMillis()
+                    if (now - lastFrameExtractMs < 280L) {
+                        ScreenShareManager.onFrameHeartbeat(targetWidth, targetHeight)
+                        return@setOnImageAvailableListener
+                    }
+                    lastFrameExtractMs = now
+
                     val planes = image.planes
                     val buffer = planes[0].buffer
                     val pixelStride = planes[0].pixelStride
@@ -226,6 +234,11 @@ class ScreenCaptureService : Service() {
             ScreenShareManager.reportServiceError("Capture failed: ${e.message}", isFatal = true)
             stopSelf()
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        com.example.visual.ScreenAnnotationManager.onConfigurationChanged(this)
     }
 
     private fun stopCapture() {

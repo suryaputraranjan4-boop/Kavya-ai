@@ -357,4 +357,151 @@ class JarvisVisualIntelligenceTest {
         assertTrue(play2 is com.example.agent.CommandIntent.PlayMedia && play2.app == "Spotify" && play2.mediaQuery.contains("Arijit", true))
         assertTrue(play3 is com.example.agent.CommandIntent.PlayMedia && play3.app == "YouTube")
     }
+
+    // -------------------------------------------------------------------------
+    // TEST 11: ScreenCoordinateMapper Normalized Mapping, Rotation & Panel Docking
+    // -------------------------------------------------------------------------
+    @Test
+    fun testScreenCoordinateMapperAndPanelDocking() {
+        val mapper = ScreenCoordinateMapper()
+
+        // Normalized [0, 1000] box at [500, 100, 600, 500] -> Y: [1200..1440], X: [108..540]
+        val mapped = mapper.mapNormalizedBoxToScreen(
+            ymin = 500f,
+            xmin = 100f,
+            ymax = 600f,
+            xmax = 500f,
+            screenWidth = 1080,
+            screenHeight = 2400
+        )
+        assertEquals(108, mapped.left)
+        assertEquals(1200, mapped.top)
+        assertEquals(540, mapped.right)
+        assertEquals(1440, mapped.bottom)
+
+        // Element in upper half -> panel stays at bottom (shouldDockPanelAtTop = false)
+        val topElement = Rect(100, 200, 500, 400)
+        assertFalse(mapper.shouldDockPanelAtTop(topElement, screenHeight = 2400))
+
+        // Element in bottom half -> panel docks at top so it never covers target (shouldDockPanelAtTop = true)
+        val bottomElement = Rect(100, 1900, 500, 2150)
+        assertTrue(mapper.shouldDockPanelAtTop(bottomElement, screenHeight = 2400))
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST 12: ExplanationStepController & ScreenAnnotationManager Auto-Clear
+    // -------------------------------------------------------------------------
+    @Test
+    fun testExplanationStepControllerAndAutoClearOnPackageChange() {
+        ScreenAnnotationManager.clearAllAnnotations()
+
+        val step1 = ScreenAnnotationStep(
+            stepNumber = 1,
+            totalSteps = 2,
+            title = "Header Section",
+            label = "Header Section",
+            spokenExplanation = "Step 1 explains the top header.",
+            bounds = Rect(40, 100, 600, 220)
+        )
+        val step2 = ScreenAnnotationStep(
+            stepNumber = 2,
+            totalSteps = 2,
+            title = "Continue Button",
+            label = "Continue Button",
+            spokenExplanation = "Step 2 highlights the continue button.",
+            bounds = Rect(100, 1800, 980, 1940)
+        )
+
+        ScreenAnnotationManager.recordAnnotatedScreen("com.example.demo", "demo_sig")
+        ExplanationStepController.startSequence(
+            newSteps = listOf(step1, step2),
+            autoAdvance = false
+        )
+
+        assertNotNull(ExplanationStepController.currentStep.value)
+        assertEquals(0, ExplanationStepController.currentStepIndex.value)
+        assertEquals(step1.bounds, JarvisOverlayController.activeInstruction.value?.bounds)
+
+        // Advance to Step 2
+        val movedNext = ExplanationStepController.nextStep()
+        assertNotNull(movedNext)
+        assertEquals(1, ExplanationStepController.currentStepIndex.value)
+        assertEquals(step2.bounds, JarvisOverlayController.activeInstruction.value?.bounds)
+
+        // Move back to Step 1
+        val movedPrev = ExplanationStepController.previousStep()
+        assertNotNull(movedPrev)
+        assertEquals(0, ExplanationStepController.currentStepIndex.value)
+
+        // Same package does NOT clear annotations
+        ScreenAnnotationManager.onForegroundWindowChanged("com.example.demo")
+        assertNotNull(ExplanationStepController.currentStep.value)
+
+        // Navigating to a different app package automatically clears stale annotations
+        ScreenAnnotationManager.onForegroundWindowChanged("com.android.settings")
+        assertNull(ExplanationStepController.currentStep.value)
+        assertTrue(ExplanationStepController.steps.value.isEmpty())
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST 13: Expanded Natural Commands & Multi-Step Screen Explanation
+    // -------------------------------------------------------------------------
+    @Test
+    fun testExpandedJarvisNaturalCommandsAndMultiStepInstructions() {
+        assertEquals(JarvisMode.EXPLAINS_ANYTHING, JarvisIntelligencePlanner.classifyMode("Explain this"))
+        assertEquals(JarvisMode.EXPLAINS_ANYTHING, JarvisIntelligencePlanner.classifyMode("What is happening here?"))
+        assertEquals(JarvisMode.EXPLAINS_ANYTHING, JarvisIntelligencePlanner.classifyMode("What does this option do?"))
+        assertEquals(JarvisMode.SHOWS_YOU_HOW, JarvisIntelligencePlanner.classifyMode("Where should I tap?"))
+        assertEquals(JarvisMode.SHOWS_YOU_HOW, JarvisIntelligencePlanner.classifyMode("Show me where to click"))
+        assertEquals(JarvisMode.SHOWS_YOU_HOW, JarvisIntelligencePlanner.classifyMode("Point to the next button"))
+        assertEquals(JarvisMode.SHOWS_YOU_HOW, JarvisIntelligencePlanner.classifyMode("Guide me through this page"))
+        assertEquals(JarvisMode.SHOWS_YOU_HOW, JarvisIntelligencePlanner.classifyMode("What should I do next?"))
+
+        val heading = SemanticElement(
+            type = SemanticElementType.TITLE_HEADER,
+            bounds = Rect(40, 120, 800, 220),
+            text = "Security Settings",
+            contentDescription = "Security Settings Header"
+        )
+        val btn1 = SemanticElement(
+            type = SemanticElementType.ACTION_BUTTON,
+            bounds = Rect(60, 500, 900, 620),
+            text = "Two-Factor Authentication",
+            contentDescription = "2FA Option",
+            isClickable = true
+        )
+        val btn2 = SemanticElement(
+            type = SemanticElementType.ACTION_BUTTON,
+            bounds = Rect(60, 900, 900, 1020),
+            text = "Save Changes",
+            contentDescription = "Save button",
+            isClickable = true
+        )
+
+        val screenMap = SemanticScreenMap(
+            packageName = "com.android.settings",
+            elements = listOf(heading, btn1, btn2),
+            primaryHeading = heading,
+            actionButtons = listOf(btn1, btn2),
+            inputFields = emptyList(),
+            contentBlocks = emptyList(),
+            mediaRegions = emptyList(),
+            layoutZones = ScreenLayoutZones(1080, 2400)
+        )
+
+        // Query with filler words ("Where is the Save Changes button?")
+        val matched = screenMap.findElementMatching("Where is the Save Changes button?")
+        assertNotNull(matched)
+        assertEquals("Save Changes", matched?.text)
+
+        // Explain this screen should generate multi-step pass-through highlight instructions
+        val explainPlan = JarvisIntelligencePlanner.createPlan(
+            userQuery = "Explain this screen",
+            screenMap = screenMap
+        )
+        assertEquals(JarvisMode.EXPLAINS_ANYTHING, explainPlan.mode)
+        assertTrue("Multi-step explanation must contain >= 2 instructions", explainPlan.instructions.size >= 2)
+        assertTrue(explainPlan.instructions.all { it.isPassThroughTouch })
+    }
 }
+

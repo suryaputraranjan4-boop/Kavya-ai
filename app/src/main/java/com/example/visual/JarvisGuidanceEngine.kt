@@ -2,12 +2,15 @@ package com.example.visual
 
 import android.content.Context
 import android.graphics.Rect
+import android.util.Base64
 import android.util.Log
 import com.example.agent.FreshScreenRecognizer
 import com.example.agent.UIElementResolver
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.ByteArrayOutputStream
 
 /**
  * State for JARVIS "Shows You How" interactive visual guidance.
@@ -54,6 +57,12 @@ object JarvisGuidanceEngine {
     private val _activeExplanation = MutableStateFlow<VisualExplanationCard?>(null)
     val activeExplanation: StateFlow<VisualExplanationCard?> = _activeExplanation.asStateFlow()
 
+    private val engineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var activeAnalysisJob: Job? = null
+
+    var externalSpeakCallback: ((String) -> Unit)? = null
+    var externalStopSpeakCallback: (() -> Unit)? = null
+
     /**
      * Resolves and highlights an element on the active screen for step-by-step guidance.
      */
@@ -63,7 +72,7 @@ object JarvisGuidanceEngine {
         val resolved = UIElementResolver.resolveTargetElement(freshScreen, targetDescription)
 
         if (resolved != null && resolved.bounds.width() > 0 && resolved.bounds.height() > 0) {
-            val spokenPrompt = customPrompt ?: "यहाँ टैप कीजिए: ${resolved.targetText}"
+            val spokenPrompt = customPrompt ?: "Tap here to open ${resolved.targetText}"
             _guidanceState.value = JarvisGuidanceState(
                 isActive = true,
                 targetQuery = targetDescription,
@@ -73,7 +82,6 @@ object JarvisGuidanceEngine {
                 instructionText = spokenPrompt,
                 confidence = resolved.confidence
             )
-            // Propagate to JarvisOverlayController for screen overlay
             JarvisOverlayController.highlightElement(
                 bounds = resolved.bounds,
                 label = resolved.targetText,
@@ -99,12 +107,14 @@ object JarvisGuidanceEngine {
      * Dismisses active reticle / highlight guidance.
      */
     fun clearGuidance() {
+        activeAnalysisJob?.cancel()
         _guidanceState.value = JarvisGuidanceState(isActive = false)
-        JarvisOverlayController.clearAllVisuals()
+        ScreenAnnotationManager.clearAllAnnotations()
     }
 
     /**
-     * Creates and publishes a structured visual explanation card for "JARVIS Explains Anything".
+     * Creates and publishes a structured visual explanation card for "JARVIS Explains Anything"
+     * while preserving any active on-screen highlight instructions and step sequences.
      */
     fun publishExplanation(
         title: String,
@@ -128,7 +138,11 @@ object JarvisGuidanceEngine {
         )
         _activeExplanation.value = card
 
-        // Also compile into rich VisualCardData for the JARVIS Overlay system
+        val existingPlan = JarvisOverlayController.activePlan.value
+        val existingInstructions = existingPlan?.instructions ?: emptyList()
+        val anchorBounds = existingInstructions.firstOrNull()?.bounds
+            ?: existingPlan?.cards?.firstOrNull()?.targetAnchorBounds
+
         val overlayCard = VisualCardData(
             id = card.id,
             type = if (comparisons.isNotEmpty()) VisualCardType.COMPARISON else if (details.isNotBlank()) VisualCardType.DETAIL_TYPEWRITER else VisualCardType.SUMMARY,
@@ -138,13 +152,16 @@ object JarvisGuidanceEngine {
             detailText = details,
             comparisonItems = comparisons.map { ComparisonItem(it.first, it.second, "", "") },
             citations = citations,
+            targetAnchorBounds = anchorBounds,
             confidence = confidence
         )
         val plan = JarvisVisualPlan(
-            userQuery = title,
+            userQuery = existingPlan?.userQuery ?: title,
             mode = JarvisMode.EXPLAINS_ANYTHING,
             title = title,
-            cards = listOf(overlayCard)
+            instructions = existingInstructions,
+            cards = listOf(overlayCard),
+            targetPackage = existingPlan?.targetPackage ?: ""
         )
         JarvisOverlayController.presentVisualPlan(plan)
 
@@ -152,11 +169,133 @@ object JarvisGuidanceEngine {
     }
 
     /**
-     * Universal entry point: executes a user's natural language request through JARVIS Intelligence.
+     * Universal synchronous entry point: executes a user's natural language request through JARVIS Intelligence.
      */
     fun executeJarvisQuery(query: String) {
-        val plan = JarvisIntelligencePlanner.createPlan(query)
-        JarvisOverlayController.presentVisualPlan(plan)
+        val screenMap = SemanticScreenAnalyzer.analyzeScreen()
+        val plan = JarvisIntelligencePlanner.createPlan(query, screenMap)
+        applyPlanToState(plan)
+    }
+
+    /**
+     * Asynchronous full-pipeline screen explanation triggered from the Floating Orb, Panel, or Voice.
+     * Combines Accessibility hierarchy with live MediaProjection or Accessibility screenshot fallback
+     * and Gemini Vision multimodal bounding-box analysis on Dispatchers.IO.
+     */
+    fun explainActiveScreenAsync(context: Context, query: String = "Explain this screen") {
+        activeAnalysisJob?.cancel()
+        ScreenAnnotationManager.coordinateMapper.refreshGeometry(context)
+        JarvisOverlayController.setOrbState(JarvisOrbState.THINKING)
+
+        activeAnalysisJob = engineScope.launch {
+            try {
+                // 1. Fast local pass using Accessibility hierarchy if available
+                val initialMap = withContext(Dispatchers.Default) {
+                    SemanticScreenAnalyzer.analyzeScreen()
+                }
+
+                // 2. Ensure we have a live visual frame (MediaProjection or Accessibility takeScreenshot fallback)
+                var frameBitmap = VisionPipeline.getLatestFrame()
+                if (frameBitmap == null) {
+                    frameBitmap = withContext(Dispatchers.IO) {
+                        ScreenshotManager(context).captureScreen()
+                    }
+                    if (frameBitmap != null) {
+                        VisionPipeline.onNewFrame(frameBitmap)
+                    }
+                }
+
+                // Present immediate local plan while Vision AI enriches (or as final if offline/no key)
+                val localPlan = withContext(Dispatchers.Default) {
+                    JarvisIntelligencePlanner.createPlan(
+                        userQuery = query,
+                        screenMap = initialMap,
+                        forcedMode = JarvisIntelligencePlanner.classifyMode(query).let {
+                            if (it == JarvisMode.IDLE) JarvisMode.EXPLAINS_ANYTHING else it
+                        }
+                    )
+                }
+                applyPlanToState(localPlan, autoAdvance = localPlan.instructions.size > 1)
+
+                // 3. If a visual frame is available, invoke GeminiVisionAnalyzer on background thread
+                val jpegBytes = VisionPipeline.getCompressedJpegFrame(maxDimension = 720, quality = 75)
+                    ?: frameBitmap?.let { bmp ->
+                        withContext(Dispatchers.IO) {
+                            try {
+                                val baos = ByteArrayOutputStream()
+                                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, baos)
+                                baos.toByteArray()
+                            } catch (_: Exception) { null }
+                        }
+                    }
+
+                if (jpegBytes != null && jpegBytes.isNotEmpty()) {
+                    val base64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+                    val hierarchySummary = initialMap.elements.take(20).joinToString("\n") {
+                        "- ${it.displayLabel} [${it.type.name}] bounds=${it.bounds}"
+                    }
+                    val (visionSummary, visionSteps) = GeminiVisionAnalyzer(context)
+                        .analyzeScreenForVisualExplanation(
+                            base64Image = base64,
+                            userQuery = query,
+                            currentApp = initialMap.packageName.ifBlank { "Current App" },
+                            hierarchySummary = hierarchySummary
+                        )
+
+                    if (visionSteps.isNotEmpty()) {
+                        // Snap vision bounding boxes to exact Accessibility node bounds when a matching element exists
+                        val refinedSteps = visionSteps.map { step ->
+                            val matchedNode = initialMap.findElementMatching(step.title)
+                                ?: initialMap.findElementNear(step.bounds.centerX(), step.bounds.centerY(), threshold = 140)
+                            if (matchedNode != null && matchedNode.bounds.width() > 0 && matchedNode.bounds.height() > 0) {
+                                step.copy(
+                                    bounds = matchedNode.bounds,
+                                    clickPoint = Pair(matchedNode.bounds.centerX(), matchedNode.bounds.centerY())
+                                )
+                            } else {
+                                step
+                            }
+                        }
+
+                        val refinedInstructions = refinedSteps.map { step ->
+                            VisualInstruction(
+                                type = VisualInstructionType.HIGHLIGHT_BOX,
+                                bounds = step.bounds,
+                                clickPoint = step.clickPoint,
+                                label = step.label,
+                                text = step.spokenExplanation,
+                                isPassThroughTouch = true
+                            )
+                        }
+
+                        val enrichedCard = VisualCardData(
+                            type = VisualCardType.SUMMARY,
+                            title = "Vision Screen Analysis",
+                            summary = visionSummary.ifBlank { refinedSteps.first().spokenExplanation },
+                            bullets = refinedSteps.map { "Step ${it.stepNumber}: ${it.title} — ${it.label}" },
+                            detailText = visionSummary,
+                            targetAnchorBounds = refinedSteps.first().bounds,
+                            confidence = 0.96f
+                        )
+
+                        val enrichedPlan = localPlan.copy(
+                            instructions = refinedInstructions,
+                            cards = listOf(enrichedCard) + localPlan.cards.drop(1)
+                        )
+                        applyPlanToState(enrichedPlan, autoAdvance = refinedSteps.size > 1)
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
+                Log.w(TAG, "explainActiveScreenAsync failed: ${e.message}")
+                JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+            }
+        }
+    }
+
+    private fun applyPlanToState(plan: JarvisVisualPlan, autoAdvance: Boolean = false) {
+        JarvisOverlayController.presentVisualPlan(plan, autoAdvanceSteps = autoAdvance)
         if (plan.cards.isNotEmpty()) {
             val firstCard = plan.cards.first()
             _activeExplanation.value = VisualExplanationCard(
@@ -176,13 +315,18 @@ object JarvisGuidanceEngine {
                 targetLabel = firstInst.label,
                 targetBounds = firstInst.bounds,
                 clickPoint = firstInst.clickPoint,
-                instructionText = firstInst.text
+                instructionText = firstInst.text,
+                stepIndex = 1,
+                totalSteps = plan.instructions.size
             )
+        } else {
+            _guidanceState.value = JarvisGuidanceState(isActive = false)
         }
     }
 
     fun dismissExplanation() {
+        activeAnalysisJob?.cancel()
         _activeExplanation.value = null
-        JarvisOverlayController.clearAllVisuals()
+        ScreenAnnotationManager.clearAllAnnotations()
     }
 }
