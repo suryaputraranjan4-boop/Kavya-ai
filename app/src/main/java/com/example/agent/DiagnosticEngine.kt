@@ -9,6 +9,7 @@ enum class AgentLiveState {
     IDLE,
     PLANNING,
     EXECUTING,
+    WAITING_FOR_USER,
     VERIFYING,
     COMPLETED,
     FAILED

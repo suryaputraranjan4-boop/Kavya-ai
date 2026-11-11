@@ -491,7 +491,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             }
 
             // Quick Action Capsules
-            val suggestions = listOf("YouTube खोलो", "WhatsApp खोलो", "Google पर सर्च करो", "Torch ON", "Settings")
+            val suggestions = listOf("Explain Screen", "JARVIS Guide", "YouTube खोलो", "WhatsApp खोलो", "Google पर सर्च करो", "Torch ON", "Settings")
             androidx.compose.foundation.lazy.LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()

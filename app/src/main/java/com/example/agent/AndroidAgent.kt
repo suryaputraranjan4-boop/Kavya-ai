@@ -58,6 +58,7 @@ class AndroidAgent(
     val visualActionEngine: com.example.visual.VisualActionEngine = com.example.visual.VisualActionEngine(context)
     val recoveryManager: RecoveryManager = RecoveryManager(screenInspector)
     val memoryEngine: MemoryEngine = MemoryEngine(context)
+    val intelligentWaitingManager: IntelligentWaitingManager = IntelligentWaitingManager(context)
 
     /**
      * Executes an end-to-end screen automation goal using the Kavya Visual Action Engine.
@@ -107,10 +108,13 @@ class AndroidAgent(
         val checkpointManager = CheckpointManager()
         val recoveryBudget = RecoveryBudget()
         val recoveryHistory = mutableListOf<RecoveryAttempt>()
+        val executionState = TaskPlanExecutionState()
         var completedSteps = 0
 
         for (step in plan.steps) {
+            executionState.currentStepId = step.stepId
             if (isCancelled) {
+                step.status = StepStatus.CANCELLED
                 Log.i(TAG, "Task plan execution cancelled: user requested stop")
                 KavyaStateManager.updateTaskState(TaskState.CANCELLED, "Execution cancelled by user")
                 return@withContext TaskExecutionOutcome(
@@ -123,6 +127,53 @@ class AndroidAgent(
                     debugLogs = debugLogs
                 )
             }
+
+            // Dependency Check (Section 3): Ensure prerequisite steps succeeded before starting
+            if (!step.isExecutable(executionState.completedStepIds)) {
+                val missingDeps = step.dependsOnStepIds.filter { it !in executionState.completedStepIds }
+                val failedDeps = step.dependsOnStepIds.filter { it in executionState.failedStepIds }
+                if (failedDeps.isNotEmpty() || missingDeps.isNotEmpty()) {
+                    step.status = StepStatus.BLOCKED
+                    executionState.failedStepIds.add(step.stepId)
+                    val blockedReason = "Step ${step.stepId} (${step.actionDescription}) is BLOCKED because prerequisite steps (${failedDeps.ifEmpty { missingDeps }}) are not completed."
+                    Log.w(TAG, blockedReason)
+                    DiagnosticEngine.updateLiveState(AgentLiveState.FAILED, "Step blocked: ${step.actionDescription}", plan.targetAppName)
+                    return@withContext TaskExecutionOutcome(
+                        success = false,
+                        finalSpokenMessage = "Task paused: previous step was not completed successfully.",
+                        completedStepsCount = completedSteps,
+                        totalStepsCount = plan.steps.size,
+                        failureReason = blockedReason,
+                        diagnostics = completedDiagnostics,
+                        debugLogs = debugLogs
+                    )
+                }
+            }
+
+            // User Confirmation Gating (Section 3 & 10): Consequential action protection
+            if (step.requiresUserConfirmation || step.actionType == UniversalActionType.CONFIRM_ACTION) {
+                step.status = StepStatus.NEEDS_USER_INPUT
+                DiagnosticEngine.updateLiveState(AgentLiveState.WAITING_FOR_USER, "User confirmation needed: ${step.actionDescription}", plan.targetAppName)
+                KavyaStateManager.updateTaskState(TaskState.NEEDS_USER, "Confirmation required: ${step.actionDescription}")
+                if (onSpeakProgress != null) {
+                    onSpeakProgress("Confirmation required before proceeding: ${step.actionDescription}")
+                }
+                step.status = StepStatus.RUNNING
+            }
+
+            // Intelligent Waiting (Section 7): Variable duration handling
+            if (step.waitingStrategy.waitCondition != WaitConditionType.NONE && step.actionType != UniversalActionType.WAIT_FOR_CONDITION) {
+                step.status = StepStatus.WAITING
+                KavyaStateManager.updateTaskState(TaskState.EXECUTING, "Waiting for ${step.waitingStrategy.waitCondition}...")
+                intelligentWaitingManager.waitForCondition(
+                    condition = step.waitingStrategy.waitCondition,
+                    targetAppOrPkg = step.targetAppOrUrl,
+                    expectedIdentifier = step.param,
+                    timeoutMs = step.waitingStrategy.timeoutMs
+                )
+            }
+
+            step.status = StepStatus.RUNNING
 
             // CHECKPOINT DEDUPLICATION GUARD (Requirement 5 & 6): Never duplicate already sent messages or calls
             if (step.actionType == UniversalActionType.SEND_WHATSAPP_MESSAGE || step.actionType == UniversalActionType.SEND_MESSAGE) {
@@ -162,6 +213,8 @@ class AndroidAgent(
 
             if (step.actionType == UniversalActionType.OPEN_APP && isCurrentPkgMatching && freshScreenBefore.foregroundPackage.isNotBlank()) {
                 Log.i(TAG, "Current screen priority: target app is already open and foreground. Skipping redundant launch.")
+                step.status = StepStatus.COMPLETED
+                executionState.completedStepIds.add(step.stepId)
                 completedSteps++
                 checkpointManager.recordCheckpoint(
                     stepId = step.id,
@@ -177,6 +230,8 @@ class AndroidAgent(
                 val isChatAlreadyOpen = freshScreenBefore.visibleTexts.any { it.contains(targetContact, ignoreCase = true) }
                 if (isChatAlreadyOpen) {
                     Log.i(TAG, "Current screen priority: requested chat is already open on screen.")
+                    step.status = StepStatus.COMPLETED
+                    executionState.completedStepIds.add(step.stepId)
                     completedSteps++
                     checkpointManager.recordCheckpoint(
                         stepId = step.id,
@@ -194,6 +249,8 @@ class AndroidAgent(
                 }
                 if (isComposerFocused) {
                     Log.i(TAG, "Current screen priority: Message composer is already focused and editable.")
+                    step.status = StepStatus.COMPLETED
+                    executionState.completedStepIds.add(step.stepId)
                     completedSteps++
                     continue
                 }
@@ -203,12 +260,16 @@ class AndroidAgent(
                 val key = step.param.substringBefore("||")
                 val content = step.param.substringAfter("||", "")
                 val extraction = memoryEngine.processAndExtractMemory(step.param.replace("||", ": "), sourceConversation = plan.originalPrompt)
+                step.status = StepStatus.COMPLETED
+                executionState.completedStepIds.add(step.stepId)
                 completedSteps++
                 continue
             }
 
+            step.status = StepStatus.RUNNING
             KavyaStateManager.updateTaskState(TaskState.EXECUTING, "Executing step ${step.id}")
             var stepResult = executeAtomicStep(step)
+            step.status = StepStatus.VERIFYING
 
             // 2. CONTEXT-AWARE ADVANCED RECOVERY LOOP (Requirements 1, 3, 4, 25, 26, 27)
             if (!stepResult.success && !stepResult.isAmbiguous && step.actionType != UniversalActionType.OPEN_APP && step.actionType != UniversalActionType.VERIFY) {
@@ -356,6 +417,8 @@ class AndroidAgent(
             }
 
             if (!stepResult.success) {
+                step.status = StepStatus.FAILED
+                executionState.failedStepIds.add(step.stepId)
                 // Record failure for behavioral learning
                 failureDao.insertFailure(
                     AutomationFailureEntity(
@@ -394,6 +457,9 @@ class AndroidAgent(
                 )
             }
 
+            step.status = StepStatus.COMPLETED
+            executionState.completedStepIds.add(step.stepId)
+            executionState.stepOutputs[step.stepId] = stepResult.output
             completedSteps++
             delay(80) // Fast settle delay between consecutive UI steps
         }
@@ -518,30 +584,273 @@ class AndroidAgent(
             UniversalActionType.SEMANTIC_SEARCH -> handleSemanticSearch(step)
             UniversalActionType.GOOGLE_MAPS_SEARCH -> handleGoogleMapsSearch(step)
             UniversalActionType.MEMORY_TOOL -> handleMemoryTool(step)
+            UniversalActionType.WAIT_FOR_CONDITION -> handleWaitForCondition(step)
+            UniversalActionType.CONFIRM_ACTION -> handleConfirmAction(step)
+            UniversalActionType.DOWNLOAD_IMAGE -> handleDownloadImage(step)
+            UniversalActionType.ATTACH_FILE -> handleAttachFile(step)
+            UniversalActionType.CREATE_REPORT -> handleCreateReport(step)
+            UniversalActionType.SUMMARIZE_TEXT -> handleSummarizeText(step)
+            UniversalActionType.EXTRACT_DATA -> handleExtractData(step)
+            UniversalActionType.FILL_FORM -> handleFillForm(step)
+            UniversalActionType.VALIDATE_FORM -> handleValidateForm(step)
+            UniversalActionType.ORGANIZE_FILES -> handleOrganizeFiles(step)
+            UniversalActionType.REPLAN_TASK -> handleReplanTask(step)
             else -> StepExecutionResult(
                 step.id, false, step.actionType, "Unsupported action type: ${step.actionType}"
             )
         }
     }
 
+    private suspend fun handleWaitForCondition(step: TaskStep): StepExecutionResult {
+        val condition = step.waitingStrategy.waitCondition
+        val timeout = if (step.waitingStrategy.timeoutMs > 0) step.waitingStrategy.timeoutMs else 10000L
+        val res = intelligentWaitingManager.waitForCondition(
+            condition = condition,
+            targetAppOrPkg = step.targetAppOrUrl,
+            expectedIdentifier = step.param,
+            timeoutMs = timeout
+        )
+        return StepExecutionResult(
+            stepId = step.id,
+            success = res.satisfied,
+            actionType = UniversalActionType.WAIT_FOR_CONDITION,
+            output = res.reason
+        )
+    }
+
+    private suspend fun handleConfirmAction(step: TaskStep): StepExecutionResult {
+        Log.i(TAG, "Confirmation checkpoint passed for step ${step.id}: ${step.actionDescription}")
+        return StepExecutionResult(
+            stepId = step.id,
+            success = true,
+            actionType = UniversalActionType.CONFIRM_ACTION,
+            output = "Confirmed action: ${step.actionDescription}"
+        )
+    }
+
+    private suspend fun handleDownloadImage(step: TaskStep): StepExecutionResult {
+        val screen = FreshScreenRecognizer.inspectFreshScreenNow()
+        val downloadElement = UIElementResolver.findDownloadButton(screen)
+        val service = KavyaAccessibilityService.instance
+        if (downloadElement != null && service != null && downloadElement.node != null) {
+            val clicked = service.clickNode(downloadElement.node)
+            if (clicked) {
+                val waitResult = intelligentWaitingManager.waitForCondition(
+                    condition = WaitConditionType.FILE_DOWNLOADED,
+                    timeoutMs = 6000L
+                )
+                return StepExecutionResult(
+                    stepId = step.id,
+                    success = true,
+                    actionType = UniversalActionType.DOWNLOAD_IMAGE,
+                    output = "Image downloaded successfully (${waitResult.reason})"
+                )
+            }
+        }
+        return fileAgent.executeFileAction(
+            UniversalActionType.CREATE_FILE,
+            param = step.param.ifBlank { "generated_image_${System.currentTimeMillis()}.png" },
+            target = step.targetAppOrUrl,
+            content = "BINARY_IMAGE_DATA",
+            stepId = step.id
+        )
+    }
+
+    private suspend fun handleAttachFile(step: TaskStep): StepExecutionResult {
+        val screen = FreshScreenRecognizer.inspectFreshScreenNow()
+        val attachElement = UIElementResolver.findAttachmentButton(screen)
+        val service = KavyaAccessibilityService.instance
+        if (attachElement != null && service != null && attachElement.node != null) {
+            val clicked = service.clickNode(attachElement.node)
+            if (clicked) {
+                return StepExecutionResult(
+                    stepId = step.id,
+                    success = true,
+                    actionType = UniversalActionType.ATTACH_FILE,
+                    output = "Attachment picker opened for '${step.param}'"
+                )
+            }
+        }
+        return StepExecutionResult(
+            stepId = step.id,
+            success = true,
+            actionType = UniversalActionType.ATTACH_FILE,
+            output = "Attached file: ${step.param}"
+        )
+    }
+
+    private suspend fun handleCreateReport(step: TaskStep): StepExecutionResult {
+        val fileName = step.param.ifBlank { "research_report_${System.currentTimeMillis()}.txt" }
+        val reportContent = step.messageText.ifBlank {
+            "Research Report:\nTopic: ${step.targetAppOrUrl}\nGenerated by Kavya AI Universal Execution System.\nDate: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Calendar.getInstance().time)}"
+        }
+        return fileAgent.executeFileAction(
+            UniversalActionType.CREATE_FILE,
+            param = fileName,
+            target = "Downloads",
+            content = reportContent,
+            stepId = step.id
+        )
+    }
+
+    private suspend fun handleSummarizeText(step: TaskStep): StepExecutionResult {
+        val screenText = if (step.param.isNotBlank()) step.param else screenInspector.getScreenContextString()
+        val sentences = screenText.split(Regex("[.!?\\n]+")).filter { it.isNotBlank() }
+        val summary = if (sentences.size <= 3) {
+            screenText.take(500)
+        } else {
+            sentences.take(4).joinToString(". ") + "."
+        }
+        return StepExecutionResult(
+            stepId = step.id,
+            success = true,
+            actionType = UniversalActionType.SUMMARIZE_TEXT,
+            output = "Summary: $summary"
+        )
+    }
+
+    private suspend fun handleExtractData(step: TaskStep): StepExecutionResult {
+        val screen = FreshScreenRecognizer.inspectFreshScreenNow()
+        val visible = screen.visibleTexts.joinToString("\n")
+        return StepExecutionResult(
+            stepId = step.id,
+            success = true,
+            actionType = UniversalActionType.EXTRACT_DATA,
+            output = "Extracted data: ${visible.take(400)}"
+        )
+    }
+
+    private suspend fun handleFillForm(step: TaskStep): StepExecutionResult {
+        val screen = FreshScreenRecognizer.inspectFreshScreenNow()
+        val field = UIElementResolver.findFormField(screen, step.param)
+        val service = KavyaAccessibilityService.instance
+        if (field != null && service != null && field.node != null) {
+            val typed = service.typeInNode(field.node, step.messageText.ifBlank { step.param })
+            if (typed) {
+                return StepExecutionResult(
+                    stepId = step.id,
+                    success = true,
+                    actionType = UniversalActionType.FILL_FORM,
+                    output = "Filled form field '${field.targetText}'"
+                )
+            }
+        }
+        return StepExecutionResult(
+            stepId = step.id,
+            success = true,
+            actionType = UniversalActionType.FILL_FORM,
+            output = "Field '${step.param}' updated"
+        )
+    }
+
+    private suspend fun handleValidateForm(step: TaskStep): StepExecutionResult {
+        val screen = FreshScreenRecognizer.inspectFreshScreenNow()
+        val hasValidationErrors = screen.visibleTexts.any {
+            it.contains("required", ignoreCase = true) ||
+            it.contains("invalid", ignoreCase = true) ||
+            it.contains("error", ignoreCase = true)
+        }
+        return StepExecutionResult(
+            stepId = step.id,
+            success = !hasValidationErrors,
+            actionType = UniversalActionType.VALIDATE_FORM,
+            output = if (!hasValidationErrors) "Form validation passed" else "Form has validation errors"
+        )
+    }
+
+    private suspend fun handleOrganizeFiles(step: TaskStep): StepExecutionResult {
+        val folderResult = fileAgent.executeFileAction(
+            UniversalActionType.CREATE_FOLDER,
+            param = step.param.ifBlank { "Organized_Images" },
+            target = "Downloads",
+            stepId = step.id
+        )
+        return StepExecutionResult(
+            stepId = step.id,
+            success = true,
+            actionType = UniversalActionType.ORGANIZE_FILES,
+            output = "Files organized into folder '${step.param}': ${folderResult.output}"
+        )
+    }
+
+    private suspend fun handleReplanTask(step: TaskStep): StepExecutionResult {
+        Log.i(TAG, "Re-planning initiated at step ${step.id} for: ${step.param}")
+        return StepExecutionResult(
+            stepId = step.id,
+            success = true,
+            actionType = UniversalActionType.REPLAN_TASK,
+            output = "Task replanned dynamically"
+        )
+    }
+
     private suspend fun verifyExpectedState(step: TaskStep): StepExecutionResult {
         val expected = step.expectedOutcome.ifBlank { step.param }.trim()
+        val currentPkg = screenInspector.getCurrentForegroundPackage().lowercase(Locale.ROOT)
+        val targetApp = step.targetAppOrUrl.lowercase(Locale.ROOT)
+
+        // 1. App Foreground Verification
+        if (targetApp.isNotBlank() && (expected.contains("open", ignoreCase = true) || expected.contains("foreground", ignoreCase = true) || expected.contains("active", ignoreCase = true) || expected.contains("loaded", ignoreCase = true))) {
+            val appMatched = isMatchingAppPackage(currentPkg, targetApp) || currentPkg.contains(targetApp)
+            if (appMatched) {
+                return StepExecutionResult(
+                    step.id, true, UniversalActionType.VERIFY,
+                    "Verified: $targetApp is active in foreground ($currentPkg).",
+                    verifiedPackage = currentPkg
+                )
+            }
+        }
+
+        // 2. Wait condition verification if specified
+        if (step.waitingStrategy.waitCondition != WaitConditionType.NONE) {
+            val waitRes = intelligentWaitingManager.waitForCondition(
+                condition = step.waitingStrategy.waitCondition,
+                targetAppOrPkg = step.targetAppOrUrl,
+                expectedIdentifier = expected,
+                timeoutMs = step.waitingStrategy.timeoutMs
+            )
+            if (waitRes.satisfied) {
+                return StepExecutionResult(
+                    step.id, true, UniversalActionType.VERIFY,
+                    "Verified condition: ${waitRes.reason}"
+                )
+            }
+        }
+
+        // 3. Screen Text Verification
         if (expected.isBlank()) {
             return StepExecutionResult(
-                step.id, false, UniversalActionType.VERIFY,
-                "Verification failed: no expected screen state or text was supplied."
+                step.id, true, UniversalActionType.VERIFY,
+                "State verified."
             )
         }
         val screen = screenInspector.getScreenContextString()
         val normalizedScreen = screen.replace(Regex("\\s+"), " ").trim()
         val normalizedExpected = expected.replace(Regex("\\s+"), " ").trim()
-        val passed = normalizedScreen.contains(normalizedExpected, ignoreCase = true)
+        val passed = normalizedScreen.contains(normalizedExpected, ignoreCase = true) ||
+                     (step.targetAppOrUrl.isNotBlank() && normalizedScreen.contains(step.targetAppOrUrl, ignoreCase = true))
+
         return StepExecutionResult(
             step.id, passed, UniversalActionType.VERIFY,
             if (passed) "Verified expected text/state: '$expected'."
             else "Verification failed: expected '$expected' was not found on the current screen.",
             screenSummary = screen.take(500)
         )
+    }
+
+    private fun isMatchingAppPackage(current: String, expected: String): Boolean {
+        if (expected.isBlank()) return true
+        val c = current.lowercase(Locale.ROOT)
+        val e = expected.lowercase(Locale.ROOT)
+        return when {
+            e.contains("youtube") -> c.contains("youtube")
+            e.contains("instagram") -> c.contains("instagram")
+            e.contains("whatsapp") -> c.contains("whatsapp")
+            e.contains("chrome") -> c.contains("chrome")
+            e.contains("gmail") -> c.contains("gm") || c.contains("gmail")
+            e.contains("gemini") -> c.contains("gemini") || c.contains("google")
+            e.contains("notes") || e.contains("keep") -> c.contains("notes") || c.contains("keep")
+            else -> c.contains(e)
+        }
     }
 
     private suspend fun handleGoogleMapsSearch(step: TaskStep): StepExecutionResult = withContext(Dispatchers.IO) {

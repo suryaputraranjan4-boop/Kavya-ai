@@ -1430,6 +1430,23 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                // 3b. JARVIS Screen Intelligence & Visual Guidance check
+                val jarvisMode = com.example.visual.JarvisIntelligencePlanner.classifyMode(prompt)
+                if (!isFastChat && cleanResponse.isBlank() && (jarvisMode == com.example.visual.JarvisMode.EXPLAINS_ANYTHING || jarvisMode == com.example.visual.JarvisMode.SHOWS_YOU_HOW)) {
+                    com.example.visual.JarvisGuidanceEngine.executeJarvisQuery(prompt)
+                    val activeExp = com.example.visual.JarvisGuidanceEngine.activeExplanation.value
+                    val guidance = com.example.visual.JarvisGuidanceEngine.guidanceState.value
+                    if (activeExp != null) {
+                        cleanResponse = "${activeExp.title}: ${activeExp.oneLineSummary}\n${activeExp.bulletChips.joinToString("\n• ", prefix = "• ")}"
+                    } else if (guidance.isActive) {
+                        cleanResponse = guidance.instructionText
+                    }
+                    if (cleanResponse.isNotBlank() && _autoSpeak.value && !alreadySpoken) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                }
+
                 // 4. Kavya Visual Action Engine execution check
                 if (!isFastChat && cleanResponse.isBlank() && isVisualInteractionIntent(prompt)) {
                     val visualOutcome = androidAgent.executeVisualGoal(prompt) { milestoneText ->

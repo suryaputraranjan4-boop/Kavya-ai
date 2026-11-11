@@ -56,6 +56,7 @@ fun AppNavGraph(
         composable("proactive_settings") { ProactiveSettingsScreen(navController, viewModel) }
         composable("debug_dashboard") { DebugDashboardScreen() }
         composable("visual_action_control") { VisualActionControlScreen(navController, viewModel) }
+        composable("jarvis_intelligence") { JarvisScreenIntelligenceScreen(navController, viewModel) }
         composable("help_support") { HelpSupportScreen(navController) }
     }
 }

@@ -1,5 +1,6 @@
 package com.example.agent
 
+import android.util.Log
 import com.example.utils.AppResolver
 import java.util.Locale
 
@@ -60,6 +61,15 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
                     )
                 )
             )
+        }
+
+        // 1b. Universal Task Decomposition for complex multi-step instructions (Sections 1, 2, 3, & 4)
+        if (UniversalTaskDecomposer.isComplexOrMultiStepTask(trimmed)) {
+            val decomposedPlan = UniversalTaskDecomposer.decompose(trimmed)
+            if (decomposedPlan != null && decomposedPlan.steps.isNotEmpty()) {
+                Log.i(TAG, "Universal task decomposition created plan with ${decomposedPlan.steps.size} steps.")
+                return decomposedPlan
+            }
         }
 
         val rawClauses = splitIntoClauses(trimmed)

@@ -60,8 +60,72 @@ enum class UniversalActionType {
     GENERATE_IMAGE,
     SEMANTIC_SEARCH,
     GOOGLE_MAPS_SEARCH,
-    MEMORY_TOOL
+    MEMORY_TOOL,
+    WAIT_FOR_CONDITION,
+    CONFIRM_ACTION,
+    DOWNLOAD_IMAGE,
+    ATTACH_FILE,
+    CREATE_REPORT,
+    SUMMARIZE_TEXT,
+    EXTRACT_DATA,
+    FILL_FORM,
+    VALIDATE_FORM,
+    ORGANIZE_FILES,
+    REPLAN_TASK
 }
+
+/**
+ * Execution Status of a Step (Section 2 & 9).
+ */
+enum class StepStatus {
+    PENDING,
+    READY,
+    RUNNING,
+    WAITING,
+    VERIFYING,
+    COMPLETED,
+    FAILED,
+    BLOCKED,
+    NEEDS_USER_INPUT,
+    CANCELLED
+}
+
+/**
+ * Wait condition types for intelligent waiting (Section 7).
+ */
+enum class WaitConditionType {
+    NONE,
+    UI_STABLE,
+    ELEMENT_VISIBLE,
+    ELEMENT_GONE,
+    PAGE_LOADED,
+    IMAGE_GENERATED,
+    FILE_DOWNLOADED,
+    MEDIA_PLAYING,
+    APP_FOREGROUND
+}
+
+/**
+ * Retry strategy for atomic steps (Section 8).
+ */
+data class StepRetryStrategy(
+    val maxRetries: Int = 2,
+    val retryDelayMs: Long = 500L,
+    val currentRetries: Int = 0,
+    val alternativeStrategy: String? = null,
+    val allowReplanOnFailure: Boolean = true
+)
+
+/**
+ * Waiting and timing strategy for operations that take time (Section 7).
+ */
+data class StepWaitingStrategy(
+    val timeoutMs: Long = 10000L,
+    val pollIntervalMs: Long = 500L,
+    val waitCondition: WaitConditionType = WaitConditionType.NONE,
+    val customConditionDesc: String = "",
+    val notifyUserIfSlowAfterMs: Long = 8000L
+)
 
 /**
  * Semantic element selector categories to target controls without hardcoded coordinates.
@@ -70,6 +134,13 @@ enum class SelectorType {
     EXACT_TEXT,
     SEMANTIC_HINT,
     SEARCH_FIELD,
+    SEARCH_BUTTON,
+    SEND_BUTTON,
+    DOWNLOAD_BUTTON,
+    ATTACHMENT_BUTTON,
+    MENU_BUTTON,
+    CONFIRMATION_BUTTON,
+    FORM_FIELD,
     ORDINAL_RESULT,    // First result (0), Second (1), Third (2), Last (-1)
     PLAY_BUTTON,
     REELS_CONTROL,
@@ -92,7 +163,20 @@ enum class TargetCategory {
 }
 
 /**
- * Individual atomic action step in a multi-step task plan.
+ * Individual atomic action step in a multi-step task plan (Section 2).
+ *
+ * Each step contains:
+ * - Step ID
+ * - Action description
+ * - Target application
+ * - Expected screen or UI state
+ * - Required input
+ * - Expected output
+ * - Dependency on previous steps
+ * - Execution status
+ * - Success verification condition
+ * - Retry strategy
+ * - Timeout or waiting strategy
  */
 data class TaskStep(
     val id: Int,
@@ -105,8 +189,27 @@ data class TaskStep(
     val ordinalIndex: Int = 0, // 0 = 1st, 1 = 2nd, 2 = 3rd, -1 = last
     val spokenAnnouncement: String = "",
     val expectedOutcome: String = "",
-    val timeoutMs: Long = 2000L
-)
+    val timeoutMs: Long = 2000L,
+    // Enhanced architectural attributes for Universal Task Decomposition (Section 2 & 3)
+    val stepId: String = "step_$id",
+    val actionDescription: String = spokenAnnouncement.ifBlank { "$actionType on $targetAppOrUrl" },
+    val targetApplication: String = targetAppOrUrl,
+    val expectedScreenOrUiState: String = expectedOutcome,
+    val requiredInput: String = param,
+    val expectedOutput: String = expectedOutcome,
+    val dependsOnStepIds: List<String> = emptyList(),
+    var status: StepStatus = StepStatus.PENDING,
+    val successVerificationCondition: String = expectedOutcome.ifBlank { "Action $actionType completed" },
+    val retryStrategy: StepRetryStrategy = StepRetryStrategy(),
+    val waitingStrategy: StepWaitingStrategy = StepWaitingStrategy(timeoutMs = timeoutMs),
+    val requiresUserConfirmation: Boolean = false,
+    val isConsequentialOrSensitive: Boolean = false
+) {
+    fun isExecutable(completedStepIds: Set<String>): Boolean {
+        if (status == StepStatus.COMPLETED || status == StepStatus.CANCELLED || status == StepStatus.FAILED) return false
+        return dependsOnStepIds.all { it in completedStepIds }
+    }
+}
 
 /**
  * High-level universal intent model.
@@ -123,6 +226,19 @@ data class UniversalIntent(
 )
 
 /**
+ * Real-time state container for active plan execution (Section 9 & 10).
+ */
+data class TaskPlanExecutionState(
+    var isPaused: Boolean = false,
+    var isCancelled: Boolean = false,
+    var currentStepId: String? = null,
+    val completedStepIds: MutableSet<String> = mutableSetOf(),
+    val skippedStepIds: MutableSet<String> = mutableSetOf(),
+    val failedStepIds: MutableSet<String> = mutableSetOf(),
+    val stepOutputs: MutableMap<String, String> = mutableMapOf()
+)
+
+/**
  * Multi-step task plan deconstructed from natural user commands.
  */
 data class TaskPlan(
@@ -133,8 +249,15 @@ data class TaskPlan(
     val explanation: String = "",
     val universalIntents: List<UniversalIntent> = emptyList(),
     val appliedMemory: com.example.data.MemoryEntity? = null,
-    val rememberedWorkflowUsed: Boolean = false
-)
+    val rememberedWorkflowUsed: Boolean = false,
+    val planId: String = java.util.UUID.randomUUID().toString(),
+    val finalExpectedOutcome: String = "",
+    val executionState: TaskPlanExecutionState = TaskPlanExecutionState()
+) {
+    fun getPendingSteps(): List<TaskStep> = steps.filter { it.status == StepStatus.PENDING || it.status == StepStatus.READY }
+    fun getCompletedSteps(): List<TaskStep> = steps.filter { it.status == StepStatus.COMPLETED }
+    fun getFailedSteps(): List<TaskStep> = steps.filter { it.status == StepStatus.FAILED }
+}
 
 /**
  * Verified step execution result.
@@ -149,7 +272,10 @@ data class StepExecutionResult(
     val candidateApps: List<InstalledApp> = emptyList(),
     val diagnostic: AppLaunchDiagnostic? = null,
     val screenSummary: String? = null,
-    val detectedElements: List<String> = emptyList()
+    val detectedElements: List<String> = emptyList(),
+    val stepStatus: StepStatus = if (success) StepStatus.COMPLETED else StepStatus.FAILED,
+    val generatedData: String? = null,
+    val needsUserConfirmation: Boolean = false
 )
 
 /**
@@ -164,7 +290,8 @@ data class TaskExecutionOutcome(
     val diagnostics: List<AppLaunchDiagnostic> = emptyList(),
     val candidateApps: List<InstalledApp> = emptyList(),
     val isAmbiguous: Boolean = false,
-    val debugLogs: List<AutomationDebugLog> = emptyList()
+    val debugLogs: List<AutomationDebugLog> = emptyList(),
+    val stepResults: List<StepExecutionResult> = emptyList()
 )
 
 /**
@@ -193,4 +320,3 @@ data class AutomationDebugLog(
     val apiResponseStatus: String = "200 OK",
     val retriesCount: Int = 0
 )
-

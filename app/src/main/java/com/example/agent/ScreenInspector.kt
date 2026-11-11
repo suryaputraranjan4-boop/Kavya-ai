@@ -123,9 +123,38 @@ class ScreenInspector {
             SelectorType.CONTACT_ITEM -> {
                 findContactNode(root, step.param)
             }
+            SelectorType.SEARCH_BUTTON -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                UIElementResolver.findSearchButton(fresh)?.node ?: findNodeByTextOrDesc(root, "search")
+            }
+            SelectorType.SEND_BUTTON -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                UIElementResolver.findSendButton(fresh)?.node ?: findNodeByTextOrDesc(root, "send")
+            }
+            SelectorType.DOWNLOAD_BUTTON -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                UIElementResolver.findDownloadButton(fresh)?.node ?: findNodeByTextOrDesc(root, "download")
+            }
+            SelectorType.ATTACHMENT_BUTTON -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                UIElementResolver.findAttachmentButton(fresh)?.node ?: findNodeByTextOrDesc(root, "attach")
+            }
+            SelectorType.MENU_BUTTON -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                UIElementResolver.findMenuOrNavigation(fresh)?.node ?: findNodeByTextOrDesc(root, "more options")
+            }
+            SelectorType.CONFIRMATION_BUTTON -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                UIElementResolver.findConfirmationButton(fresh)?.node ?: findNodeByTextOrDesc(root, "ok")
+            }
+            SelectorType.FORM_FIELD -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                UIElementResolver.findFormField(fresh, step.param)?.node ?: findTargetNode(step.param, preferredType = "EDITABLE")
+            }
             SelectorType.EXACT_TEXT, SelectorType.SEMANTIC_HINT, SelectorType.ANY_CLICKABLE, SelectorType.GENERIC -> {
                 findTargetNode(step.param, preferredType = null)
             }
+            else -> findTargetNode(step.param, preferredType = null)
         }
 
         logStep("Target node for ${step.param}: ${if (targetNode != null) "FOUND (${targetNode.className})" else "NOT FOUND"}")

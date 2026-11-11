@@ -73,6 +73,13 @@ object JarvisGuidanceEngine {
                 instructionText = spokenPrompt,
                 confidence = resolved.confidence
             )
+            // Propagate to JarvisOverlayController for screen overlay
+            JarvisOverlayController.highlightElement(
+                bounds = resolved.bounds,
+                label = resolved.targetText,
+                clickPoint = resolved.clickPoint,
+                prompt = spokenPrompt
+            )
             Log.i(TAG, "Highlighted '${resolved.targetText}' at bounds: ${resolved.bounds}")
             return true
         }
@@ -93,6 +100,7 @@ object JarvisGuidanceEngine {
      */
     fun clearGuidance() {
         _guidanceState.value = JarvisGuidanceState(isActive = false)
+        JarvisOverlayController.clearAllVisuals()
     }
 
     /**
@@ -119,10 +127,62 @@ object JarvisGuidanceEngine {
             confidenceScore = confidence
         )
         _activeExplanation.value = card
+
+        // Also compile into rich VisualCardData for the JARVIS Overlay system
+        val overlayCard = VisualCardData(
+            id = card.id,
+            type = if (comparisons.isNotEmpty()) VisualCardType.COMPARISON else if (details.isNotBlank()) VisualCardType.DETAIL_TYPEWRITER else VisualCardType.SUMMARY,
+            title = title,
+            summary = summary,
+            bullets = bulletPoints,
+            detailText = details,
+            comparisonItems = comparisons.map { ComparisonItem(it.first, it.second, "", "") },
+            citations = citations,
+            confidence = confidence
+        )
+        val plan = JarvisVisualPlan(
+            userQuery = title,
+            mode = JarvisMode.EXPLAINS_ANYTHING,
+            title = title,
+            cards = listOf(overlayCard)
+        )
+        JarvisOverlayController.presentVisualPlan(plan)
+
         return card
+    }
+
+    /**
+     * Universal entry point: executes a user's natural language request through JARVIS Intelligence.
+     */
+    fun executeJarvisQuery(query: String) {
+        val plan = JarvisIntelligencePlanner.createPlan(query)
+        JarvisOverlayController.presentVisualPlan(plan)
+        if (plan.cards.isNotEmpty()) {
+            val firstCard = plan.cards.first()
+            _activeExplanation.value = VisualExplanationCard(
+                id = firstCard.id,
+                title = firstCard.title,
+                oneLineSummary = firstCard.summary,
+                bulletChips = firstCard.bullets,
+                detailParagraph = firstCard.detailText,
+                confidenceScore = firstCard.confidence
+            )
+        }
+        if (plan.instructions.isNotEmpty()) {
+            val firstInst = plan.instructions.first()
+            _guidanceState.value = JarvisGuidanceState(
+                isActive = true,
+                targetQuery = firstInst.label,
+                targetLabel = firstInst.label,
+                targetBounds = firstInst.bounds,
+                clickPoint = firstInst.clickPoint,
+                instructionText = firstInst.text
+            )
+        }
     }
 
     fun dismissExplanation() {
         _activeExplanation.value = null
+        JarvisOverlayController.clearAllVisuals()
     }
 }
