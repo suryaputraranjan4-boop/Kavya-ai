@@ -488,13 +488,16 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                         Spacer(modifier = Modifier.width(14.dp))
                         Column {
                             Text(
-                                "Indic Tiny TTS Hindi Engine",
+                                if (activeEngineState.value == com.example.ai.tts.VoiceEngine.INDIC_TINY_TTS) "Indic Tiny TTS Hindi Engine" else "Chatterbox Multilingual Hindi Engine",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                "Primary offline 24 kHz Hindi female voice engine. Fast ONNX CPU inference with lightweight model weights.",
+                                if (activeEngineState.value == com.example.ai.tts.VoiceEngine.INDIC_TINY_TTS)
+                                    "Offline 24 kHz Hindi female voice engine with lightweight ONNX CPU inference."
+                                else
+                                    "Expressive multilingual voice engine. Model assets and backend settings are shown below.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
@@ -589,6 +592,8 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                 }
             }
 
+
+            if (activeEngineState.value == com.example.ai.tts.VoiceEngine.INDIC_TINY_TTS) {
             // SECTION 2: INDIC TINY TTS HINDI MODEL MANAGEMENT (HUGGING FACE)
             item {
                 Text("Indic Tiny TTS Hindi Model (Hugging Face)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
@@ -768,7 +773,143 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                     }
                 }
             }
+            } else {
+                // Chatterbox model files are shown only while Chatterbox is selected.
+                item {
+                    Text("Chatterbox Multilingual Hindi Model Files", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "Official Chatterbox model assets • approximately 3.2 GB total",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+                            Text(
+                                "Download individual files or all files. Downloads are stored in Kavya's app storage and can be paused, resumed, or deleted.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                            Text(
+                                "Important: this Android build currently sends Chatterbox speech requests to the configured inference backend. Downloading these weights to the phone does not enable offline Android inference by itself.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = AccentYellow
+                            )
+                            Button(
+                                onClick = { chatterboxModelManager.downloadAll() },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Download All Chatterbox Files")
+                            }
+                            HorizontalDivider(color = OutlineVariant)
+                            com.example.ai.ChatterboxModelManager.OFFICIAL_SPECS.forEach { spec ->
+                                val fileState = chatterboxFileMap[spec.id]
+                                    ?: com.example.ai.FileDownloadProgress(
+                                        fileId = spec.id,
+                                        fileName = spec.fileName,
+                                        totalBytes = spec.approximateSizeBytes
+                                    )
+                                val totalBytes = fileState.totalBytes.takeIf { it > 0L } ?: spec.approximateSizeBytes
+                                val progressFraction = if (totalBytes > 0L) {
+                                    (fileState.bytesDownloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                                } else 0f
+                                val downloadedMb = fileState.bytesDownloaded / (1024.0 * 1024.0)
+                                val totalMb = totalBytes / (1024.0 * 1024.0)
+                                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                spec.fileName,
+                                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                                color = TextPrimary
+                                            )
+                                            Text(
+                                                "${"%.1f".format(downloadedMb)} / ${"%.1f".format(totalMb)} MB • ${if (spec.isMandatory) "Required" else "Optional"}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = TextSecondary
+                                            )
+                                        }
+                                        StatusBadge(
+                                            text = when (fileState.status) {
+                                                com.example.ai.DownloadItemStatus.DOWNLOADING -> "Downloading"
+                                                com.example.ai.DownloadItemStatus.PAUSED -> "Paused"
+                                                com.example.ai.DownloadItemStatus.VERIFYING -> "Verifying"
+                                                com.example.ai.DownloadItemStatus.COMPLETED -> "Installed"
+                                                com.example.ai.DownloadItemStatus.FAILED -> "Failed"
+                                                else -> "Not downloaded"
+                                            },
+                                            isActive = fileState.status == com.example.ai.DownloadItemStatus.COMPLETED
+                                        )
+                                    }
+                                    if (fileState.status == com.example.ai.DownloadItemStatus.DOWNLOADING ||
+                                        fileState.status == com.example.ai.DownloadItemStatus.PAUSED
+                                    ) {
+                                        LinearProgressIndicator(
+                                            progress = { progressFraction },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            color = PrimaryLight,
+                                            trackColor = SurfaceElevated
+                                        )
+                                    }
+                                    fileState.errorMessage?.let { message ->
+                                        Text(message, style = MaterialTheme.typography.labelSmall, color = Error)
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End
+                                    ) {
+                                        when (fileState.status) {
+                                            com.example.ai.DownloadItemStatus.DOWNLOADING -> {
+                                                OutlinedButton(onClick = { chatterboxModelManager.pauseDownload(spec.id) }) {
+                                                    Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Pause")
+                                                }
+                                            }
+                                            com.example.ai.DownloadItemStatus.COMPLETED -> {
+                                                OutlinedButton(onClick = { chatterboxModelManager.deleteFile(spec.id) }) {
+                                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(15.dp), tint = Error)
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Delete", color = Error)
+                                                }
+                                            }
+                                            else -> {
+                                                Button(
+                                                    onClick = { chatterboxModelManager.startDownload(spec) },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                                                ) {
+                                                    Icon(
+                                                        if (fileState.bytesDownloaded > 0L) Icons.Default.PlayArrow else Icons.Default.Download,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(15.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(if (fileState.bytesDownloaded > 0L) "Resume" else "Download")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if (spec != com.example.ai.ChatterboxModelManager.OFFICIAL_SPECS.last()) {
+                                    HorizontalDivider(color = OutlineVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
+            if (activeEngineState.value == com.example.ai.tts.VoiceEngine.CHATTERBOX) {
             // SECTION 3: CHATTERBOX BACKEND / INFERENCE RUNNER
             item {
                 Text("Chatterbox Inference Runner & GPU Backend", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
@@ -855,6 +996,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                         )
                     }
                 }
+            }
             }
 
             // SECTION 4: VOICE PROFILES & ZERO-SHOT CLONING
