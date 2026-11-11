@@ -488,13 +488,16 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                         Spacer(modifier = Modifier.width(14.dp))
                         Column {
                             Text(
-                                "Indic Tiny TTS Hindi Engine",
+                                if (activeEngineState.value == com.example.ai.tts.VoiceEngine.INDIC_TINY_TTS) "Indic Tiny TTS Hindi Engine" else "Chatterbox Multilingual Hindi Engine",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                "Primary offline 24 kHz Hindi female voice engine. Fast ONNX CPU inference with lightweight model weights.",
+                                if (activeEngineState.value == com.example.ai.tts.VoiceEngine.INDIC_TINY_TTS)
+                                    "Offline 24 kHz Hindi female voice engine with lightweight ONNX CPU inference."
+                                else
+                                    "Expressive multilingual voice engine. Model assets and backend settings are shown below.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
