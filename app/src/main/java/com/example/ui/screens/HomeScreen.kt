@@ -364,7 +364,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isOfflineMode) "OFFLINE • QWEN3-4B" else if (canStart) "SYSTEM READY" else "SETUP REQUIRED",
+                            text = if (isOfflineMode) "OFFLINE • GEMMA 4 E4B" else if (canStart) "SYSTEM READY" else "SETUP REQUIRED",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 9.sp,
                                 letterSpacing = 1.5.sp,

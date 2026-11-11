@@ -591,7 +591,7 @@ object AppPreferences {
         }
         val targetModel = model.ifBlank { "distilbert-base-uncased" }
         try {
-            val url = "https://api-inference.huggingface.co/models/$targetModel"
+            val url = "https://router.huggingface.co/hf-inference/models/$targetModel"
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val requestBody = okhttp3.RequestBody.Companion.create(mediaType, "{\"inputs\": \"Hello world test\"}")
             val request = okhttp3.Request.Builder()

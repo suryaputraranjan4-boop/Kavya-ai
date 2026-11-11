@@ -19,7 +19,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun DebugDashboardScreen() {
+fun DebugDashboardScreen(onBack: (() -> Unit)? = null) {
     var tick by remember { mutableIntStateOf(0) }
     
     LaunchedEffect(Unit) {
@@ -41,7 +41,18 @@ fun DebugDashboardScreen() {
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("Internal Debug Dashboard", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (onBack != null) {
+                TextButton(onClick = onBack) {
+                    Text("← Back", color = Color(0xFF4FC3F7), fontWeight = FontWeight.SemiBold)
+                }
+            }
+            Text("Internal Debug Dashboard", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
         
         val globalState by com.example.state.KavyaStateManager.state.collectAsState()
         val context = androidx.compose.ui.platform.LocalContext.current
@@ -104,7 +115,7 @@ private fun DashboardCard(title: String, content: @Composable ColumnScope.() -> 
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(title, color = Color(0xFF4FC3F7), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Divider(color = Color.DarkGray, modifier = Modifier.padding(vertical = 4.dp))
+            HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = 4.dp))
             content()
         }
     }

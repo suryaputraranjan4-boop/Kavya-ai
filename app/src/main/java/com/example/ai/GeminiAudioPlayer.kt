@@ -108,6 +108,13 @@ class GeminiAudioPlayer(
     }
 
     @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile private var audioTrackSampleRate: Int = 0
+    private val pcmExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val pcmStopRunnable = Runnable {
+        if (audioQueue.isEmpty() && !isProcessingQueue) {
+            notifySpeaking(false)
+        }
+    }
 
     fun playWav(wavBytes: ByteArray, text: String? = null, enqueue: Boolean = false, onComplete: (() -> Unit)? = null) {
         playAudioBytes(wavBytes, text, enqueue, onComplete)
@@ -120,6 +127,46 @@ class GeminiAudioPlayer(
         }
         // Use low-latency streaming AudioTrack for live PCM chunks
         playPcmStreaming(pcmBytes, sampleRate, text, enqueue, onComplete)
+    }
+
+    @Synchronized
+    private fun getOrCreateAudioTrack(sampleRate: Int, minChunkSize: Int): AudioTrack {
+        val existing = audioTrack
+        if (existing != null && existing.state == AudioTrack.STATE_INITIALIZED && audioTrackSampleRate == sampleRate) {
+            if (existing.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                existing.play()
+            }
+            return existing
+        }
+        try {
+            existing?.release()
+        } catch (_: Exception) {}
+
+        val minBufSize = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        ).coerceAtLeast(4096)
+        val bufSize = maxOf(minBufSize * 2, minChunkSize)
+
+        val track = AudioTrack(
+            AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .build(),
+            AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build(),
+            bufSize,
+            AudioTrack.MODE_STREAM,
+            android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
+        )
+        track.play()
+        audioTrack = track
+        audioTrackSampleRate = sampleRate
+        return track
     }
 
     @Synchronized
@@ -136,48 +183,23 @@ class GeminiAudioPlayer(
         text?.let { notifyCaption(it) }
 
         val currentGen = playbackGeneration
-        Thread {
+        pcmExecutor.execute {
+            if (currentGen != playbackGeneration) return@execute
             try {
+                mainHandler.removeCallbacks(pcmStopRunnable)
                 notifySpeaking(true)
-                val minBufSize = AudioTrack.getMinBufferSize(
-                    sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                )
-                val bufSize = maxOf(minBufSize, pcmBytes.size)
-
-                val track = AudioTrack(
-                    AudioAttributes.Builder()
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .build(),
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build(),
-                    bufSize,
-                    AudioTrack.MODE_STREAM,
-                    android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
-                )
-
-                audioTrack = track
-                track.play()
+                val track = getOrCreateAudioTrack(sampleRate, pcmBytes.size)
                 track.write(pcmBytes, 0, pcmBytes.size)
-
-                // Wait for playback to complete if generation hasn't changed
-                while (track.playState == AudioTrack.PLAYSTATE_PLAYING && currentGen == playbackGeneration) {
-                    Thread.sleep(20)
-                }
+                val durationMs = ((pcmBytes.size.toLong() * 1000L) / (sampleRate * 2)).coerceAtLeast(60L)
+                mainHandler.postDelayed(pcmStopRunnable, durationMs + 150L)
             } catch (e: Exception) {
                 Log.e(TAG, "AudioTrack streaming error", e)
             } finally {
                 if (currentGen == playbackGeneration) {
-                    notifySpeaking(false)
                     onComplete?.invoke()
                 }
             }
-        }.start()
+        }
     }
 
     private fun createWavHeader(pcmLength: Int, sampleRate: Int): ByteArray {

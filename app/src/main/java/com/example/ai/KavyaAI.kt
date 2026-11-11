@@ -335,7 +335,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         val model = com.example.utils.AppPreferences.getHuggingFaceModel(ctx).ifBlank { "distilbert-base-uncased" }
         val startTime = System.currentTimeMillis()
         return@withContext try {
-            val url = "https://api-inference.huggingface.co/models/$model"
+            val url = "https://router.huggingface.co/hf-inference/models/$model"
             val jsonInput = org.json.JSONObject().apply { put("inputs", prompt) }
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val body = jsonInput.toString().toRequestBody(mediaType)
@@ -996,17 +996,22 @@ class KavyaAI(private val context: android.content.Context? = null) {
         )
         val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
         if (apiKey.isBlank()) return@withContext ""
-        try {
-            val response = RetrofitClient.service.generateContent(
-                model = GeminiModelRegistry.DEFAULT_AGENT_MODEL,
-                apiKey = apiKey,
-                request = request
-            )
-            response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
-        } catch (e: Exception) {
-            Log.e("KavyaAI", "Error transcribing audio: ${e.message}")
-            ""
+        for (model in getAvailableModels()) {
+            try {
+                val response = RetrofitClient.service.generateContent(
+                    model = model,
+                    apiKey = apiKey,
+                    request = request
+                )
+                val transcript = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
+                if (!transcript.isNullOrBlank()) {
+                    return@withContext transcript
+                }
+            } catch (e: Exception) {
+                Log.w("KavyaAI", "Error transcribing audio on $model: ${e.message}")
+            }
         }
+        ""
     }
 
     private fun createWavBytes(pcmData: ByteArray, sampleRate: Int = 16000): ByteArray {

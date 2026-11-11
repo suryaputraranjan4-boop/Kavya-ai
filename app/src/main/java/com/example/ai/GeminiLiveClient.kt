@@ -157,25 +157,43 @@ class GeminiLiveClient(
         okHttpClient = null
     }
 
+    @Volatile private var lastScreenFrameSentAt = 0L
+
     private fun sendAudioFrame(pcmData: ByteArray) {
         if (!isConnected.get() || pcmData.isEmpty()) return
         val currentWs = webSocket ?: return
 
         try {
             val base64Pcm = Base64.encodeToString(pcmData, Base64.NO_WRAP)
+            val mediaChunks = org.json.JSONArray().apply {
+                put(JSONObject().apply {
+                    put("mimeType", "audio/pcm;rate=16000")
+                    put("data", base64Pcm)
+                })
+                // Attach live screen JPEG frame when ScreenShareManager is active and frame is fresh
+                val now = System.currentTimeMillis()
+                if (now - lastScreenFrameSentAt >= 1500L &&
+                    com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.Active
+                ) {
+                    val jpegBytes = com.example.visual.VisionPipeline.getCompressedJpegFrame()
+                    if (jpegBytes != null && jpegBytes.isNotEmpty()) {
+                        lastScreenFrameSentAt = now
+                        val base64Jpeg = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+                        put(JSONObject().apply {
+                            put("mimeType", "image/jpeg")
+                            put("data", base64Jpeg)
+                        })
+                    }
+                }
+            }
             val realtimeInputJson = JSONObject().apply {
                 put("realtimeInput", JSONObject().apply {
-                    put("mediaChunks", org.json.JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("mimeType", "audio/pcm;rate=16000")
-                            put("data", base64Pcm)
-                        })
-                    })
+                    put("mediaChunks", mediaChunks)
                 })
             }
             currentWs.send(realtimeInputJson.toString())
         } catch (e: Exception) {
-            Log.e(TAG, "Error sending audio frame to Gemini Live WebSocket", e)
+            Log.e(TAG, "Error sending audio/screen frame to Gemini Live WebSocket", e)
         }
     }
 

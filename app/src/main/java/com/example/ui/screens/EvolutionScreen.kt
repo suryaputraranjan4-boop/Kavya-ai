@@ -304,8 +304,8 @@ fun EvolutionHistoryTab(historyList: List<com.example.evolution.EvolutionHistory
 
 @Composable
 fun EvolutionSettingsTab(settings: com.example.evolution.EvolutionSettings, viewModel: EvolutionViewModel) {
-    var automaticInstallation by remember { mutableStateOf(settings.automaticInstallation) }
-    var humanApproval by remember { mutableStateOf(settings.humanApprovalForMajorChanges) }
+    var automaticInstallation by remember(settings.automaticInstallation) { mutableStateOf(settings.automaticInstallation) }
+    var humanApproval by remember(settings.humanApprovalForMajorChanges) { mutableStateOf(settings.humanApprovalForMajorChanges) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -322,12 +322,24 @@ fun EvolutionSettingsTab(settings: com.example.evolution.EvolutionSettings, view
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("Automatic Safe Installation", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-                        Switch(checked = automaticInstallation, onCheckedChange = { automaticInstallation = it })
+                        Switch(
+                            checked = automaticInstallation,
+                            onCheckedChange = {
+                                automaticInstallation = it
+                                viewModel.updateSettings(settings.copy(automaticInstallation = it))
+                            }
+                        )
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("Human Approval for Major Changes", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-                        Switch(checked = humanApproval, onCheckedChange = { humanApproval = it })
+                        Switch(
+                            checked = humanApproval,
+                            onCheckedChange = {
+                                humanApproval = it
+                                viewModel.updateSettings(settings.copy(humanApprovalForMajorChanges = it))
+                            }
+                        )
                     }
                 }
             }

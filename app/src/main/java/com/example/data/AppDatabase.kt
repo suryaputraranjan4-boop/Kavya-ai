@@ -36,13 +36,34 @@ abstract class AppDatabase : RoomDatabase() {
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("CREATE TABLE IF NOT EXISTS memories (id TEXT NOT NULL PRIMARY KEY, content TEXT NOT NULL, category TEXT NOT NULL, timestamp INTEGER NOT NULL)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS memories (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`key` TEXT NOT NULL, " +
+                        "content TEXT NOT NULL, " +
+                        "category TEXT NOT NULL, " +
+                        "importance INTEGER NOT NULL, " +
+                        "createdAt INTEGER NOT NULL, " +
+                        "lastUsedAt INTEGER NOT NULL, " +
+                        "sourceConversation TEXT NOT NULL, " +
+                        "confidence REAL NOT NULL, " +
+                        "userConfirmed INTEGER NOT NULL)"
+                )
             }
         }
 
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("CREATE TABLE IF NOT EXISTS automation_failures (id TEXT NOT NULL PRIMARY KEY, timestamp INTEGER NOT NULL, appPackage TEXT NOT NULL, targetText TEXT NOT NULL, actionType TEXT NOT NULL, failureReason TEXT NOT NULL, screenStateDump TEXT NOT NULL, resolved INTEGER NOT NULL)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS automation_failures (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "targetApp TEXT NOT NULL, " +
+                        "targetAction TEXT NOT NULL, " +
+                        "failureType TEXT NOT NULL, " +
+                        "screenSummary TEXT NOT NULL, " +
+                        "successfulAlternative TEXT, " +
+                        "timestamp INTEGER NOT NULL)"
+                )
             }
         }
 

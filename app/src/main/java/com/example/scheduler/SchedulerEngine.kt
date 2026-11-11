@@ -114,6 +114,14 @@ class SchedulerEngine(
             if (calendar.timeInMillis <= now) {
                 calendar.add(Calendar.DAY_OF_YEAR, 1)
             }
+        } else if (scheduleType == "WEEKDAYS") {
+            while (
+                calendar.timeInMillis <= now ||
+                calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY ||
+                calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY
+            ) {
+                calendar.add(Calendar.DAY_OF_YEAR, 1)
+            }
         } else if (scheduleType == "WEEKLY" && dayOfWeek > 0) {
             calendar.set(Calendar.DAY_OF_WEEK, dayOfWeek)
             if (calendar.timeInMillis <= now) {

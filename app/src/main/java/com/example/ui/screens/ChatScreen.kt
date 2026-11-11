@@ -79,7 +79,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
         if (bitmap != null) {
-            viewModel.sendMessage("[Photo Attachment: ${bitmap.width}x${bitmap.height} px] I have captured this photo with my camera. Please inspect and analyze it.")
+            viewModel.analyzeImage(bitmap, "Analyze this camera photo and describe its contents.")
         }
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
@@ -110,11 +110,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                     pdfDocument.writeTo(out)
                 }
                 pdfDocument.close()
-                Toast.makeText(
-                    context,
-                    "Scan created ($fileName), but PDF bytes cannot be attached to chat yet. The model did not receive this file.",
-                    Toast.LENGTH_LONG
-                ).show()
+                viewModel.analyzePdf(file, fileName)
             } catch (e: Exception) {
                 viewModel.sendMessage("PDF scan failed: ${e.localizedMessage}")
             }

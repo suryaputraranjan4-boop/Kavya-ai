@@ -32,19 +32,21 @@ class EvolutionViewModel(application: Application) : AndroidViewModel(applicatio
     private val _allUpgrades = MutableStateFlow<List<EvolutionUpgradeEntity>>(emptyList())
     val allUpgrades: StateFlow<List<EvolutionUpgradeEntity>> = _allUpgrades.asStateFlow()
 
+    private val prefs = application.getSharedPreferences("kavya_evolution_prefs", android.content.Context.MODE_PRIVATE)
+
     private val _evolutionSettings = MutableStateFlow(
         EvolutionSettings(
-            enabled = true,
-            researchTime = "02:00 AM",
-            timezone = "User Timezone",
-            frequency = "Every Day",
-            maxProjectsPerDay = 10,
-            automaticResearch = true,
-            automaticTesting = true,
-            automaticInstallation = false,
-            automaticSafeUpgrade = true,
-            humanApprovalForMajorChanges = true,
-            securityLevel = "Maximum"
+            enabled = prefs.getBoolean("enabled", true),
+            researchTime = prefs.getString("researchTime", "02:00 AM") ?: "02:00 AM",
+            timezone = prefs.getString("timezone", "User Timezone") ?: "User Timezone",
+            frequency = prefs.getString("frequency", "Every Day") ?: "Every Day",
+            maxProjectsPerDay = prefs.getInt("maxProjectsPerDay", 10),
+            automaticResearch = prefs.getBoolean("automaticResearch", true),
+            automaticTesting = prefs.getBoolean("automaticTesting", true),
+            automaticInstallation = prefs.getBoolean("automaticInstallation", false),
+            automaticSafeUpgrade = prefs.getBoolean("automaticSafeUpgrade", true),
+            humanApprovalForMajorChanges = prefs.getBoolean("humanApprovalForMajorChanges", true),
+            securityLevel = prefs.getString("securityLevel", "Maximum") ?: "Maximum"
         )
     )
     val evolutionSettings: StateFlow<EvolutionSettings> = _evolutionSettings.asStateFlow()
@@ -153,5 +155,18 @@ class EvolutionViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun updateSettings(newSettings: EvolutionSettings) {
         _evolutionSettings.value = newSettings
+        prefs.edit()
+            .putBoolean("enabled", newSettings.enabled)
+            .putString("researchTime", newSettings.researchTime)
+            .putString("timezone", newSettings.timezone)
+            .putString("frequency", newSettings.frequency)
+            .putInt("maxProjectsPerDay", newSettings.maxProjectsPerDay)
+            .putBoolean("automaticResearch", newSettings.automaticResearch)
+            .putBoolean("automaticTesting", newSettings.automaticTesting)
+            .putBoolean("automaticInstallation", newSettings.automaticInstallation)
+            .putBoolean("automaticSafeUpgrade", newSettings.automaticSafeUpgrade)
+            .putBoolean("humanApprovalForMajorChanges", newSettings.humanApprovalForMajorChanges)
+            .putString("securityLevel", newSettings.securityLevel)
+            .apply()
     }
 }

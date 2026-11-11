@@ -150,13 +150,12 @@ class AlarmReceiver : BroadcastReceiver() {
             if (!isRecurring) {
                 taskDao.toggleScheduledTaskActive(schedule.id, false)
             } else {
-                scheduler.createSchedule(
-                    title = schedule.title,
-                    promptOrAction = schedule.promptOrAction,
-                    scheduleType = schedule.scheduleType,
-                    hour = schedule.hour,
-                    minute = schedule.minute,
-                    dayOfWeek = schedule.dayOfWeek
+                scheduler.scheduleExactAlarm(
+                    schedule.copy(
+                        lastRunTimestamp = now,
+                        nextRunTimestamp = nextRun,
+                        isActive = true
+                    )
                 )
             }
         }
