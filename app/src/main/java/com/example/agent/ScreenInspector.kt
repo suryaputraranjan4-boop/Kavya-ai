@@ -44,12 +44,16 @@ class ScreenInspector {
 
     fun getScreenContextString(): String {
         val service = KavyaAccessibilityService.instance ?: return "Accessibility Service not connected."
-        return service.getScreenContext()
+        // Screen text is untrusted input: neutralize instruction-like content before it
+        // reaches task planning or model context.
+        return com.example.visual.PromptInjectionGuard.sanitizeScreenText(service.getScreenContext())
     }
 
     fun getVisibleElementSummaries(): List<String> {
         val service = KavyaAccessibilityService.instance ?: return emptyList()
-        return service.getVisibleElementSummaries()
+        return service.getVisibleElementSummaries().map {
+            com.example.visual.PromptInjectionGuard.sanitizeScreenText(it)
+        }
     }
 
     /**
@@ -157,8 +161,45 @@ class ScreenInspector {
             else -> findTargetNode(step.param, preferredType = null)
         }
 
-        logStep("Target node for ${step.param}: ${if (targetNode != null) "FOUND (${targetNode.className})" else "NOT FOUND"}")
-        return targetNode
+        // Gate the two most error-prone input/action targets through the live
+        // multi-signal candidate verifier. Never fall back to an unverified field.
+        val verifiedTargetNode = when (step.selectorType) {
+            SelectorType.SEARCH_FIELD, SelectorType.URL_BAR -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                val candidates = fresh.unifiedElements.filter {
+                    it.isEditable || it.inferredInputRole == com.example.visual.InputFieldRole.SEARCH_FIELD ||
+                        it.inferredInputRole == com.example.visual.InputFieldRole.BROWSER_ADDRESS_BAR
+                }
+                val verdict = com.example.visual.PreActionVerifier.verifyCandidate(
+                    intentKind = com.example.visual.PreActionVerifier.IntendedActionKind.SEARCH_INPUT,
+                    targetQuery = step.param,
+                    candidates = candidates
+                )
+                if (verdict.approved) verdict.selectedCandidate?.analyzedNode?.node else {
+                    logStep("Pre-action rejected search target: ${verdict.rejectionReason}")
+                    null
+                }
+            }
+            SelectorType.SEND_BUTTON -> {
+                val fresh = freshRecognizer.inspectFreshScreenNow()
+                val candidates = fresh.unifiedElements.filter {
+                    it.iconRole == com.example.visual.IconRole.SEND_ICON
+                }
+                val verdict = com.example.visual.PreActionVerifier.verifyCandidate(
+                    intentKind = com.example.visual.PreActionVerifier.IntendedActionKind.SEND_MESSAGE,
+                    targetQuery = step.param,
+                    candidates = candidates
+                )
+                if (verdict.approved) verdict.selectedCandidate?.analyzedNode?.node else {
+                    logStep("Pre-action rejected send target: ${verdict.rejectionReason}")
+                    null
+                }
+            }
+            else -> targetNode
+        }
+
+        logStep("Target node for ${step.param}: ${if (verifiedTargetNode != null) "FOUND (${verifiedTargetNode.className})" else "NOT FOUND / REJECTED"}")
+        return verifiedTargetNode
     }
 
     /**
