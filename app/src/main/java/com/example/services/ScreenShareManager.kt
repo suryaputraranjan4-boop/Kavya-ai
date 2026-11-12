@@ -192,6 +192,7 @@ object ScreenShareManager {
      * but before the first frame arrives.
      */
     fun onServiceStarted(sessionId: String) {
+        if (sessionId.isBlank() || sessionId != currentSessionId) return
         if (_state.value is ScreenShareState.StartingService) {
             updateState(
                 ScreenShareState.WaitingForFirstFrame(
@@ -206,8 +207,8 @@ object ScreenShareManager {
     /**
      * Called when MediaProjection.Callback.onCapturedContentResize(width, height) triggers.
      */
-    fun onCapturedContentResized(width: Int, height: Int) {
-        if (width <= 0 || height <= 0) return
+    fun onCapturedContentResized(width: Int, height: Int, sessionId: String = currentSessionId) {
+        if (sessionId.isBlank() || sessionId != currentSessionId || width <= 0 || height <= 0) return
         activeResolution = Pair(width, height)
         com.example.visual.ScreenAnnotationManager.coordinateMapper.updateCapturedFrameGeometry(width, height)
         com.example.visual.VisionPipeline.invalidateStaleFrameOnResize(width, height)
@@ -220,7 +221,8 @@ object ScreenShareManager {
     /**
      * Called when MediaProjection.Callback.onCapturedContentVisibilityChanged(isVisible) triggers.
      */
-    fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+    fun onCapturedContentVisibilityChanged(isVisible: Boolean, sessionId: String = currentSessionId) {
+        if (sessionId.isBlank() || sessionId != currentSessionId) return
         val res = activeResolution ?: Pair(720, 1280)
         if (!isVisible) {
             updateState(ScreenShareState.Paused(res.first, res.second, currentSessionId))
@@ -241,7 +243,8 @@ object ScreenShareManager {
     /**
      * Lightweight heartbeat called when intermediate VirtualDisplay frames are throttled.
      */
-    fun onFrameHeartbeat(width: Int, height: Int) {
+    fun onFrameHeartbeat(width: Int, height: Int, sessionId: String = currentSessionId) {
+        if (sessionId.isBlank() || sessionId != currentSessionId || _state.value !is ScreenShareState.Active) return
         val now = System.currentTimeMillis()
         lastFrameTimeMs = now
         activeResolution = Pair(width, height)
@@ -254,7 +257,14 @@ object ScreenShareManager {
     /**
      * Invoked by ScreenCaptureService when a new frame is captured from the VirtualDisplay.
      */
-    fun onFrameCaptured(bitmap: Bitmap, width: Int, height: Int) {
+    fun onFrameCaptured(bitmap: Bitmap, width: Int, height: Int, sessionId: String = currentSessionId): Boolean {
+        if (sessionId.isBlank() || sessionId != currentSessionId) return false
+        val current = _state.value
+        if (current !is ScreenShareState.WaitingForFirstFrame &&
+            current !is ScreenShareState.Active &&
+            current !is ScreenShareState.StaleFrame
+        ) return false
+        if (width <= 0 || height <= 0 || bitmap.isRecycled) return false
         val now = System.currentTimeMillis()
         val totalFrames = frameCounter.incrementAndGet()
         lastFrameTimeMs = now
@@ -280,9 +290,10 @@ object ScreenShareManager {
                 fps = currentFps,
                 framesCaptured = totalFrames,
                 lastFrameTimestamp = now,
-                sessionId = currentSessionId
+                sessionId = sessionId
             )
         )
+        return true
     }
 
     private fun startHeartbeatMonitoring(sessionId: String) {
@@ -346,7 +357,8 @@ object ScreenShareManager {
     /**
      * Reports an internal error from the service.
      */
-    fun reportServiceError(errorMessage: String, isFatal: Boolean = false) {
+    fun reportServiceError(errorMessage: String, isFatal: Boolean = false, sessionId: String = currentSessionId) {
+        if (sessionId.isNotBlank() && sessionId != currentSessionId) return
         Log.e(TAG, "Screen share service error: $errorMessage")
         heartbeatJob?.cancel()
         heartbeatJob = null
@@ -356,10 +368,12 @@ object ScreenShareManager {
     /**
      * Marks session stopped internally when projection stops.
      */
-    fun onServiceStopped() {
+    fun onServiceStopped(sessionId: String? = null) {
+        if (sessionId != null && sessionId.isNotBlank() && sessionId != currentSessionId) return
         heartbeatJob?.cancel()
         heartbeatJob = null
         cleanupResources()
+        currentSessionId = ""
         updateState(ScreenShareState.Stopped)
     }
 
@@ -368,13 +382,17 @@ object ScreenShareManager {
         heartbeatJob = null
         consumedConsentTokenHashes.clear()
         cleanupResources()
+        currentSessionId = ""
         updateState(ScreenShareState.Idle)
     }
 
     private fun cleanupResources() {
         frameCounter.set(0)
         currentFps = 0
+        framesInLastSecond = 0
+        lastFpsCalculationTime = 0L
         lastFrameTimeMs = 0L
+        activeResolution = null
         latestFrameBitmap = null
     }
 }
