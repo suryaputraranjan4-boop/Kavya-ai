@@ -1059,10 +1059,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         var sawValidChunk = false
                         var parseFailures = 0
                         res.body?.source()?.let { source ->
-                            while (!source.exhausted()) {
-                                val line = source.readUtf8LineStrict()
-                                if (line.startsWith("data: ")) {
-                                    val dataJson = line.substring(6).trim()
+                            while (true) {
+                                // A clean SSE EOF is normal; readUtf8LineStrict() throws when the
+                                // final line has no trailing newline and falsely reports interruption.
+                                val line = source.readUtf8Line() ?: break
+                                if (line.startsWith("data:")) {
+                                    val dataJson = line.removePrefix("data:").trim()
                                     if (dataJson.isNotBlank() && dataJson != "[DONE]") {
                                         try {
                                             val chunk = json.decodeFromString(GenerateContentResponse.serializer(), dataJson)
@@ -1113,6 +1115,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         AiErrorClassifier.classifyThrowable(e)
                     }
                     lastStreamClassifiedError = classified
+                    if (hasEmittedTokens && classified.category == AiErrorCategory.STREAMING_INTERRUPTION) {
+                        // Never silently present a truncated streamed answer as complete.
+                        emit("\\n\\n${classified.toErrorPrefixString()}")
+                    }
                     Log.w(TAG, "Stream error on $model: ${classified.redactedLogSummary}")
                     if (classified.category == AiErrorCategory.NETWORK_UNAVAILABLE ||
                         classified.category == AiErrorCategory.DNS_FAILURE
