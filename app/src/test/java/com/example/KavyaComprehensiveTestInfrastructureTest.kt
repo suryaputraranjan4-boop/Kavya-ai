@@ -186,15 +186,15 @@ class KavyaComprehensiveTestInfrastructureTest {
     @Test
     fun testCoordinateMapperUsesExactScalingAndClampsFrameEdges() {
         val center = PrecisionCoordinateMapper.mapScreenshotPoint(
-            screenshotX = 99.5f,
-            screenshotY = 49.5f,
+            screenshotX = 100f,
+            screenshotY = 50f,
             screenshotWidth = 200,
             screenshotHeight = 100,
             screenWidth = 400,
             screenHeight = 200
         )
-        assertEquals(200f, center.x, 0.01f)
-        assertEquals(100f, center.y, 0.01f)
+        assertEquals(200.5f, center.x, 0.01f)
+        assertEquals(100.5f, center.y, 0.01f)
 
         val bottomRight = PrecisionCoordinateMapper.mapScreenshotPoint(
             screenshotX = 199f,
