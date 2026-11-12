@@ -171,12 +171,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     private fun checkAndFilterRepetition(response: String): String {
         val trimmed = response.trim()
         if (trimmed.isBlank()) return trimmed
-        if (recentAssistantResponses.any { it.equals(trimmed, ignoreCase = true) }) {
-            val varied = "$trimmed (Let's proceed to the next step or explore a different aspect of this task.)"
-            recentAssistantResponses.add(varied)
-            if (recentAssistantResponses.size > 5) recentAssistantResponses.removeAt(0)
-            return varied
-        }
         recentAssistantResponses.add(trimmed)
         if (recentAssistantResponses.size > 5) recentAssistantResponses.removeAt(0)
         return trimmed
@@ -1552,6 +1546,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     
                     var fullResponse = ""
+                    var streamErrorChunk = ""
                     val cleanResponseBuilder = StringBuilder()
                     val sentenceBuffer = StringBuilder()
                     var sentenceSpokenCount = 0
@@ -1565,7 +1560,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             isProactiveMode = false,
                             imageBytes = liveScreenFrame
                         ).collect { chunk ->
-                            if (!chunk.startsWith("Error:")) {
+                            if (chunk.startsWith("Error:")) {
+                                streamErrorChunk = chunk
+                            } else {
                                 fullResponse += chunk
                                 val cleanChunk = voiceEngine.cleanText(chunk)
                                 if (cleanChunk.isNotBlank()) {
@@ -1600,9 +1597,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-                        Log.w(TAG, "Streaming chat failed (${e.javaClass.simpleName}).")
+                        throw cancelled
+                    } catch (e: Exception) {
+                        val classified = com.example.ai.AiErrorClassifier.classifyThrowable(e)
+                        streamErrorChunk = classified.toErrorPrefixString()
+                        Log.w(TAG, "Streaming chat failed: ${classified.redactedLogSummary}")
                     }
 
                     // Flush any remaining partial sentence in sentenceBuffer
@@ -1614,10 +1613,18 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    // If streaming failed or was empty, fallback to non-streaming chat
-                    if (fullResponse.isBlank() || cleanResponseBuilder.isBlank()) {
+                    // If streaming failed or was empty, fallback to non-streaming chat only if not a non-retryable auth/key/quota failure
+                    val lastCat = com.example.ai.AiErrorClassifier.lastClassifiedError?.category
+                    val isNonRetryableAuthOrQuota = lastCat in listOf(
+                        com.example.ai.AiErrorCategory.MISSING_API_KEY,
+                        com.example.ai.AiErrorCategory.INVALID_API_KEY,
+                        com.example.ai.AiErrorCategory.AUTHENTICATION_FAILURE,
+                        com.example.ai.AiErrorCategory.QUOTA_EXHAUSTED
+                    )
+
+                    if ((fullResponse.isBlank() || cleanResponseBuilder.isBlank()) && !isNonRetryableAuthOrQuota) {
                         try {
-                            fullResponse = aiClient.chat(
+                            val chatResult = aiClient.chat(
                                 prompt = prompt,
                                 history = historyEntities,
                                 screenContext = screenContext,
@@ -1625,22 +1632,42 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                                 isProactiveMode = false,
                                 imageBytes = liveScreenFrame
                             )
+                            if (chatResult.startsWith("Error:")) {
+                                streamErrorChunk = chatResult
+                            } else {
+                                fullResponse = chatResult
+                            }
                         } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-                            Log.w(TAG, "Non-streaming chat fallback failed (${e.javaClass.simpleName}).")
+                            throw cancelled
+                        } catch (e: Exception) {
+                            val classified = com.example.ai.AiErrorClassifier.classifyThrowable(e)
+                            streamErrorChunk = classified.toErrorPrefixString()
+                            Log.w(TAG, "Non-streaming chat fallback failed: ${classified.redactedLogSummary}")
                         }
                     }
 
-                    // If still blank, use pleasant natural response
+                    // If still blank, check fast offline greeting/command first; otherwise surface the exact classified AI error
                     if (fullResponse.isBlank()) {
-                        fullResponse = com.example.ai.LocalAssistantEngine.handleFastQuery(prompt)
-                            ?: com.example.ai.LocalAssistantEngine.resolveLocalCommandOrFallback(prompt, memoryBlock)
-                            .ifBlank { "हाँ जी, मैं आपकी बात समझ रही हूँ। कहिए क्या काम है?" }
+                        val fastOffline = com.example.ai.LocalAssistantEngine.handleFastQuery(prompt)
+                        if (fastOffline != null) {
+                            fullResponse = fastOffline
+                        } else if (streamErrorChunk.isNotBlank()) {
+                            fullResponse = streamErrorChunk
+                        } else {
+                            val localCmd = com.example.ai.LocalAssistantEngine.resolveLocalCommandOrFallback(prompt, memoryBlock)
+                            fullResponse = localCmd.ifBlank {
+                                com.example.ai.AiErrorClassifier.lastClassifiedError?.toErrorPrefixString()
+                                    ?: com.example.ai.AiClassifiedError(com.example.ai.AiErrorCategory.SERVICE_UNAVAILABLE).toErrorPrefixString()
+                            }
+                        }
                     }
 
                     // Parse structured actions (JSON schema or action tags)
-                    val structuredActions = com.example.agent.StructuredActionParser.parseActions(fullResponse)
+                    val structuredActions = if (fullResponse.startsWith("Error:")) {
+                        emptyList()
+                    } else {
+                        com.example.agent.StructuredActionParser.parseActions(fullResponse)
+                    }
                     val extractedClean = voiceEngine.cleanText(fullResponse)
                     cleanResponse = if (extractedClean.isNotBlank()) extractedClean else cleanResponseBuilder.toString()
                     if (isJarvisScreenExplain && cleanResponse.isNotBlank()) {
@@ -1847,7 +1874,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 cleanResponse = checkAndFilterRepetition(cleanResponse)
                 memoryEngine.autoLearnTaskProgress(prompt, cleanResponse)
                 
-                val isErrorResponse = cleanResponse.startsWith("Unable to connect") || cleanResponse.startsWith("Gemini API Key is not configured")
+                val isErrorResponse = com.example.ai.AiErrorClassifier.isErrorText(cleanResponse) ||
+                    cleanResponse.startsWith("Unable to connect") ||
+                    cleanResponse.startsWith("Gemini API Key is not configured")
                 com.example.state.KavyaStateManager.setGeminiState(if (isErrorResponse) "ERROR" else "SUCCESS")
                 
                 val modelMsgEntity = MessageEntity(
@@ -1883,10 +1912,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 
             } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-                val safeError = "अभी connection में थोड़ी problem आ रही है। कृपया थोड़ी देर में फिर try करें।"
-                Log.w(TAG, "Agent turn failed (${e.javaClass.simpleName}).")
+                throw cancelled
+            } catch (e: Exception) {
+                val classified = com.example.ai.AiErrorClassifier.classifyThrowable(e)
+                val safeError = classified.userFacingText
+                Log.w(TAG, "Agent turn failed: ${classified.redactedLogSummary}")
                 _messages.value = _messages.value.map {
                     if (it.id == loadingMsgId) it.copy(text = safeError, isLoading = false, isError = true) else it
                 }

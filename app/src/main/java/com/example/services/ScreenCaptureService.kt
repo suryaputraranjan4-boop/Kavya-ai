@@ -56,10 +56,25 @@ class ScreenCaptureService : Service() {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
+    private var currentDensityDpi: Int = DisplayMetrics.DENSITY_DEVICE_STABLE
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             Log.i(TAG, "MediaProjection was stopped by the system.")
             stopCapture()
+        }
+
+        override fun onCapturedContentResize(width: Int, height: Int) {
+            super.onCapturedContentResize(width, height)
+            if (width <= 0 || height <= 0) return
+            Log.i(TAG, "MediaProjection captured content resized to ${width}x${height}")
+            resizeCapturePipeline(width, height)
+        }
+
+        override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+            super.onCapturedContentVisibilityChanged(isVisible)
+            Log.i(TAG, "MediaProjection captured content visibility changed: isVisible=$isVisible")
+            ScreenShareManager.onCapturedContentVisibilityChanged(isVisible)
         }
     }
 
@@ -167,53 +182,13 @@ class ScreenCaptureService : Service() {
             val screenWidth = metrics.widthPixels
             val screenHeight = metrics.heightPixels
             val densityDpi = metrics.densityDpi
+            currentDensityDpi = densityDpi
 
             val targetWidth = if (screenWidth > 720) 720 else screenWidth
-            val targetHeight = (screenHeight * (targetWidth.toFloat() / screenWidth)).toInt()
+            val targetHeight = (screenHeight * (targetWidth.toFloat() / screenWidth.coerceAtLeast(1))).toInt().coerceAtLeast(1)
 
-            val reader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2)
+            val reader = createConfiguredImageReader(targetWidth, targetHeight)
             imageReader = reader
-
-            var lastFrameExtractMs = 0L
-            reader.setOnImageAvailableListener({ imageReaderInstance ->
-                val image = imageReaderInstance.acquireLatestImage() ?: return@setOnImageAvailableListener
-                try {
-                    val now = System.currentTimeMillis()
-                    if (now - lastFrameExtractMs < 280L) {
-                        ScreenShareManager.onFrameHeartbeat(targetWidth, targetHeight)
-                        return@setOnImageAvailableListener
-                    }
-                    lastFrameExtractMs = now
-
-                    val planes = image.planes
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * targetWidth
-
-                    val rawBitmap = Bitmap.createBitmap(
-                        targetWidth + rowPadding / pixelStride,
-                        targetHeight,
-                        Bitmap.Config.ARGB_8888
-                    )
-                    rawBitmap.copyPixelsFromBuffer(buffer)
-
-                    val cleanBitmap = if (rowPadding == 0) {
-                        rawBitmap
-                    } else {
-                        val cropped = Bitmap.createBitmap(rawBitmap, 0, 0, targetWidth, targetHeight)
-                        rawBitmap.recycle()
-                        cropped
-                    }
-
-                    ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
-                    VisionPipeline.onNewFrame(cleanBitmap)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
-                } finally {
-                    image.close()
-                }
-            }, backgroundHandler)
 
             ScreenShareManager.onServiceStarted(sessionId)
 
@@ -233,6 +208,67 @@ class ScreenCaptureService : Service() {
             Log.e(TAG, "Fatal failure starting virtual screen capture", e)
             ScreenShareManager.reportServiceError("Capture failed: ${e.message}", isFatal = true)
             stopSelf()
+        }
+    }
+
+    private fun createConfiguredImageReader(targetWidth: Int, targetHeight: Int): ImageReader {
+        val reader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2)
+        var lastFrameExtractMs = 0L
+        reader.setOnImageAvailableListener({ imageReaderInstance ->
+            val image = imageReaderInstance.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                val now = System.currentTimeMillis()
+                if (now - lastFrameExtractMs < 280L) {
+                    ScreenShareManager.onFrameHeartbeat(targetWidth, targetHeight)
+                    return@setOnImageAvailableListener
+                }
+                lastFrameExtractMs = now
+
+                val planes = image.planes
+                val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride
+                val rowStride = planes[0].rowStride
+                val rowPadding = rowStride - pixelStride * targetWidth
+
+                val rawBitmap = Bitmap.createBitmap(
+                    targetWidth + rowPadding / pixelStride,
+                    targetHeight,
+                    Bitmap.Config.ARGB_8888
+                )
+                rawBitmap.copyPixelsFromBuffer(buffer)
+
+                val cleanBitmap = if (rowPadding == 0) {
+                    rawBitmap
+                } else {
+                    val cropped = Bitmap.createBitmap(rawBitmap, 0, 0, targetWidth, targetHeight)
+                    rawBitmap.recycle()
+                    cropped
+                }
+
+                ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
+                VisionPipeline.onNewFrame(cleanBitmap)
+            } catch (e: Exception) {
+                Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
+            } finally {
+                image.close()
+            }
+        }, backgroundHandler)
+        return reader
+    }
+
+    private fun resizeCapturePipeline(rawWidth: Int, rawHeight: Int) {
+        try {
+            val targetWidth = if (rawWidth > 720) 720 else rawWidth.coerceAtLeast(1)
+            val targetHeight = (rawHeight * (targetWidth.toFloat() / rawWidth.coerceAtLeast(1))).toInt().coerceAtLeast(1)
+            val oldReader = imageReader
+            val newReader = createConfiguredImageReader(targetWidth, targetHeight)
+            imageReader = newReader
+            virtualDisplay?.resize(targetWidth, targetHeight, currentDensityDpi)
+            virtualDisplay?.surface = newReader.surface
+            try { oldReader?.close() } catch (_: Exception) {}
+            ScreenShareManager.onCapturedContentResized(targetWidth, targetHeight)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to dynamically resize VirtualDisplay/ImageReader: ${e.message}")
         }
     }
 

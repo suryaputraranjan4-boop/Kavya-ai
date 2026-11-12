@@ -15,7 +15,7 @@ class UIHierarchyAnalyzer {
 
     companion object {
         private const val TAG = "KavyaHierarchyAnalyzer"
-        private const val MAX_NODES_TO_COLLECT = 80
+        private const val MAX_NODES_TO_COLLECT = 220
     }
 
     /**

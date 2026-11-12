@@ -45,6 +45,28 @@ object JarvisOverlayController {
     private val _audioAmplitude = MutableStateFlow(0f)
     val audioAmplitude: StateFlow<Float> = _audioAmplitude.asStateFlow()
 
+    private val _unifiedSessionState = MutableStateFlow<com.example.services.ScreenShareManager.UnifiedJarvisSessionState>(
+        com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Idle
+    )
+    val unifiedSessionState: StateFlow<com.example.services.ScreenShareManager.UnifiedJarvisSessionState> =
+        _unifiedSessionState.asStateFlow()
+
+    fun syncWithUnifiedSessionState(state: com.example.services.ScreenShareManager.UnifiedJarvisSessionState) {
+        _unifiedSessionState.value = state
+        when (state) {
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Error -> {
+                _orbState.value = JarvisOrbState.ERROR
+            }
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Stopped,
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Idle -> {
+                if (_activePlan.value == null && _activeInstruction.value == null) {
+                    _orbState.value = JarvisOrbState.IDLE
+                }
+            }
+            else -> { /* Active / Starting / Paused preserve active visual plan or voice state */ }
+        }
+    }
+
     fun hasOverlayPermission(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(context)

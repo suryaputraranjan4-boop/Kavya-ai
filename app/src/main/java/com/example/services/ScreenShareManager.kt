@@ -39,6 +39,11 @@ object ScreenShareManager {
             val lastFrameTimestamp: Long,
             val sessionId: String
         ) : ScreenShareState()
+        data class Paused(
+            val width: Int,
+            val height: Int,
+            val sessionId: String
+        ) : ScreenShareState()
         data class StaleFrame(
             val width: Int,
             val height: Int,
@@ -50,8 +55,29 @@ object ScreenShareManager {
         data class Error(val message: String, val isFatal: Boolean = false) : ScreenShareState()
     }
 
+    /**
+     * Unified Jarvis + Screen Share Session State Machine (Upgrade 3).
+     * Shared across ScreenShareManager, ScreenCaptureService, VisionPipeline, and JarvisOverlayController.
+     */
+    sealed class UnifiedJarvisSessionState {
+        object Idle : UnifiedJarvisSessionState()
+        object PermissionPending : UnifiedJarvisSessionState()
+        object Starting : UnifiedJarvisSessionState()
+        data class Active(val width: Int, val height: Int, val sessionId: String, val isLiveStream: Boolean = true) : UnifiedJarvisSessionState()
+        data class Paused(val sessionId: String, val reason: String = "Content hidden or minimized") : UnifiedJarvisSessionState()
+        object Stopping : UnifiedJarvisSessionState()
+        object Stopped : UnifiedJarvisSessionState()
+        data class Error(val reason: String, val isPermissionDenied: Boolean = false) : UnifiedJarvisSessionState()
+    }
+
     private val _state = MutableStateFlow<ScreenShareState>(ScreenShareState.Idle)
     val state: StateFlow<ScreenShareState> = _state.asStateFlow()
+
+    private val _unifiedSessionState = MutableStateFlow<UnifiedJarvisSessionState>(UnifiedJarvisSessionState.Idle)
+    val unifiedSessionState: StateFlow<UnifiedJarvisSessionState> = _unifiedSessionState.asStateFlow()
+
+    // Tracks consumed MediaProjection consent Intent identity hashes so stale single-use tokens are never reused
+    private val consumedConsentTokenHashes = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
 
     private val frameCounter = AtomicInteger(0)
     private var lastFpsCalculationTime = 0L
@@ -66,6 +92,24 @@ object ScreenShareManager {
 
     private val managerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var heartbeatJob: Job? = null
+
+    private fun updateState(newState: ScreenShareState) {
+        _state.value = newState
+        val mappedUnified = when (newState) {
+            is ScreenShareState.Idle -> UnifiedJarvisSessionState.Idle
+            is ScreenShareState.RequestingPermission -> UnifiedJarvisSessionState.PermissionPending
+            is ScreenShareState.PermissionDenied -> UnifiedJarvisSessionState.Error(newState.reason, isPermissionDenied = true)
+            is ScreenShareState.StartingService, is ScreenShareState.WaitingForFirstFrame -> UnifiedJarvisSessionState.Starting
+            is ScreenShareState.Active -> UnifiedJarvisSessionState.Active(newState.width, newState.height, newState.sessionId)
+            is ScreenShareState.Paused -> UnifiedJarvisSessionState.Paused(newState.sessionId)
+            is ScreenShareState.StaleFrame -> UnifiedJarvisSessionState.Paused(newState.sessionId, "Waiting for fresh screen change")
+            is ScreenShareState.Stopping -> UnifiedJarvisSessionState.Stopping
+            is ScreenShareState.Stopped -> UnifiedJarvisSessionState.Stopped
+            is ScreenShareState.Error -> UnifiedJarvisSessionState.Error(newState.message)
+        }
+        _unifiedSessionState.value = mappedUnified
+        com.example.visual.JarvisOverlayController.syncWithUnifiedSessionState(mappedUnified)
+    }
 
     val isScreenSharingActive: Boolean
         get() = _state.value is ScreenShareState.Active || _state.value is ScreenShareState.StaleFrame
@@ -83,26 +127,34 @@ object ScreenShareManager {
     fun createConsentIntent(context: Context): Intent? {
         val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
         if (manager == null) {
-            _state.value = ScreenShareState.Error("MediaProjectionManager is unavailable on this device.", isFatal = true)
+            updateState(ScreenShareState.Error("MediaProjectionManager is unavailable on this device.", isFatal = true))
             return null
         }
-        _state.value = ScreenShareState.RequestingPermission
+        updateState(ScreenShareState.RequestingPermission)
         return try {
             manager.createScreenCaptureIntent()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create screen capture intent", e)
-            _state.value = ScreenShareState.Error("Failed to request screen capture: ${e.message}")
+            updateState(ScreenShareState.Error("Failed to request screen capture: ${e.message}"))
             null
         }
     }
 
     /**
      * Handles the result of the system MediaProjection consent dialog.
+     * Enforces single-use MediaProjection consent token rules (Android 14+).
      */
     fun handleConsentResult(context: Context, resultCode: Int, data: Intent?) {
         if (resultCode != Activity.RESULT_OK || data == null) {
             Log.w(TAG, "Screen capture consent was denied or cancelled by user.")
-            _state.value = ScreenShareState.PermissionDenied("User denied screen recording permission.")
+            updateState(ScreenShareState.PermissionDenied("User denied screen recording permission."))
+            return
+        }
+
+        val tokenHash = System.identityHashCode(data)
+        if (!consumedConsentTokenHashes.add(tokenHash)) {
+            Log.w(TAG, "Attempted to reuse an already-consumed MediaProjection consent token! Rejecting stale token.")
+            updateState(ScreenShareState.PermissionDenied("Screen capture permission token was already consumed. Please grant permission again."))
             return
         }
 
@@ -113,7 +165,7 @@ object ScreenShareManager {
         lastFrameTimeMs = 0L
 
         Log.i(TAG, "Screen capture consent granted. Starting Foreground Capture Service (sessionId=$newSessionId)...")
-        _state.value = ScreenShareState.StartingService
+        updateState(ScreenShareState.StartingService)
 
         val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_START
@@ -131,7 +183,7 @@ object ScreenShareManager {
             startHeartbeatMonitoring(newSessionId)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start ScreenCaptureService", e)
-            _state.value = ScreenShareState.Error("Could not launch capture service: ${e.message}", isFatal = true)
+            updateState(ScreenShareState.Error("Could not launch capture service: ${e.message}", isFatal = true))
         }
     }
 
@@ -141,11 +193,48 @@ object ScreenShareManager {
      */
     fun onServiceStarted(sessionId: String) {
         if (_state.value is ScreenShareState.StartingService) {
-            _state.value = ScreenShareState.WaitingForFirstFrame(
-                sessionStartedMs = System.currentTimeMillis(),
-                sessionId = sessionId
+            updateState(
+                ScreenShareState.WaitingForFirstFrame(
+                    sessionStartedMs = System.currentTimeMillis(),
+                    sessionId = sessionId
+                )
             )
             Log.d(TAG, "Capture service active, waiting for first valid frame from VirtualDisplay...")
+        }
+    }
+
+    /**
+     * Called when MediaProjection.Callback.onCapturedContentResize(width, height) triggers.
+     */
+    fun onCapturedContentResized(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        activeResolution = Pair(width, height)
+        com.example.visual.ScreenAnnotationManager.coordinateMapper.updateCapturedFrameGeometry(width, height)
+        com.example.visual.VisionPipeline.invalidateStaleFrameOnResize(width, height)
+        val current = _state.value
+        if (current is ScreenShareState.Active) {
+            updateState(current.copy(width = width, height = height, lastFrameTimestamp = System.currentTimeMillis()))
+        }
+    }
+
+    /**
+     * Called when MediaProjection.Callback.onCapturedContentVisibilityChanged(isVisible) triggers.
+     */
+    fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+        val res = activeResolution ?: Pair(720, 1280)
+        if (!isVisible) {
+            updateState(ScreenShareState.Paused(res.first, res.second, currentSessionId))
+        } else if (_state.value is ScreenShareState.Paused) {
+            updateState(
+                ScreenShareState.Active(
+                    width = res.first,
+                    height = res.second,
+                    fps = currentFps,
+                    framesCaptured = frameCounter.get(),
+                    lastFrameTimestamp = System.currentTimeMillis(),
+                    sessionId = currentSessionId
+                )
+            )
         }
     }
 
@@ -158,7 +247,7 @@ object ScreenShareManager {
         activeResolution = Pair(width, height)
         val current = _state.value
         if (current is ScreenShareState.Active) {
-            _state.value = current.copy(lastFrameTimestamp = now)
+            updateState(current.copy(lastFrameTimestamp = now))
         }
     }
 
@@ -170,6 +259,7 @@ object ScreenShareManager {
         val totalFrames = frameCounter.incrementAndGet()
         lastFrameTimeMs = now
         activeResolution = Pair(width, height)
+        com.example.visual.ScreenAnnotationManager.coordinateMapper.updateCapturedFrameGeometry(width, height)
 
         // Do NOT call .recycle() on oldBitmap because it may be concurrently read by
         // VisionPipeline, GeminiVisionAnalyzer, or Compose UI preview. Let GC reclaim safely.
@@ -183,13 +273,15 @@ object ScreenShareManager {
         }
 
         // Only transition to Active once the first real frame arrives!
-        _state.value = ScreenShareState.Active(
-            width = width,
-            height = height,
-            fps = currentFps,
-            framesCaptured = totalFrames,
-            lastFrameTimestamp = now,
-            sessionId = currentSessionId
+        updateState(
+            ScreenShareState.Active(
+                width = width,
+                height = height,
+                fps = currentFps,
+                framesCaptured = totalFrames,
+                lastFrameTimestamp = now,
+                sessionId = currentSessionId
+            )
         )
     }
 
@@ -206,7 +298,7 @@ object ScreenShareManager {
                 if (currentState is ScreenShareState.WaitingForFirstFrame || currentState is ScreenShareState.StartingService) {
                     if (now - startMs > FIRST_FRAME_TIMEOUT_MS) {
                         Log.w(TAG, "First frame timeout exceeded (${FIRST_FRAME_TIMEOUT_MS}ms). VirtualDisplay not delivering frames.")
-                        _state.value = ScreenShareState.Error("Screen capture started but no frames were delivered by the system.")
+                        updateState(ScreenShareState.Error("Screen capture started but no frames were delivered by the system."))
                         break
                     }
                 }
@@ -216,11 +308,13 @@ object ScreenShareManager {
                     if (now - lastFrameTimeMs > STALE_FRAME_THRESHOLD_MS) {
                         Log.w(TAG, "No new frames received in ${STALE_FRAME_THRESHOLD_MS}ms; marking state as STALE_FRAME.")
                         val res = activeResolution ?: Pair(720, 1280)
-                        _state.value = ScreenShareState.StaleFrame(
-                            width = res.first,
-                            height = res.second,
-                            lastFrameTimestamp = lastFrameTimeMs,
-                            sessionId = sessionId
+                        updateState(
+                            ScreenShareState.StaleFrame(
+                                width = res.first,
+                                height = res.second,
+                                lastFrameTimestamp = lastFrameTimeMs,
+                                sessionId = sessionId
+                            )
                         )
                     }
                 }
@@ -233,7 +327,7 @@ object ScreenShareManager {
      */
     fun stopScreenShare(context: Context) {
         Log.i(TAG, "Stopping screen sharing session...")
-        _state.value = ScreenShareState.Stopping
+        updateState(ScreenShareState.Stopping)
         heartbeatJob?.cancel()
         heartbeatJob = null
 
@@ -246,6 +340,7 @@ object ScreenShareManager {
             Log.w(TAG, "Failed to send stop intent to ScreenCaptureService: ${e.message}")
         }
         cleanupResources()
+        updateState(ScreenShareState.Stopped)
     }
 
     /**
@@ -255,7 +350,7 @@ object ScreenShareManager {
         Log.e(TAG, "Screen share service error: $errorMessage")
         heartbeatJob?.cancel()
         heartbeatJob = null
-        _state.value = ScreenShareState.Error(errorMessage, isFatal)
+        updateState(ScreenShareState.Error(errorMessage, isFatal))
     }
 
     /**
@@ -265,7 +360,15 @@ object ScreenShareManager {
         heartbeatJob?.cancel()
         heartbeatJob = null
         cleanupResources()
-        _state.value = ScreenShareState.Stopped
+        updateState(ScreenShareState.Stopped)
+    }
+
+    fun resetToIdle() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        consumedConsentTokenHashes.clear()
+        cleanupResources()
+        updateState(ScreenShareState.Idle)
     }
 
     private fun cleanupResources() {

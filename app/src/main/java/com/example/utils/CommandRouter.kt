@@ -369,7 +369,7 @@ class CommandRouter(private val context: Context) {
             return handleSearchWeb(query)
         }
 
-        // 1. YouTube specialized deep search
+        // 1. YouTube specialized deep search (strictly prefer installed native YouTube app over Chrome)
         if (lowerApp.contains("youtube") || lowerApp == "yt") {
             val ytUri = Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
             val isPlayRequest = compound.actionType.equals("PLAY", ignoreCase = true) ||
@@ -384,37 +384,30 @@ class CommandRouter(private val context: Context) {
                     context.startActivity(ytIntent)
                     if (isPlayRequest) {
                         triggerAutoPlayFirstVideo()
-                        return CommandExecutionResult("Main YouTube open karke video play kar rahi hoon...", true)
+                        return CommandExecutionResult("Main YouTube ऐप open karke video play kar rahi hoon...", true)
                     }
-                    return CommandExecutionResult("Main YouTube open kar rahi hoon aur '$query' search kar rahi hoon...", true)
-                } else {
-                    // Fallback to browser YouTube search
-                    val browserYt = Intent(Intent.ACTION_VIEW, ytUri).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(browserYt)
+                    return CommandExecutionResult("Main YouTube ऐप open kar rahi hoon aur '$query' search kar rahi hoon...", true)
+                }
+
+                // Try launching installed native YouTube app via AppResolver / launch intent before considering browser
+                val nativeYtLaunch = handleOpenApp("YouTube")
+                if (nativeYtLaunch.success) {
+                    delay(500)
+                    KavyaAccessibilityService.instance?.performAppSearch(query)
                     if (isPlayRequest) {
                         triggerAutoPlayFirstVideo()
-                        return CommandExecutionResult("Main YouTube open karke video play kar rahi hoon...", true)
+                        return CommandExecutionResult("Main YouTube ऐप open karke video play kar rahi hoon...", true)
                     }
-                    return CommandExecutionResult("Main YouTube open kar rahi hoon aur '$query' search kar rahi hoon...", true)
+                    return CommandExecutionResult("Main YouTube ऐप open kar rahi hoon aur '$query' search kar rahi hoon...", true)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Direct YouTube intent failed; falling back to browser.")
-                try {
-                    val browserYt = Intent(Intent.ACTION_VIEW, ytUri).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(browserYt)
-                    if (isPlayRequest) {
-                        triggerAutoPlayFirstVideo()
-                        return CommandExecutionResult("Main YouTube open karke video play kar rahi hoon...", true)
-                    }
-                    return CommandExecutionResult("Main YouTube open kar rahi hoon aur '$query' search kar rahi hoon...", true)
-                } catch (e2: Exception) {
-                    Log.e(TAG, "YouTube browser fallback failed.")
-                }
+                Log.w(TAG, "Direct YouTube app launch failed: ${e.message}")
             }
+            return CommandExecutionResult(
+                output = "YouTube ऐप आपके फ़ोन में इंस्टॉल नहीं मिला। क्या मैं '$query' को Chrome ब्राउज़र में खोलूँ?",
+                success = false,
+                isAmbiguous = true
+            )
         }
 
         // 2. Play Store
@@ -493,15 +486,18 @@ class CommandRouter(private val context: Context) {
             return handleSearchWeb(query)
         }
 
-        // 6. General App Launch + Automated Accessibility UI Search
+        // 6. General App Launch + Automated Accessibility UI Search (never silently replace native app with Chrome)
         val launchResult = handleOpenApp(appName)
         if (!launchResult.success) {
-            // Graceful fallback: If app isn't installed, search for it on web
-            val webFallback = handleSearchWeb("$appName $query")
-            if (webFallback.success) {
-                return CommandExecutionResult("Main Google par '$appName $query' search kar rahi hoon...", true)
+            if (launchResult.isAmbiguous) {
+                return launchResult
             }
-            return launchResult
+            return CommandExecutionResult(
+                output = "$appName ऐप आपके फ़ोन में इंस्टॉल नहीं है। क्या मैं '$query' को Chrome ब्राउज़र में खोजूँ?",
+                success = false,
+                isAmbiguous = false,
+                diagnostic = launchResult.diagnostic
+            )
         }
 
         // Allow app window to transition to foreground

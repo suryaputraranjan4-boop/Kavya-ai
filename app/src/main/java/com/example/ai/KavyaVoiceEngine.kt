@@ -76,14 +76,15 @@ class KavyaVoiceEngine(
             return
         }
 
-        // Suppress raw technical errors from ever being spoken aloud
-        if (isTechnicalErrorString(cleanText)) {
-            Log.w(TAG, "Suppressed technical error string from voice output")
+        // Convert raw technical error strings into consistent, cause-accurate spoken explanations
+        if (text.trim().startsWith("Error:") || isTechnicalErrorString(cleanText)) {
+            val accurateExplanation = AiErrorClassifier.resolveConsistentUserExplanation(text)
+            Log.w(TAG, "Resolved technical error string to user-facing voice explanation: $accurateExplanation")
             updateSpeakingState(false)
             val now = System.currentTimeMillis()
             if (now - lastErrorSpeechTimestamp > ERROR_THROTTLE_WINDOW_MS) {
                 lastErrorSpeechTimestamp = now
-                speakCleanFallback(enqueue, onComplete)
+                speakCleanFallback(accurateExplanation, enqueue, onComplete)
             } else {
                 onComplete?.invoke()
             }
@@ -117,8 +118,15 @@ class KavyaVoiceEngine(
         )
     }
 
-    private fun speakCleanFallback(enqueue: Boolean, onComplete: (() -> Unit)?) {
-        val naturalFallback = "अभी नेटवर्क में थोड़ी समस्या है। कृपया कुछ देर बाद फिर प्रयास करें।"
+    private fun speakCleanFallback(
+        spokenExplanation: String,
+        enqueue: Boolean,
+        onComplete: (() -> Unit)?
+    ) {
+        val naturalFallback = spokenExplanation.ifBlank {
+            AiErrorClassifier.lastClassifiedError?.userFacingSpokenText
+                ?: AiErrorCategory.SERVICE_UNAVAILABLE.userFacingHindi
+        }
         updateSpeakingState(true)
         com.example.ai.tts.VoiceEngineManager.getInstance(context).speak(
             text = naturalFallback,
@@ -224,6 +232,10 @@ class KavyaVoiceEngine(
     }
 
     fun cleanText(text: String): String {
+        val trimmed = text.trim()
+        if (trimmed.startsWith("Error:[") || trimmed.startsWith("Error:")) {
+            return AiErrorClassifier.resolveConsistentUserExplanation(trimmed)
+        }
         var clean = text.replace(SENTIMENT_TAG_REGEX, "")
         clean = com.example.agent.StructuredActionParser.stripActions(clean)
         clean = clean.replace("```[a-zA-Z]*\\s*[\\s\\S]*?```".toRegex(), "")

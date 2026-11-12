@@ -53,7 +53,9 @@ data class FreshScreenState(
     val searchButtons: List<AnalyzedNode>,
     val organicContentResults: List<AnalyzedNode>,
     val adNodes: List<AnalyzedNode>,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val chatComposerFields: List<AnalyzedNode> = emptyList(),
+    val unifiedElements: List<com.example.visual.UnifiedUIElement> = emptyList()
 ) {
     val screenTitle: String
         get() = visibleTexts.firstOrNull() ?: ""
@@ -151,17 +153,25 @@ class FreshScreenRecognizer(
         val visibleTexts = mutableListOf<String>()
 
         if (root != null) {
-            collectAndClassifyNodes(root, allNodes, visibleTexts, depth = 0, maxNodes = 60)
+            collectAndClassifyNodes(root, allNodes, visibleTexts, depth = 0, maxNodes = 220)
         }
 
         val isLoading = detectLoadingState(allNodes, visibleTexts)
-        val searchFields = allNodes.filter { it.isEditable && !it.isClearOrClose && !it.isAd }
+        val searchFields = allNodes.filter {
+            !it.isClearOrClose && !it.isAd &&
+                com.example.visual.InputFieldClassifier.isTrueSearchField(it, allNodes, currentPkg)
+        }
+        val chatComposerFields = allNodes.filter {
+            !it.isClearOrClose && !it.isAd &&
+                com.example.visual.InputFieldClassifier.isTrueChatComposer(it, allNodes, currentPkg)
+        }
         val searchButtons = allNodes.filter {
             !it.isEditable && !it.isClearOrClose && !it.isAd && (
                 it.text.contains("search", ignoreCase = true) ||
                 it.contentDescription.contains("search", ignoreCase = true) ||
                 it.contentDescription.contains("खोजें", ignoreCase = true) ||
-                it.resourceId.contains("search", ignoreCase = true)
+                it.resourceId.contains("search", ignoreCase = true) ||
+                com.example.visual.IconRoleClassifier.classifyIcon(it) == com.example.visual.IconRole.SEARCH_ICON
             ) && (it.isClickable || it.className.contains("button", ignoreCase = true) || it.className.contains("image", ignoreCase = true))
         }
 
@@ -173,6 +183,8 @@ class FreshScreenRecognizer(
             (it.text.length >= 3 || it.contentDescription.length >= 3)
         }
 
+        val unifiedElements = com.example.visual.MultiSignalFusionEngine.buildUnifiedElements(allNodes, currentPkg)
+        com.example.visual.ShortTermNavigationMemory.recordSnapshot(currentPkg, unifiedElements)
         val summary = buildSummary(currentPkg, allNodes, isLoading)
 
         return FreshScreenState(
@@ -185,7 +197,9 @@ class FreshScreenRecognizer(
             searchFields = searchFields,
             searchButtons = searchButtons,
             organicContentResults = organicContentResults,
-            adNodes = adNodes
+            adNodes = adNodes,
+            chatComposerFields = chatComposerFields,
+            unifiedElements = unifiedElements
         )
     }
 

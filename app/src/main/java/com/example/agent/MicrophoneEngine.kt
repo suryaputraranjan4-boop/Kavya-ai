@@ -77,6 +77,9 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     private val _lastTranscript = MutableStateFlow("")
     val lastTranscript: StateFlow<String> = _lastTranscript.asStateFlow()
 
+    private val _lastVoiceError = MutableStateFlow<com.example.ai.VoiceInputErrorCategory?>(null)
+    val lastVoiceError: StateFlow<com.example.ai.VoiceInputErrorCategory?> = _lastVoiceError.asStateFlow()
+
     // Audio Engine Components
     private val vad = VoiceActivityDetector(sampleRate = SAMPLE_RATE)
     private val pcmProcessor = PcmFrameProcessor(vad)
@@ -90,6 +93,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     private var commandListener: ((String) -> Unit)? = null
     private var userInterruptionListener: (() -> Unit)? = null
+    private var voiceErrorListener: ((com.example.ai.VoiceInputErrorCategory) -> Unit)? = null
 
     private val wakeWords = setOf(
         "hey kavya", "hi kavya", "hello kavya",
@@ -147,6 +151,16 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     fun setUserInterruptionListener(listener: (() -> Unit)?) {
         this.userInterruptionListener = listener
+    }
+
+    fun setVoiceErrorListener(listener: ((com.example.ai.VoiceInputErrorCategory) -> Unit)?) {
+        this.voiceErrorListener = listener
+    }
+
+    private fun reportVoiceError(category: com.example.ai.VoiceInputErrorCategory) {
+        com.example.ai.AiErrorClassifier.recordVoiceError(category)
+        _lastVoiceError.value = category
+        voiceErrorListener?.invoke(category)
     }
 
     /**
@@ -215,6 +229,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     fun startListening(): Boolean {
         if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Log.e(TAG, "Cannot start MicrophoneEngine: RECORD_AUDIO permission not granted")
+            reportVoiceError(com.example.ai.VoiceInputErrorCategory.MIC_PERMISSION_DENIED)
             _engineState.value = State.ERROR
             return false
         }
@@ -303,6 +318,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
             if (minBufSize <= 0) {
                 Log.e(TAG, "Unsupported AudioRecord configuration (minBufferSize=$minBufSize)")
+                reportVoiceError(com.example.ai.VoiceInputErrorCategory.UNSUPPORTED_CONFIGURATION)
                 return false
             }
             val bufferSize = maxOf(minBufSize * 2, 8192)
@@ -317,6 +333,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
             if (candidate.state != AudioRecord.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioRecord failed to initialize (state=${candidate.state})")
+                reportVoiceError(com.example.ai.VoiceInputErrorCategory.AUDIO_INIT_FAILURE)
                 candidate.release()
                 false
             } else {
@@ -336,10 +353,12 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 candidate.startRecording()
                 if (candidate.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                     Log.e(TAG, "AudioRecord failed to start recording")
+                    reportVoiceError(com.example.ai.VoiceInputErrorCategory.MIC_UNAVAILABLE)
                     candidate.release()
                     false
                 } else {
                     audioRecord = candidate
+                    _lastVoiceError.value = null
                     Log.i(TAG, "Physical AudioRecord session successfully started (bufferSize=$bufferSize)")
                     true
                 }
@@ -350,6 +369,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             } catch (releaseError: Exception) {
                 Log.w(TAG, "Failed to release partially initialized AudioRecord", releaseError)
             }
+            reportVoiceError(com.example.ai.VoiceInputErrorCategory.AUDIO_INIT_FAILURE)
             Log.e(TAG, "Exception initializing AudioRecord", e)
             false
         }
@@ -451,6 +471,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 val cleanText = transcript.trim()
 
                 if (cleanText.isNotBlank()) {
+                    _lastVoiceError.value = null
                     Log.i(TAG, "Recognized utterance transcript: \"$cleanText\"")
                     _lastTranscript.value = cleanText
 
@@ -484,8 +505,13 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                             commandListener?.invoke(cleanText)
                         }
                     }
+                } else {
+                    val recordedErr = com.example.ai.AiErrorClassifier.lastVoiceInputError
+                        ?: com.example.ai.VoiceInputErrorCategory.EMPTY_TRANSCRIPTION
+                    reportVoiceError(recordedErr)
                 }
             } catch (e: Exception) {
+                reportVoiceError(com.example.ai.VoiceInputErrorCategory.TRANSCRIPTION_SERVICE_ERROR)
                 Log.e(TAG, "Error processing utterance transcript", e)
             } finally {
                 if (isRecordingActive && !isAssistantSpeaking) {

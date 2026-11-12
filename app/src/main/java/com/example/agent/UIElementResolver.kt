@@ -81,15 +81,21 @@ object UIElementResolver {
 
     /**
      * Resolves the actual search input field in the active screen.
+     * Strictly prevents selecting a Chat Composer, Comment Box, or Login Field when searching.
      */
     fun findSearchInput(screen: FreshScreenState): ResolvedUIElement? {
         val nodes = screen.nodes
+        val pkg = screen.foregroundPackage
 
-        // 1. Explicit search field already classified by FreshScreenRecognizer
+        // 1. Explicit search field already classified by FreshScreenRecognizer & InputFieldClassifier
         val candidate = screen.searchFields.firstOrNull { node ->
-            val label = "${node.text} ${node.contentDescription} ${node.resourceId}".lowercase(Locale.ROOT)
-            SEARCH_TERMS.any { label.contains(it) } || node.node.isFocused
-        } ?: screen.searchFields.firstOrNull()
+            com.example.visual.InputFieldClassifier.isTrueSearchField(node, nodes, pkg) && (
+                SEARCH_TERMS.any { "${node.text} ${node.contentDescription} ${node.resourceId}".lowercase(Locale.ROOT).contains(it) } ||
+                    try { node.node.isFocused } catch (_: Exception) { false }
+            )
+        } ?: screen.searchFields.firstOrNull {
+            com.example.visual.InputFieldClassifier.isTrueSearchField(it, nodes, pkg)
+        }
 
         if (candidate != null) {
             val b = candidate.bounds
@@ -103,13 +109,10 @@ object UIElementResolver {
             )
         }
 
-        // 2. Check any editable node whose hint/content/resourceId contains search
+        // 2. Check any editable or clickable search bar node whose role is SEARCH_FIELD or BROWSER_ADDRESS_BAR
         val editableSearch = nodes.firstOrNull { node ->
-            node.isEditable && SEARCH_TERMS.any { term ->
-                node.text.lowercase(Locale.ROOT).contains(term) ||
-                node.contentDescription.lowercase(Locale.ROOT).contains(term) ||
-                node.resourceId.lowercase(Locale.ROOT).contains(term)
-            } && !node.isClearOrClose && !node.isAd
+            !node.isClearOrClose && !node.isAd &&
+                com.example.visual.InputFieldClassifier.isTrueSearchField(node, nodes, pkg)
         }
 
         if (editableSearch != null) {
@@ -120,24 +123,68 @@ object UIElementResolver {
                 bounds = b,
                 clickPoint = Pair(b.centerX(), b.centerY()),
                 resolutionMethod = ResolutionMethod.SEMANTIC_SEARCH_INPUT,
-                confidence = 0.90f
+                confidence = 0.92f
             )
         }
 
-        // 3. Fallback to any active editable node
-        val anyEditable = nodes.firstOrNull { it.isEditable && !it.isClearOrClose && !it.isAd }
-        if (anyEditable != null) {
-            val b = anyEditable.bounds
+        // 3. Only allow a focused top-region editable field if it is NOT a chat composer, comment box, or login field
+        val focusedTopEditable = nodes.firstOrNull { node ->
+            if (!node.isEditable || node.isClearOrClose || node.isAd) return@firstOrNull false
+            val role = com.example.visual.InputFieldClassifier.classifyNode(node, nodes, pkg)
+            val isNotWrongField = role !in setOf(
+                com.example.visual.InputFieldRole.CHAT_COMPOSER,
+                com.example.visual.InputFieldRole.COMMENT_BOX,
+                com.example.visual.InputFieldRole.LOGIN_FIELD
+            )
+            val isFocused = try { node.node.isFocused } catch (_: Exception) { false }
+            isNotWrongField && isFocused && node.bounds.centerY() <= 720
+        }
+        if (focusedTopEditable != null) {
+            val b = focusedTopEditable.bounds
             return ResolvedUIElement(
-                node = anyEditable.node,
-                targetText = anyEditable.displayLabel,
+                node = focusedTopEditable.node,
+                targetText = focusedTopEditable.displayLabel,
                 bounds = b,
                 clickPoint = Pair(b.centerX(), b.centerY()),
                 resolutionMethod = ResolutionMethod.SEMANTIC_SEARCH_INPUT,
-                confidence = 0.75f
+                confidence = 0.82f
             )
         }
 
+        return null
+    }
+
+    /**
+     * Resolves a Chat Composer / Message Input box while strictly rejecting Search Bars and Address Bars.
+     */
+    fun findChatComposerInput(screen: FreshScreenState): ResolvedUIElement? {
+        val nodes = screen.nodes
+        val pkg = screen.foregroundPackage
+
+        val composer = screen.chatComposerFields.firstOrNull()
+            ?: nodes.firstOrNull { node ->
+                !node.isClearOrClose && !node.isAd &&
+                    com.example.visual.InputFieldClassifier.isTrueChatComposer(node, nodes, pkg)
+            }
+            ?: nodes.firstOrNull { node ->
+                node.isEditable && !node.isClearOrClose && !node.isAd &&
+                    com.example.visual.InputFieldClassifier.classifyNode(node, nodes, pkg) !in setOf(
+                        com.example.visual.InputFieldRole.SEARCH_FIELD,
+                        com.example.visual.InputFieldRole.BROWSER_ADDRESS_BAR
+                    ) && node.bounds.centerY() > 900
+            }
+
+        if (composer != null) {
+            val b = composer.bounds
+            return ResolvedUIElement(
+                node = composer.node,
+                targetText = composer.displayLabel,
+                bounds = b,
+                clickPoint = Pair(b.centerX(), b.centerY()),
+                resolutionMethod = ResolutionMethod.SEMANTIC_FORM_FIELD,
+                confidence = 0.94f
+            )
+        }
         return null
     }
 
@@ -449,6 +496,22 @@ object UIElementResolver {
 
         if (q.isBlank()) return null
         val nodes = screen.nodes
+
+        // 1b. Check spatial / contextual UI navigation references ("ऊपर वाला", "नीचे वाला", "search bar", "send button")
+        val unified = screen.unifiedElements.ifEmpty {
+            com.example.visual.MultiSignalFusionEngine.buildUnifiedElements(nodes, screen.foregroundPackage)
+        }
+        val spatialMatch = com.example.visual.ShortTermNavigationMemory.resolveSpatialOrContextualReference(q, unified)
+        if (spatialMatch != null && spatialMatch.bounds.width() > 0 && spatialMatch.bounds.height() > 0) {
+            return ResolvedUIElement(
+                node = spatialMatch.analyzedNode?.node,
+                targetText = spatialMatch.primaryLabel,
+                bounds = spatialMatch.bounds,
+                clickPoint = spatialMatch.centerPoint,
+                resolutionMethod = ResolutionMethod.SEMANTIC_HIERARCHY,
+                confidence = spatialMatch.confidence
+            )
+        }
 
         // 2. Exact Text Match
         val textExact = nodes.firstOrNull { it.text.equals(q, ignoreCase = true) && (it.isClickable || it.node.parent?.isClickable == true) }

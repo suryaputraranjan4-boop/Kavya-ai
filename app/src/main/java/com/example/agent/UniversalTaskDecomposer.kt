@@ -27,6 +27,32 @@ object UniversalTaskDecomposer {
 
     private const val TAG = "UniversalTaskDecomp"
 
+    enum class SubTaskStatus {
+        READY,
+        WAITING_FOR_CLARIFICATION,
+        PAUSED,
+        COMPLETED
+    }
+
+    data class SubTaskIntent(
+        val taskId: String,
+        val intentType: String,
+        val targetApp: String,
+        val searchQuery: String = "",
+        val recipient: String = "",
+        val messageContent: String = "",
+        val isRecipientAmbiguous: Boolean = false,
+        val requiresConfirmation: Boolean = false,
+        val status: SubTaskStatus = SubTaskStatus.READY,
+        val clarificationQuestion: String? = null
+    )
+
+    data class MultiIntentDecomposition(
+        val originalPrompt: String,
+        val subTasks: List<SubTaskIntent>,
+        val hasAmbiguousSubTask: Boolean = subTasks.any { it.status == SubTaskStatus.WAITING_FOR_CLARIFICATION }
+    )
+
     data class DecomposedIntent(
         val goal: String,
         val finalExpectedOutcome: String,
@@ -34,6 +60,89 @@ object UniversalTaskDecomposer {
         val returnTargetApp: String? = null,
         val steps: List<TaskStep>
     )
+
+    /**
+     * Decomposes a single or multi-intent Hindi/English/Hinglish prompt into ordered,
+     * parameter-isolated [SubTaskIntent] objects.
+     */
+    fun decomposeMultiIntentPrompt(userPrompt: String): MultiIntentDecomposition {
+        val trimmed = userPrompt.trim()
+        val clauses = splitIntoClauses(trimmed)
+        val subTasks = mutableListOf<SubTaskIntent>()
+        var currentApp = ""
+
+        clauses.forEachIndexed { idx, clause ->
+            val clauseLower = clause.lowercase(Locale.ROOT)
+            val detectedApp = detectAppNameInClause(clauseLower)
+            if (detectedApp != null) {
+                currentApp = detectedApp
+            }
+            val activeApp = currentApp.ifBlank { "System" }
+
+            val isMessagingClause = clauseLower.contains("भेजो") || clauseLower.contains("bhejo") ||
+                clauseLower.contains("send") || clauseLower.contains("message") ||
+                clauseLower.contains("मैसेज")
+            val isSearchClause = !isMessagingClause && (
+                clauseLower.contains("search") || clauseLower.contains("खोजो") ||
+                    clauseLower.contains("ढूंढो") || clauseLower.contains("khojo") ||
+                    clauseLower.contains("dhundho") || clauseLower.contains("find")
+            )
+
+            when {
+                isSearchClause -> {
+                    val query = extractSongOrQuery(clause) ?: ""
+                    subTasks.add(
+                        SubTaskIntent(
+                            taskId = "task_${idx + 1}",
+                            intentType = "SEARCH",
+                            targetApp = activeApp,
+                            searchQuery = query,
+                            status = if (query.isNotBlank()) SubTaskStatus.READY else SubTaskStatus.WAITING_FOR_CLARIFICATION,
+                            clarificationQuestion = if (query.isBlank()) "आप $activeApp पर क्या search करना चाहते हैं?" else null
+                        )
+                    )
+                }
+                isMessagingClause -> {
+                    val recipient = extractRecipient(clause) ?: ""
+                    val msgPayload = extractMessagePayload(clause) ?: ""
+                    val ambiguous = isAmbiguousRecipient(recipient)
+                    val question = when {
+                        ambiguous -> "आप $activeApp पर किस दोस्त (${recipient.ifBlank { "संपर्क" }}) को '${msgPayload.ifBlank { "मैसेज" }}' भेजना चाहते हैं? कृपया उनका नाम बताइए।"
+                        msgPayload.isBlank() -> "आप $recipient को क्या संदेश भेजना चाहते हैं?"
+                        else -> null
+                    }
+                    subTasks.add(
+                        SubTaskIntent(
+                            taskId = "task_${idx + 1}",
+                            intentType = "SEND_MESSAGE",
+                            targetApp = activeApp,
+                            recipient = recipient,
+                            messageContent = msgPayload,
+                            isRecipientAmbiguous = ambiguous,
+                            requiresConfirmation = true,
+                            status = if (ambiguous || msgPayload.isBlank()) SubTaskStatus.WAITING_FOR_CLARIFICATION else SubTaskStatus.READY,
+                            clarificationQuestion = question
+                        )
+                    )
+                }
+                detectedApp != null -> {
+                    subTasks.add(
+                        SubTaskIntent(
+                            taskId = "task_${idx + 1}",
+                            intentType = "OPEN_APP",
+                            targetApp = detectedApp,
+                            status = SubTaskStatus.READY
+                        )
+                    )
+                }
+            }
+        }
+
+        return MultiIntentDecomposition(
+            originalPrompt = trimmed,
+            subTasks = subTasks
+        )
+    }
 
     /**
      * Determines whether a user prompt represents a complex, multi-action, or multi-app task.
@@ -550,7 +659,14 @@ object UniversalTaskDecomposer {
 
                 val activeApp = currentApp.ifBlank { "System" }
 
-                if (clauseLower.contains("search") || clauseLower.contains("find") || clauseLower.contains("khojo")) {
+                val isMessagingClause = clauseLower.contains("message") || clauseLower.contains("send") ||
+                    clauseLower.contains("bhejo") || clauseLower.contains("भेजो") || clauseLower.contains("मैसेज")
+                val isSearchClause = !isMessagingClause && (
+                    clauseLower.contains("search") || clauseLower.contains("find") ||
+                        clauseLower.contains("khojo") || clauseLower.contains("खोजो") || clauseLower.contains("ढूंढो")
+                )
+
+                if (isSearchClause) {
                     val q = extractSongOrQuery(clause) ?: "query"
                     addStep(
                         actionType = UniversalActionType.TAP,
@@ -592,28 +708,61 @@ object UniversalTaskDecomposer {
                     )
                 }
 
-                if (clauseLower.contains("message") || clauseLower.contains("send") || clauseLower.contains("bhejo")) {
+                if (isMessagingClause) {
                     val recipient = extractRecipient(clause) ?: "recipient"
+                    val msgPayload = extractMessagePayload(clause) ?: ""
+                    val ambiguousRecipient = isAmbiguousRecipient(recipient)
+
+                    if (ambiguousRecipient) {
+                        addStep(
+                            actionType = UniversalActionType.CONFIRM_ACTION,
+                            targetApp = activeApp,
+                            actionDesc = "Clarify ambiguous recipient '$recipient' before opening chat",
+                            param = "आप $activeApp पर किस दोस्त को '$msgPayload' भेजना चाहते हैं?",
+                            recipient = recipient,
+                            messageText = msgPayload,
+                            requiresConfirmation = true,
+                            expectedState = "Recipient clarified by user"
+                        )
+                    }
+
                     addStep(
                         actionType = UniversalActionType.OPEN_CHAT,
                         targetApp = activeApp,
                         actionDesc = "Open conversation with $recipient",
                         param = recipient,
                         recipient = recipient,
+                        messageText = msgPayload,
                         expectedState = "Chat open with $recipient"
                     )
+                    if (msgPayload.isNotBlank()) {
+                        addStep(
+                            actionType = UniversalActionType.TYPE,
+                            targetApp = activeApp,
+                            actionDesc = "Enter message '$msgPayload' for $recipient",
+                            param = msgPayload,
+                            recipient = recipient,
+                            messageText = msgPayload,
+                            selectorType = SelectorType.FORM_FIELD,
+                            expectedState = "Message '$msgPayload' entered in chat composer"
+                        )
+                    }
                     addStep(
                         actionType = UniversalActionType.CONFIRM_ACTION,
                         targetApp = activeApp,
-                        actionDesc = "Ask for confirmation before sending",
+                        actionDesc = "Ask for confirmation before sending '$msgPayload' to $recipient",
+                        recipient = recipient,
+                        messageText = msgPayload,
                         requiresConfirmation = true,
                         expectedState = "User confirmation requested"
                     )
                     addStep(
                         actionType = UniversalActionType.SEND_MESSAGE,
                         targetApp = activeApp,
-                        actionDesc = "Send message to $recipient",
+                        actionDesc = "Send message '$msgPayload' to $recipient",
+                        param = msgPayload,
                         recipient = recipient,
+                        messageText = msgPayload,
                         requiresConfirmation = true,
                         expectedState = "Message sent"
                     )
@@ -698,17 +847,44 @@ object UniversalTaskDecomposer {
     }
 
     private fun extractSongOrQuery(clause: String): String? {
-        val lower = clause.lowercase(Locale.ROOT)
-        val patterns = listOf(
-            Regex("""(?:search|play|for)\s+(?:a\s+particular\s+song|particular\s+song|song|video)?\s*["']?([^,"']+)["']?""", RegexOption.IGNORE_CASE),
-            Regex("""(?:search|play|query)\s+(?:for\s+)?["']?([^,"']+)["']?""", RegexOption.IGNORE_CASE),
-            Regex("""["']([^"']+)["']""")
+        // 1. Check quoted string first
+        val quoted = Regex("""["']([^"']+)["']""").find(clause)?.groupValues?.getOrNull(1)?.trim()
+        if (!quoted.isNullOrBlank()) return quoted
+
+        // 2. Hindi/Hinglish word order: "<App> खोलकर <Query> search करो" / "<App> पर <Query> खोजो"
+        val hindiPreVerbRegex = Regex(
+            """(?i)(?:खोलकर|खोलो\s+और|खोल\s+के|kholkar|khol\s+ke|पर|par|में|me|in\s+\w+)?\s*([A-Za-z0-9\u0900-\u097F][A-Za-z0-9\u0900-\u097F\s\-]{0,40}?)\s+(?:search\s*करो|search\s*karo|सर्च\s*करो|खोजो|ढूंढो|khojo|dhundho|search\b)"""
         )
-        for (pattern in patterns) {
+        val hindiMatch = hindiPreVerbRegex.find(clause)
+        if (hindiMatch != null) {
+            val rawCandidate = hindiMatch.groupValues[1]
+                .replace(Regex("""(?i)^(?:(?:पहले|pehle|first|youtube|whatsapp|instagram|spotify|chrome|खोलकर|kholkar|पर|par|में|me)\s+)+"""), "")
+                .trim()
+            if (rawCandidate.isNotBlank() &&
+                !rawCandidate.equals("youtube", ignoreCase = true) &&
+                !rawCandidate.equals("खोलकर", ignoreCase = true)
+            ) {
+                return rawCandidate
+            }
+        }
+
+        // 3. English word order: "search <Query>" / "search for <Query>"
+        val englishPatterns = listOf(
+            Regex("""(?:search|play|find)\s+(?:for\s+)?(?:a\s+particular\s+song|particular\s+song|song|video)?\s*["']?([^,"']+)["']?""", RegexOption.IGNORE_CASE),
+            Regex("""(?:search|play|query)\s+(?:for\s+)?["']?([^,"']+)["']?""", RegexOption.IGNORE_CASE)
+        )
+        for (pattern in englishPatterns) {
             val match = pattern.find(clause)
             if (match != null) {
-                val candidate = match.groupValues[1].trim()
-                if (candidate.isNotBlank() && candidate.length > 2 && !candidate.equals("song", ignoreCase = true) && !candidate.equals("youtube", ignoreCase = true)) {
+                val candidate = match.groupValues[1]
+                    .replace(Regex("""(?i)\s+(on|in)\s+(youtube|spotify|whatsapp|instagram|chrome)$"""), "")
+                    .trim()
+                if (candidate.isNotBlank() &&
+                    !candidate.equals("करो", ignoreCase = true) &&
+                    !candidate.equals("karo", ignoreCase = true) &&
+                    !candidate.equals("song", ignoreCase = true) &&
+                    !candidate.equals("youtube", ignoreCase = true)
+                ) {
                     return candidate
                 }
             }
@@ -718,14 +894,71 @@ object UniversalTaskDecomposer {
 
     private fun extractRecipient(clause: String): String? {
         val lower = clause.lowercase(Locale.ROOT)
+        // 1. Hindi/Hinglish "<Recipient> को <Message> भेजो"
+        val koRegex = Regex("""(?i)([A-Za-z0-9\u0900-\u097F\s]{2,40}?)\s+को\s+""")
+        val koMatch = koRegex.find(clause)
+        if (koMatch != null) {
+            val rec = koMatch.groupValues[1]
+                .replace(Regex("""(?i)^(?:(?:फिर|और|phir|aur|then|whatsapp|instagram|telegram|पर|par|में|me|पे|pe)\s+)+"""), "")
+                .trim()
+            if (rec.isNotBlank()) return rec
+        }
+
+        // 2. English "send ... to <Recipient>"
+        val toRegex = Regex("""(?i)\bto\s+([A-Za-z0-9\u0900-\u097F\s]{2,25}?)(?:\s+on\s+\w+|\s+saying|\s*$)""")
+        val toMatch = toRegex.find(clause)
+        if (toMatch != null) {
+            val rec = toMatch.groupValues[1].trim()
+            if (rec.isNotBlank()) return rec
+        }
+
         return when {
-            lower.contains("papa") -> "Papa"
-            lower.contains("mom") || lower.contains("mummy") -> "Mom"
-            lower.contains("friend") -> "friend"
-            lower.contains("rahul") -> "Rahul"
+            lower.contains("मेरे दोस्त") || lower.contains("mere dost") -> "मेरे दोस्त"
+            lower.contains("दोस्त") || lower.contains("dost") -> "दोस्त"
+            lower.contains("my friend") || lower.contains("friend") -> "my friend"
+            lower.contains("papa") || lower.contains("पापा") -> "Papa"
+            lower.contains("mom") || lower.contains("mummy") || lower.contains("मम्मी") -> "Mom"
+            lower.contains("rahul") || lower.contains("राहुल") -> "Rahul"
             lower.contains("specified conversation") -> "specified contact"
             else -> null
         }
+    }
+
+    private fun extractMessagePayload(clause: String): String? {
+        // 1. Quoted message payload
+        val quoted = Regex("""["']([^"']+)["']""").find(clause)?.groupValues?.getOrNull(1)?.trim()
+        if (!quoted.isNullOrBlank()) return quoted
+
+        // 2. Hindi/Hinglish: "<Recipient> को <Message> भेजो / bhejo / message करो"
+        val hindiMsgRegex = Regex("""(?i)\s+को\s+(.+?)\s+(?:भेजो|भेजें|भेज\s+दो|bhejo|bhej\s+do|send\s+करो|send\s+karo|मैसेज\s+करो|message\s+karo)(?=\s|$|[.,!?।])""")
+        val hindiMatch = hindiMsgRegex.find(clause)
+        if (hindiMatch != null) {
+            val payload = hindiMatch.groupValues[1]
+                .replace(Regex("""(?i)\s*(का\s+मैसेज|का\s+message|मैसेज|message)$"""), "")
+                .trim()
+            if (payload.isNotBlank()) return payload
+        }
+
+        // 3. English: "send <Message> to <Recipient>"
+        val engMsgRegex = Regex("""(?i)\bsend\s+(?:a\s+message\s+)?["']?(.+?)["']?\s+to\s+""")
+        val engMatch = engMsgRegex.find(clause)
+        if (engMatch != null) {
+            val payload = engMatch.groupValues[1].trim()
+            if (payload.isNotBlank() && !payload.equals("message", ignoreCase = true)) return payload
+        }
+
+        return null
+    }
+
+    fun isAmbiguousRecipient(recipient: String?): Boolean {
+        if (recipient.isNullOrBlank()) return true
+        val norm = recipient.trim().lowercase(Locale.ROOT)
+        val genericRecipients = setOf(
+            "मेरे दोस्त", "दोस्त", "मित्र", "मेरे मित्र", "किसी", "किसी को",
+            "mere dost", "apne dost", "dost", "friend", "my friend", "a friend",
+            "someone", "contact", "recipient", "specified contact"
+        )
+        return norm in genericRecipients
     }
 
     private fun extractImagePromptTopic(clause: String): String? {
@@ -744,7 +977,7 @@ object UniversalTaskDecomposer {
             placeholder
         }
 
-        val pattern = "(?:\\s+(?:और|फिर|उसके बाद|then|phir|after that|finally|ant me|अंत में|and then|aur phir)\\s+|[;\\n]+|\\s*,\\s*)".toRegex(RegexOption.IGNORE_CASE)
+        val pattern = "(?:\\s+(?:और\\s+फिर|और\\s+उसके\\s+बाद|उसके\\s+बाद|और|फिर|and\\s+then|aur\\s+phir|after\\s+that|then|phir|finally|ant\\s+me|अंत\\s+में)\\s+|[;\\n]+|\\s*,\\s*)".toRegex(RegexOption.IGNORE_CASE)
         val rawClauses = protectedInput.split(pattern)
             .map { it.trim() }
             .filter { it.isNotBlank() }

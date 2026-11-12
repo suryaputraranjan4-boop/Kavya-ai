@@ -144,6 +144,26 @@ object VisionPipeline {
         }
     }
 
+    private val analysisInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun tryAcquireAnalysisLock(): Boolean = analysisInFlight.compareAndSet(false, true)
+
+    fun releaseAnalysisLock() {
+        analysisInFlight.set(false)
+    }
+
+    fun invalidateStaleFrameOnResize(width: Int, height: Int) {
+        cachedLatestFrame = null
+        previousFrameHash = ""
+        Log.d(TAG, "Invalidated cached frame after captured content resize to ${width}x${height}")
+    }
+
+    fun hasSignificantFrameChange(bitmap: Bitmap): Boolean {
+        if (bitmap.isRecycled) return false
+        val newHash = computeFrameHash(bitmap)
+        return newHash.isNotBlank() && newHash != previousFrameHash
+    }
+
     fun clearFrame() {
         reset()
     }
@@ -153,6 +173,7 @@ object VisionPipeline {
         previousFrameHash = ""
         previousPackage = ""
         framesProcessedCount = 0
+        analysisInFlight.set(false)
         _perceptionState.value = VisualPerceptionState(isPipelineActive = false)
     }
 

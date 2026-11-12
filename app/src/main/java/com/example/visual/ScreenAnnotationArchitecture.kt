@@ -93,6 +93,21 @@ class ScreenCoordinateMapper(private val context: Context? = null) {
     @Volatile
     private var cachedGeometry: DisplayGeometry? = null
 
+    @Volatile
+    var capturedFrameWidth: Int = 0
+        private set
+
+    @Volatile
+    var capturedFrameHeight: Int = 0
+        private set
+
+    fun updateCapturedFrameGeometry(width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            capturedFrameWidth = width
+            capturedFrameHeight = height
+        }
+    }
+
     fun refreshGeometry(overrideContext: Context? = context): DisplayGeometry {
         val ctx = overrideContext ?: context
         if (ctx == null) {
@@ -245,6 +260,24 @@ class ScreenCoordinateMapper(private val context: Context? = null) {
             screenWidth,
             screenHeight
         )
+    }
+
+    /**
+     * Maps a single (x, y) point from a resized screenshot or MediaProjection frame to physical screen pixels.
+     */
+    fun mapBitmapPointToScreen(
+        bitmapX: Float,
+        bitmapY: Float,
+        bitmapWidth: Int,
+        bitmapHeight: Int,
+        context: Context? = null
+    ): Pair<Int, Int> {
+        val geom = if (context != null) refreshGeometry(context) else getGeometry()
+        val scaleX = geom.width.toFloat() / bitmapWidth.coerceAtLeast(1)
+        val scaleY = geom.height.toFloat() / bitmapHeight.coerceAtLeast(1)
+        val px = (bitmapX * scaleX).roundToInt().coerceIn(1, (geom.width - 1).coerceAtLeast(1))
+        val py = (bitmapY * scaleY).roundToInt().coerceIn(1, (geom.height - 1).coerceAtLeast(1))
+        return Pair(px, py)
     }
 
     /**

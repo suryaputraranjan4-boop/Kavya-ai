@@ -528,6 +528,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         }
         
         var lastError: Exception? = null
+        var lastClassifiedError: AiClassifiedError? = null
         try {
             if (context != null) {
                 val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
@@ -583,7 +584,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 val customBackup = consultCustomApis(prompt)
                 if (!customBackup.isNullOrBlank()) return@withContext customBackup
 
-                return@withContext "AI model is currently unavailable."
+                val missingKeyError = AiErrorClassifier.recordError(
+                    AiClassifiedError(category = AiErrorCategory.MISSING_API_KEY)
+                )
+                return@withContext missingKeyError.toErrorPrefixString()
             }
 
             // Consult OpenRouter as Gemini's secondary AI partner when task is complex
@@ -647,11 +651,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
             systemInstruction = Content(parts = listOf(Part(text = systemInstructionText)))
         )
 
-        // Try supported model tiers with exponential backoff for 429 rate limit errors
+        // Try supported model tiers with bounded retry, Retry-After support, and non-retryable fast-fail
         val candidateModels = getAvailableModels()
-        for (model in candidateModels) {
+
+        modelLoop@ for (model in candidateModels) {
             var attempt = 0
-            val maxRetries = 1
+            val maxRetries = 2
 
             while (attempt <= maxRetries) {
                 val startTime = System.currentTimeMillis()
@@ -666,6 +671,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
                     if (!text.isNullOrBlank()) {
                         val latency = System.currentTimeMillis() - startTime
+                        AiErrorClassifier.clearLastError()
                         com.example.ai.providers.RuntimeActivityTracker.logEvent(
                             context = context,
                             providerId = "gemini",
@@ -677,11 +683,26 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         return@withContext text.trim()
                     } else {
                         Log.w(TAG, "Empty candidate response from $model")
+                        lastClassifiedError = AiErrorClassifier.recordError(
+                            AiClassifiedError(
+                                category = AiErrorCategory.EMPTY_RESPONSE,
+                                redactedLogSummary = "Empty candidate response from $model"
+                            )
+                        )
+                        break
                     }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    AiErrorClassifier.classifyThrowable(cancelled)
+                    throw cancelled
                 } catch (e: HttpException) {
                     val latency = System.currentTimeMillis() - startTime
                     lastError = e
                     val code = e.code()
+                    val errorBodyString = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+                    val retryAfterHeader = try { e.response()?.headers()?.get("Retry-After") } catch (_: Exception) { null }
+                    val classified = AiErrorClassifier.classifyHttpResponse(code, errorBodyString, retryAfterHeader)
+                    lastClassifiedError = classified
+
                     com.example.ai.providers.RuntimeActivityTracker.logEvent(
                         context = context,
                         providerId = "gemini",
@@ -689,55 +710,80 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         task = "Main Brain Reasoning",
                         success = false,
                         latencyMs = latency,
-                        errorCategory = "HTTP $code"
+                        errorCategory = classified.category.name
                     )
                     com.example.api.QuotaManager.instance.apply {
-                        lastErrorType = "HttpException"
+                        lastErrorType = classified.category.name
                         lastErrorTime = System.currentTimeMillis()
                         lastErrorRequestType = "TEXT"
                         if (code == 429) rateLimitErrorsCount++
                     }
-                    val errorBodyString = e.response()?.errorBody()?.string()
-                    Log.e(TAG, "Gemini API HttpException $code from model $model on attempt $attempt: ${e.message()} - Body: $errorBodyString")
-                    
-                    if (code == 429 || code == 503 || code == 500) {
+                    Log.e(TAG, "Gemini API error on model $model (attempt $attempt): ${classified.redactedLogSummary}")
+
+                    // Fast-fail across all models on non-retryable credential/account/quota errors
+                    if (classified.category in listOf(
+                            AiErrorCategory.INVALID_API_KEY,
+                            AiErrorCategory.MISSING_API_KEY,
+                            AiErrorCategory.AUTHENTICATION_FAILURE,
+                            AiErrorCategory.QUOTA_EXHAUSTED
+                        )
+                    ) {
+                        break@modelLoop
+                    }
+
+                    if (classified.isRetryable) {
                         markModelThrottled(model)
                         attempt++
                         if (attempt <= maxRetries) {
-                            val backoffMs = (400L * (1 shl attempt)) + (0..150).random()
-                            Log.d(TAG, "Transient HTTP $code on $model. Backing off ${backoffMs}ms before retry...")
+                            val baseWait = classified.retryAfterMs ?: (600L * (1 shl attempt))
+                            val backoffMs = kotlin.math.min(baseWait + (50..200).random(), 5000L)
+                            Log.d(TAG, "Retryable ${classified.category} on $model. Backing off ${backoffMs}ms before retry...")
                             delay(backoffMs)
                         } else {
-                            Log.w(TAG, "Model $model exhausted retries on $code. Falling back to next model tier...")
-                            break // Break to try next model in candidateModels
+                            Log.w(TAG, "Model $model exhausted retries on ${classified.category}. Trying next model tier...")
+                            break
                         }
                     } else {
-                        // Other HTTP error (e.g., 404, 400), try next model tier
-                        Log.w(TAG, "Non-transient HTTP error $code on model $model, trying next model tier...")
+                        Log.w(TAG, "Non-retryable ${classified.category} (HTTP $code) on model $model, trying next model tier...")
                         break
                     }
                 } catch (e: IOException) {
                     lastError = e
+                    val classified = AiErrorClassifier.classifyThrowable(e)
+                    lastClassifiedError = classified
                     com.example.api.QuotaManager.instance.apply {
-                        lastErrorType = "IOException"
+                        lastErrorType = classified.category.name
                         lastErrorTime = System.currentTimeMillis()
                         lastErrorRequestType = "TEXT"
                     }
-                    Log.w(TAG, "Network I/O error on model $model: ${e.message}")
-                    attempt++
-                    if (attempt <= maxRetries) {
-                        delay(400L * attempt)
+                    Log.w(TAG, "Network/IO error on model $model: ${classified.redactedLogSummary}")
+                    if (classified.category == AiErrorCategory.NETWORK_UNAVAILABLE ||
+                        classified.category == AiErrorCategory.DNS_FAILURE
+                    ) {
+                        attempt++
+                        if (attempt <= 1) {
+                            delay(500L)
+                        } else {
+                            break@modelLoop
+                        }
                     } else {
-                        break
+                        attempt++
+                        if (attempt <= maxRetries) {
+                            delay(500L * attempt)
+                        } else {
+                            break
+                        }
                     }
                 } catch (e: Exception) {
                     lastError = e
+                    val classified = AiErrorClassifier.classifyThrowable(e)
+                    lastClassifiedError = classified
                     com.example.api.QuotaManager.instance.apply {
-                        lastErrorType = "Exception"
+                        lastErrorType = classified.category.name
                         lastErrorTime = System.currentTimeMillis()
                         lastErrorRequestType = "TEXT"
                     }
-                    Log.e(TAG, "Unexpected error on model $model: ${e.message}", e)
+                    Log.e(TAG, "Unexpected error on model $model: ${classified.redactedLogSummary}")
                     break
                 }
             }
@@ -746,7 +792,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
         } finally {
             com.example.api.QuotaManager.instance.releaseQuota(requestId)
         }
-        return@withContext "AI model is currently unavailable."
+        val finalClassified = lastClassifiedError
+            ?: lastError?.let { AiErrorClassifier.classifyThrowable(it) }
+            ?: AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.SERVICE_UNAVAILABLE))
+        return@withContext finalClassified.toErrorPrefixString()
     }
 
     suspend fun generateSpeechAudio(
@@ -954,7 +1003,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 emit(openRouterBackup)
                 return@flow
             }
-            emit("Gemini API key is not configured. Please configure your API key in Settings -> AI API Hub.")
+            val missingKey = AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.MISSING_API_KEY))
+            emit(missingKey.toErrorPrefixString())
             return@flow
         }
 
@@ -967,9 +1017,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
         val candidateModels = getAvailableModels()
         var hasEmittedTokens = false
+        var lastStreamClassifiedError: AiClassifiedError? = null
 
         try {
-            for (model in candidateModels) {
+            modelLoop@ for (model in candidateModels) {
                 if (hasEmittedTokens) break
                 val request = okhttp3.Request.Builder()
                     .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$apiKey")
@@ -980,53 +1031,101 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
                 try {
                     val response = okHttpClient.newCall(request).execute()
+                    var abortAllModels = false
                     response.use { res ->
                         if (!res.isSuccessful) {
                             val code = res.code
+                            val errBody = try { res.body?.string() } catch (_: Exception) { null }
+                            val retryAfter = res.header("Retry-After")
+                            val classified = AiErrorClassifier.classifyHttpResponse(code, errBody, retryAfter)
+                            lastStreamClassifiedError = classified
+                            Log.w(TAG, "Stream HTTP error on $model: ${classified.redactedLogSummary}")
+
                             if (code == 429 || code == 503 || code == 500) {
                                 markModelThrottled(model)
-                                Log.w(TAG, "Stream HTTP $code on $model, attempting next tier...")
-                            } else {
-                                Log.w(TAG, "Stream HTTP $code on $model, attempting next tier...")
+                            }
+                            if (classified.category in listOf(
+                                    AiErrorCategory.INVALID_API_KEY,
+                                    AiErrorCategory.MISSING_API_KEY,
+                                    AiErrorCategory.AUTHENTICATION_FAILURE,
+                                    AiErrorCategory.QUOTA_EXHAUSTED
+                                )
+                            ) {
+                                abortAllModels = true
                             }
                             return@use
                         }
 
+                        var sawValidChunk = false
+                        var parseFailures = 0
                         res.body?.source()?.let { source ->
                             while (!source.exhausted()) {
                                 val line = source.readUtf8LineStrict()
                                 if (line.startsWith("data: ")) {
-                                    val dataJson = line.substring(6)
-                                    if (dataJson.isNotBlank()) {
+                                    val dataJson = line.substring(6).trim()
+                                    if (dataJson.isNotBlank() && dataJson != "[DONE]") {
                                         try {
                                             val chunk = json.decodeFromString(GenerateContentResponse.serializer(), dataJson)
+                                            sawValidChunk = true
                                             val textChunk = chunk.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: ""
                                             if (textChunk.isNotEmpty()) {
                                                 hasEmittedTokens = true
+                                                AiErrorClassifier.clearLastError()
                                                 emit(textChunk)
                                             }
                                         } catch (e: Exception) {
-                                            // parse error on chunk
+                                            parseFailures++
+                                            Log.w(TAG, "Malformed SSE chunk on $model: ${SecretRedactor.redact(e.message)}")
                                         }
                                     }
                                 }
                             }
                         }
+                        if (!hasEmittedTokens) {
+                            lastStreamClassifiedError = AiErrorClassifier.recordError(
+                                AiClassifiedError(
+                                    category = if (parseFailures > 0 && !sawValidChunk) {
+                                        AiErrorCategory.MALFORMED_RESPONSE
+                                    } else {
+                                        AiErrorCategory.EMPTY_RESPONSE
+                                    },
+                                    redactedLogSummary = "Stream completed without tokens on $model (parseFailures=$parseFailures)"
+                                )
+                            )
+                        }
                     }
 
-                    if (hasEmittedTokens) {
-                        break
+                    if (abortAllModels || hasEmittedTokens) {
+                        break@modelLoop
                     }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    AiErrorClassifier.classifyThrowable(cancelled)
+                    throw cancelled
                 } catch (e: Exception) {
-                    Log.w(TAG, "Stream error on $model: ${e.message}")
+                    val classified = if (hasEmittedTokens) {
+                        AiErrorClassifier.recordError(
+                            AiClassifiedError(
+                                category = AiErrorCategory.STREAMING_INTERRUPTION,
+                                redactedLogSummary = "Stream interrupted mid-response on $model: ${SecretRedactor.redact(e.message)}"
+                            )
+                        )
+                    } else {
+                        AiErrorClassifier.classifyThrowable(e)
+                    }
+                    lastStreamClassifiedError = classified
+                    Log.w(TAG, "Stream error on $model: ${classified.redactedLogSummary}")
+                    if (classified.category == AiErrorCategory.NETWORK_UNAVAILABLE ||
+                        classified.category == AiErrorCategory.DNS_FAILURE
+                    ) {
+                        break@modelLoop
+                    }
                 }
             }
 
             if (!hasEmittedTokens) {
-                // Fallback to local intelligent assistant response
-                val localAnswer = LocalAssistantEngine.handleFastQuery(prompt) 
-                    ?: LocalAssistantEngine.getHighTrafficFallbackResponse(prompt)
-                emit(localAnswer)
+                val err = lastStreamClassifiedError
+                    ?: AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.SERVICE_UNAVAILABLE))
+                emit(err.toErrorPrefixString())
             }
         } finally {
             com.example.api.QuotaManager.instance.releaseQuota(requestId)
@@ -1034,9 +1133,13 @@ class KavyaAI(private val context: android.content.Context? = null) {
     }.flowOn(kotlinx.coroutines.Dispatchers.IO)
 
     suspend fun transcribeAudio(pcmData: ByteArray, sampleRate: Int = 16000): String = withContext(Dispatchers.IO) {
-        if (pcmData.isEmpty()) return@withContext ""
+        if (pcmData.isEmpty()) {
+            AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.NO_SPEECH_RECOGNIZED)
+            return@withContext ""
+        }
         if (isStrictOfflineMode()) {
             Log.i(TAG, "Strict Offline Mode active: skipping cloud audio transcription.")
+            AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.RECOGNITION_SERVICE_UNAVAILABLE)
             return@withContext ""
         }
         val wavBytes = createWavBytes(pcmData, sampleRate)
@@ -1053,7 +1156,11 @@ class KavyaAI(private val context: android.content.Context? = null) {
             )
         )
         val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
-        if (apiKey.isBlank()) return@withContext ""
+        if (apiKey.isBlank()) {
+            AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.MISSING_API_KEY))
+            AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.TRANSCRIPTION_SERVICE_ERROR)
+            return@withContext ""
+        }
         for (model in getAvailableModels()) {
             try {
                 val response = RetrofitClient.service.generateContent(
@@ -1064,9 +1171,23 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 val transcript = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
                 if (!transcript.isNullOrBlank()) {
                     return@withContext transcript
+                } else {
+                    AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.EMPTY_TRANSCRIPTION)
                 }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
-                Log.w("KavyaAI", "Error transcribing audio on $model: ${e.message}")
+                val classified = AiErrorClassifier.classifyThrowable(e)
+                when (classified.category) {
+                    AiErrorCategory.NETWORK_UNAVAILABLE, AiErrorCategory.DNS_FAILURE ->
+                        AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.RECOGNITION_NETWORK_FAILURE)
+                    AiErrorCategory.CONNECTION_TIMEOUT ->
+                        AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.RECOGNITION_TIMEOUT)
+                    else ->
+                        AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.TRANSCRIPTION_SERVICE_ERROR)
+                }
+                Log.w("KavyaAI", "Error transcribing audio on $model: ${classified.redactedLogSummary}")
+                if (!classified.isRetryable) break
             }
         }
         ""

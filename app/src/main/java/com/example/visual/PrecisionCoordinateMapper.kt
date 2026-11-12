@@ -89,8 +89,8 @@ class PrecisionCoordinateMapper(private val context: Context) {
     }
 
     /**
-     * Converts coordinates from a resized screenshot back to physical device coordinates.
-     * E.g. When the original screen is 1080x2400 but the vision screenshot was scaled to 460x1024.
+     * Converts coordinates from a resized screenshot or MediaProjection frame back to physical device coordinates,
+     * accounting for letterboxing/pillarboxing when captured content aspect ratio differs from display aspect ratio.
      */
     fun fromScreenshotCoordinates(
         screenshotX: Float,
@@ -98,14 +98,14 @@ class PrecisionCoordinateMapper(private val context: Context) {
         screenshotWidth: Int,
         screenshotHeight: Int
     ): DeviceCoordinates {
-        val dims = getPhysicalDimensions()
-        val scaleX = dims.width.toFloat() / screenshotWidth.coerceAtLeast(1)
-        val scaleY = dims.height.toFloat() / screenshotHeight.coerceAtLeast(1)
-
-        val deviceX = (screenshotX * scaleX).coerceIn(1f, (dims.width - 1).toFloat())
-        val deviceY = (screenshotY * scaleY).coerceIn(1f, (dims.height - 1).toFloat())
-
-        return DeviceCoordinates(deviceX, deviceY)
+        val mapped = ScreenAnnotationManager.coordinateMapper.mapBitmapPointToScreen(
+            bitmapX = screenshotX,
+            bitmapY = screenshotY,
+            bitmapWidth = screenshotWidth,
+            bitmapHeight = screenshotHeight,
+            context = context
+        )
+        return DeviceCoordinates(mapped.first.toFloat(), mapped.second.toFloat())
     }
 
     /**
