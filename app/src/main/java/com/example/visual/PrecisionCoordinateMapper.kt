@@ -43,18 +43,18 @@ class PrecisionCoordinateMapper(private val context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val currentMetrics = try { windowManager?.currentWindowMetrics } catch (e: Exception) { null }
             val bounds = currentMetrics?.bounds
-            width = bounds?.width()?.coerceAtLeast(720) ?: 1080
-            height = bounds?.height()?.coerceAtLeast(1280) ?: 2400
             val display = try { context.display } catch (e: Exception) { null }
             rotation = try { display?.rotation ?: Surface.ROTATION_0 } catch (e: Exception) { Surface.ROTATION_0 }
             try { display?.getRealMetrics(metrics) } catch (e: Exception) { /* ignore */ }
+            width = metrics.widthPixels.takeIf { it > 0 } ?: bounds?.width()?.takeIf { it > 0 } ?: 1080
+            height = metrics.heightPixels.takeIf { it > 0 } ?: bounds?.height()?.takeIf { it > 0 } ?: 2400
         } else {
             @Suppress("DEPRECATION")
             val defaultDisplay = try { windowManager?.defaultDisplay } catch (e: Exception) { null }
             @Suppress("DEPRECATION")
             try { defaultDisplay?.getRealMetrics(metrics) } catch (e: Exception) { /* ignore */ }
-            width = metrics.widthPixels.coerceAtLeast(720)
-            height = metrics.heightPixels.coerceAtLeast(1280)
+            width = metrics.widthPixels.takeIf { it > 0 } ?: 1080
+            height = metrics.heightPixels.takeIf { it > 0 } ?: 2400
             @Suppress("DEPRECATION")
             rotation = try { defaultDisplay?.rotation ?: Surface.ROTATION_0 } catch (e: Exception) { Surface.ROTATION_0 }
         }
@@ -63,8 +63,8 @@ class PrecisionCoordinateMapper(private val context: Context) {
         val density = if (metrics.density > 0f) metrics.density else (dpi / 160f)
 
         return PhysicalDimensions(
-            width = width,
-            height = height,
+            width = width.coerceAtLeast(1),
+            height = height.coerceAtLeast(1),
             densityDpi = dpi,
             densityScale = density,
             rotation = rotation
@@ -79,11 +79,11 @@ class PrecisionCoordinateMapper(private val context: Context) {
         val safeNormX = normX.coerceIn(0.001f, 0.999f)
         val safeNormY = normY.coerceIn(0.001f, 0.999f)
 
-        val rawX = safeNormX * dims.width
-        val rawY = safeNormY * dims.height
+        val rawX = safeNormX * (dims.width - 1).coerceAtLeast(0)
+        val rawY = safeNormY * (dims.height - 1).coerceAtLeast(0)
 
-        val clampedX = rawX.coerceIn(1f, (dims.width - 1).toFloat())
-        val clampedY = rawY.coerceIn(1f, (dims.height - 1).toFloat())
+        val clampedX = rawX.coerceIn(0f, (dims.width - 1).coerceAtLeast(0).toFloat())
+        val clampedY = rawY.coerceIn(0f, (dims.height - 1).coerceAtLeast(0).toFloat())
 
         return DeviceCoordinates(clampedX, clampedY)
     }
@@ -99,11 +99,42 @@ class PrecisionCoordinateMapper(private val context: Context) {
         screenshotHeight: Int
     ): DeviceCoordinates {
         val dims = getPhysicalDimensions()
-        val scaleX = dims.width.toFloat() / screenshotWidth.coerceAtLeast(1)
-        val scaleY = dims.height.toFloat() / screenshotHeight.coerceAtLeast(1)
-        val clampedX = (screenshotX * scaleX).coerceIn(0f, dims.width.toFloat())
-        val clampedY = (screenshotY * scaleY).coerceIn(0f, dims.height.toFloat())
-        return DeviceCoordinates(clampedX, clampedY)
+        return mapScreenshotPoint(
+            screenshotX = screenshotX,
+            screenshotY = screenshotY,
+            screenshotWidth = screenshotWidth,
+            screenshotHeight = screenshotHeight,
+            screenWidth = dims.width,
+            screenHeight = dims.height
+        )
+    }
+
+    internal companion object {
+        /**
+         * Maps both endpoints of a captured frame onto the physical display without
+         * artificial minimum sizes or off-by-one overflow at the right/bottom edges.
+         */
+        fun mapScreenshotPoint(
+            screenshotX: Float,
+            screenshotY: Float,
+            screenshotWidth: Int,
+            screenshotHeight: Int,
+            screenWidth: Int,
+            screenHeight: Int
+        ): DeviceCoordinates {
+            if (screenshotWidth <= 0 || screenshotHeight <= 0 || screenWidth <= 0 || screenHeight <= 0) {
+                return DeviceCoordinates(0f, 0f)
+            }
+            val sourceMaxX = (screenshotWidth - 1).coerceAtLeast(1)
+            val sourceMaxY = (screenshotHeight - 1).coerceAtLeast(1)
+            val targetMaxX = (screenWidth - 1).coerceAtLeast(0)
+            val targetMaxY = (screenHeight - 1).coerceAtLeast(0)
+            val x = screenshotX.coerceIn(0f, sourceMaxX.toFloat()) *
+                targetMaxX.toFloat() / sourceMaxX.toFloat()
+            val y = screenshotY.coerceIn(0f, sourceMaxY.toFloat()) *
+                targetMaxY.toFloat() / sourceMaxY.toFloat()
+            return DeviceCoordinates(x, y)
+        }
     }
 
     /**
@@ -111,8 +142,8 @@ class PrecisionCoordinateMapper(private val context: Context) {
      */
     fun toNormalized(deviceX: Float, deviceY: Float): NormalizedCoordinates {
         val dims = getPhysicalDimensions()
-        val normX = (deviceX / dims.width.coerceAtLeast(1)).coerceIn(0f, 1f)
-        val normY = (deviceY / dims.height.coerceAtLeast(1)).coerceIn(0f, 1f)
+        val normX = (deviceX / (dims.width - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
+        val normY = (deviceY / (dims.height - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
         return NormalizedCoordinates(normX, normY)
     }
 
@@ -128,8 +159,8 @@ class PrecisionCoordinateMapper(private val context: Context) {
      */
     fun getSafeCenter(bounds: Rect): DeviceCoordinates {
         val dims = getPhysicalDimensions()
-        val cx = bounds.centerX().toFloat().coerceIn(1f, (dims.width - 1).toFloat())
-        val cy = bounds.centerY().toFloat().coerceIn(1f, (dims.height - 1).toFloat())
+        val cx = bounds.centerX().toFloat().coerceIn(0f, (dims.width - 1).coerceAtLeast(0).toFloat())
+        val cy = bounds.centerY().toFloat().coerceIn(0f, (dims.height - 1).coerceAtLeast(0).toFloat())
         return DeviceCoordinates(cx, cy)
     }
 }
