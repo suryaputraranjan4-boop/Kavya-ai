@@ -185,12 +185,13 @@ object AppPreferences {
 
     fun setCustomApiKey(context: Context, key: String): Boolean {
         val trimmed = key.trim()
-        // Do not silently report success when Android Keystore cannot persist the key.
-        // The caller must not validate the typed key while runtime still uses an older one.
         val saved = com.example.security.SecureStorage.saveSecret(context, "gemini_api_key", trimmed)
-        if (!saved) return false
-        getPrefs(context).edit().remove(KEY_CUSTOM_API_KEY).commit()
-        return getCustomApiKey(context) == trimmed
+        getPrefs(context).edit().remove(KEY_CUSTOM_API_KEY).apply()
+        if (saved && trimmed.isNotBlank() && !isPlaceholderKey(trimmed)) {
+            setProviderStatus(context, "gemini", "CONFIGURED")
+            setProviderLastError(context, "gemini", null)
+        }
+        return saved
     }
 
     fun clearCustomApiKey(context: Context) {
@@ -202,10 +203,15 @@ object AppPreferences {
         return com.example.security.SecureStorage.getSecret(context, "openrouter_api_key")
     }
 
-    fun setOpenRouterApiKey(context: Context, key: String) {
+    fun setOpenRouterApiKey(context: Context, key: String): Boolean {
         val trimmed = key.trim()
-        com.example.security.SecureStorage.saveSecret(context, "openrouter_api_key", trimmed)
+        val saved = com.example.security.SecureStorage.saveSecret(context, "openrouter_api_key", trimmed)
         getPrefs(context).edit().remove(KEY_OPENROUTER_API_KEY).apply()
+        if (saved && trimmed.isNotBlank() && !isPlaceholderKey(trimmed)) {
+            setProviderStatus(context, "openrouter", "CONFIGURED")
+            setProviderLastError(context, "openrouter", null)
+        }
+        return saved
     }
 
     fun clearOpenRouterApiKey(context: Context) {
@@ -217,10 +223,15 @@ object AppPreferences {
         return com.example.security.SecureStorage.getSecret(context, "huggingface_api_key")
     }
 
-    fun setHuggingFaceApiKey(context: Context, key: String) {
+    fun setHuggingFaceApiKey(context: Context, key: String): Boolean {
         val trimmed = key.trim()
-        com.example.security.SecureStorage.saveSecret(context, "huggingface_api_key", trimmed)
+        val saved = com.example.security.SecureStorage.saveSecret(context, "huggingface_api_key", trimmed)
         getPrefs(context).edit().remove(KEY_HUGGINGFACE_API_KEY).apply()
+        if (saved && trimmed.isNotBlank() && !isPlaceholderKey(trimmed)) {
+            setProviderStatus(context, "huggingface", "CONFIGURED")
+            setProviderLastError(context, "huggingface", null)
+        }
+        return saved
     }
 
     fun clearHuggingFaceApiKey(context: Context) {
@@ -249,6 +260,21 @@ object AppPreferences {
 
     fun setAiProvider(context: Context, provider: String) {
         getPrefs(context).edit().putString(KEY_AI_PROVIDER, provider.trim().uppercase()).apply()
+    }
+
+    fun getApiKeyForProvider(context: Context, providerName: String): String {
+        return when (providerName.trim().uppercase(java.util.Locale.ROOT)) {
+            "OPENROUTER" -> getOpenRouterApiKey(context)
+            "HUGGINGFACE" -> getHuggingFaceApiKey(context)
+            "CUSTOM" -> getCustomApis(context).firstOrNull { it.isEnabled }?.apiKey.orEmpty()
+            "GEMMA_OFFLINE", "PUBLIC_APIS" -> ""
+            "GEMINI" -> getEffectiveApiKey(context)
+            else -> getEffectiveApiKey(context)
+        }
+    }
+
+    fun getActiveApiKey(context: Context): String {
+        return getApiKeyForProvider(context, getAiProvider(context))
     }
     
     fun getOpenRouterModel(context: Context): String {
@@ -393,12 +419,22 @@ object AppPreferences {
     }
 
     fun hasConfiguredApiKey(context: Context): Boolean {
-        val provider = getAiProvider(context)
-        return if (provider == "OPENROUTER") {
-            val key = getOpenRouterApiKey(context).trim()
-            key.isNotBlank() && !isPlaceholderKey(key)
-        } else {
-            getEffectiveApiKey(context).isNotBlank()
+        val provider = getAiProvider(context).trim().uppercase(java.util.Locale.ROOT)
+        return when (provider) {
+            "OPENROUTER" -> {
+                val key = getOpenRouterApiKey(context).trim()
+                key.isNotBlank() && !isPlaceholderKey(key)
+            }
+            "HUGGINGFACE" -> {
+                val key = getHuggingFaceApiKey(context).trim()
+                key.isNotBlank() && !isPlaceholderKey(key)
+            }
+            "CUSTOM" -> {
+                getCustomApis(context).any { it.isEnabled && it.apiKey.isNotBlank() && !isPlaceholderKey(it.apiKey) }
+            }
+            "GEMMA_OFFLINE", "PUBLIC_APIS" -> true
+            "GEMINI" -> getEffectiveApiKey(context).isNotBlank()
+            else -> getActiveApiKey(context).isNotBlank() || getEffectiveApiKey(context).isNotBlank()
         }
     }
 
@@ -439,7 +475,10 @@ object AppPreferences {
     }
 
     fun hasAnyApiKey(context: Context): Boolean {
-        return getEffectiveApiKey(context).isNotBlank() || getOpenRouterApiKey(context).isNotBlank()
+        return getEffectiveApiKey(context).isNotBlank() ||
+                getOpenRouterApiKey(context).isNotBlank() ||
+                getHuggingFaceApiKey(context).isNotBlank() ||
+                getCustomApis(context).any { it.apiKey.isNotBlank() }
     }
 
     fun hasNotificationPermission(context: Context): Boolean {

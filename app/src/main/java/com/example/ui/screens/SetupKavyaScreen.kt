@@ -512,14 +512,20 @@ fun SetupKavyaScreen(
                             val model = openRouterModelInput.trim().ifBlank { "openrouter/free" }
 
                             // Persist securely
-                            AppPreferences.setOpenRouterApiKey(context, key)
+                            val savedOr = AppPreferences.setOpenRouterApiKey(context, key)
                             AppPreferences.setOpenRouterModel(context, model)
+                            var savedHf = true
                             if (huggingFaceKeyInput.isNotBlank()) {
-                                AppPreferences.setHuggingFaceApiKey(context, huggingFaceKeyInput.trim())
+                                savedHf = AppPreferences.setHuggingFaceApiKey(context, huggingFaceKeyInput.trim())
                                 AppPreferences.setHuggingFaceModel(context, huggingFaceModelInput.trim())
                             }
+                            var savedGemini = true
                             if (geminiKeyInput.isNotBlank()) {
-                                AppPreferences.setCustomApiKey(context, geminiKeyInput.trim())
+                                savedGemini = AppPreferences.setCustomApiKey(context, geminiKeyInput.trim())
+                            }
+                            if (!savedOr || !savedHf || !savedGemini) {
+                                errorMessage = "Key Storage Error: Could not save keys securely. Please try again."
+                                return@Button
                             }
                             navigateNext()
                         },
@@ -549,11 +555,17 @@ fun SetupKavyaScreen(
                     // Continue with Gemini only button (OpenRouter is strictly optional)
                     OutlinedButton(
                         onClick = {
+                            var savedGemini = true
                             if (geminiKeyInput.isNotBlank()) {
-                                AppPreferences.setCustomApiKey(context, geminiKeyInput.trim())
+                                savedGemini = AppPreferences.setCustomApiKey(context, geminiKeyInput.trim())
                             }
+                            var savedHf = true
                             if (huggingFaceKeyInput.isNotBlank()) {
-                                AppPreferences.setHuggingFaceApiKey(context, huggingFaceKeyInput.trim())
+                                savedHf = AppPreferences.setHuggingFaceApiKey(context, huggingFaceKeyInput.trim())
+                            }
+                            if (!savedGemini || !savedHf) {
+                                errorMessage = "Key Storage Error: Could not save keys securely. Please try again."
+                                return@OutlinedButton
                             }
                             navigateNext()
                         },

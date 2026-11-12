@@ -394,6 +394,13 @@ object AiErrorClassifier {
             is SSLException -> AiErrorCategory.NETWORK_UNAVAILABLE
             is IOException -> {
                 when {
+                    messageLower.contains("api key") && messageLower.contains("missing") -> AiErrorCategory.MISSING_API_KEY
+                    messageLower.contains("api_key_invalid") || messageLower.contains("invalid api key") -> AiErrorCategory.INVALID_API_KEY
+                    messageLower.contains("insufficient_quota") ||
+                        (messageLower.contains("quota") && (messageLower.contains("exceeded") || messageLower.contains("billing") || messageLower.contains("exhausted") || messageLower.contains("credit limit") || messageLower.contains("limit: 0") || messageLower.contains("resource_exhausted"))) -> AiErrorCategory.QUOTA_EXHAUSTED
+                    messageLower.contains("rate limit") || messageLower.contains("429") -> AiErrorCategory.RATE_LIMIT
+                    messageLower.contains("malformed") || messageLower.contains("json") -> AiErrorCategory.MALFORMED_RESPONSE
+                    messageLower.contains("empty response") -> AiErrorCategory.EMPTY_RESPONSE
                     messageLower.contains("timeout") || messageLower.contains("timed out") -> AiErrorCategory.CONNECTION_TIMEOUT
                     messageLower.contains("unable to resolve host") || messageLower.contains("dns") -> AiErrorCategory.DNS_FAILURE
                     messageLower.contains("network is unreachable") ||
@@ -409,7 +416,8 @@ object AiErrorClassifier {
                 when {
                     messageLower.contains("api key") && messageLower.contains("missing") -> AiErrorCategory.MISSING_API_KEY
                     messageLower.contains("api_key_invalid") || messageLower.contains("invalid api key") -> AiErrorCategory.INVALID_API_KEY
-                    messageLower.contains("quota") -> AiErrorCategory.QUOTA_EXHAUSTED
+                    messageLower.contains("insufficient_quota") ||
+                        (messageLower.contains("quota") && (messageLower.contains("exceeded") || messageLower.contains("billing") || messageLower.contains("exhausted") || messageLower.contains("credit limit") || messageLower.contains("limit: 0") || messageLower.contains("resource_exhausted"))) -> AiErrorCategory.QUOTA_EXHAUSTED
                     messageLower.contains("rate limit") || messageLower.contains("429") -> AiErrorCategory.RATE_LIMIT
                     messageLower.contains("malformed") || messageLower.contains("json") -> AiErrorCategory.MALFORMED_RESPONSE
                     messageLower.contains("empty response") -> AiErrorCategory.EMPTY_RESPONSE
@@ -482,7 +490,7 @@ object AiErrorClassifier {
                 AiErrorCategory.AUTHENTICATION_FAILURE.userFacingHindi
             lower.contains("403") || lower.contains("permission denied") ->
                 AiErrorCategory.PERMISSION_DENIED.userFacingHindi
-            lower.contains("quota") || lower.contains("billing") || lower.contains("कोटा") ->
+            lower.contains("insufficient_quota") || (lower.contains("quota") && (lower.contains("billing") || lower.contains("exceeded") || lower.contains("exhausted") || lower.contains("credit limit"))) ->
                 AiErrorCategory.QUOTA_EXHAUSTED.userFacingHindi
             lower.contains("429") || lower.contains("rate limit") || lower.contains("rate_limit") ->
                 AiErrorCategory.RATE_LIMIT.userFacingHindi
