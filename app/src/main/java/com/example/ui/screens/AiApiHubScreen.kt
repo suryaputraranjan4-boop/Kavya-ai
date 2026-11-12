@@ -1022,14 +1022,27 @@ fun AiApiHubScreen(navController: NavController) {
                         geminiKeyInput = activeDisplayKey
                     },
                     onSaveKey = {
-                        AppPreferences.setCustomApiKey(context, geminiKeyInput.trim())
-                        isGeminiEditing = false
-                        coroutineScope.launch {
-                            isGeminiTesting = true
-                            geminiTestResult = AppPreferences.validateGeminiApiKey(
-                                if (geminiKeyInput.isNotBlank()) geminiKeyInput else effectiveGeminiKey
+                        val requestedKey = geminiKeyInput.trim()
+                        val saved = AppPreferences.setCustomApiKey(context, requestedKey)
+                        if (!saved) {
+                            // Keep the editor open and make the storage failure visible.
+                            // Never validate an unsaved key and imply runtime is using it.
+                            geminiTestResult = Pair(
+                                false,
+                                "API key save failed. Secure storage could not persist this key; the previous active key may still be in use. Please retry."
                             )
-                            isGeminiTesting = false
+                        } else {
+                            isGeminiEditing = false
+                            coroutineScope.launch {
+                                isGeminiTesting = true
+                                val activeSavedKey = AppPreferences.getEffectiveApiKey(context)
+                                geminiTestResult = if (activeSavedKey == requestedKey || requestedKey.isBlank()) {
+                                    AppPreferences.validateGeminiApiKey(activeSavedKey)
+                                } else {
+                                    Pair(false, "Saved key could not be verified as the active key. Please save it again.")
+                                }
+                                isGeminiTesting = false
+                            }
                         }
                     },
                     onRemoveKey = {
