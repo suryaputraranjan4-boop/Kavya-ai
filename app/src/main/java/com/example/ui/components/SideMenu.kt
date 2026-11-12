@@ -310,6 +310,14 @@ fun KavyaSideMenu(
                             }
                         )
                         DrawerItemWhiteGlass(
+                            icon = Icons.Default.BlurOn,
+                            label = "Floating Orb & JARVIS",
+                            isSelected = currentRoute == "jarvis_intelligence",
+                            onClick = {
+                                navigateTo(navController, drawerState, scope, "jarvis_intelligence")
+                            }
+                        )
+                        DrawerItemWhiteGlass(
                             icon = Icons.Default.MusicNote,
                             label = "Media & Music",
                             isSelected = currentRoute == "music",

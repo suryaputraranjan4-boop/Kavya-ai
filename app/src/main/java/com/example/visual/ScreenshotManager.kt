@@ -62,7 +62,11 @@ class ScreenshotManager(private val context: Context) {
             if (bitmap != null) {
                 // If it's a hardware bitmap, copy to software config for resizing/compression
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
-                    bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    val softwareCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    if (!bitmap.isRecycled) {
+                        bitmap.recycle()
+                    }
+                    softwareCopy
                 } else {
                     bitmap
                 }

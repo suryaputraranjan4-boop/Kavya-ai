@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
@@ -70,6 +71,7 @@
         <service
             android:name=".services.ScreenCaptureService"
             android:foregroundServiceType="mediaProjection"
+            android:stopWithTask="false"
             android:exported="false" />
 
         <provider
@@ -85,11 +87,18 @@
         <service
             android:name="com.example.services.KavyaVoiceService"
             android:foregroundServiceType="microphone"
+            android:stopWithTask="false"
             android:exported="false" />
 
         <service
             android:name="com.example.visual.JarvisOverlayService"
-            android:exported="false" />
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Floating voice assistant overlay and accessibility-assisted visual screen guidance displayed over other apps on explicit user request." />
+        </service>
 
         <receiver
             android:name="com.example.scheduler.AlarmReceiver"

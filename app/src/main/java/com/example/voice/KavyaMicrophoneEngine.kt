@@ -27,6 +27,7 @@ class KavyaMicrophoneEngine private constructor(private val appContext: Context)
         MIC_LISTENING,
         MIC_SPEECH_DETECTED,
         MIC_PROCESSING,
+        MIC_MUTED,
         MIC_SLEEPING,
         MIC_STOPPING,
         MIC_ERROR;
@@ -42,10 +43,12 @@ class KavyaMicrophoneEngine private constructor(private val appContext: Context)
         private val stateFlow = MutableStateFlow(EngineState.MIC_OFF)
         private val partialFlow = MutableStateFlow("")
         private val amplitudeFlow = MutableStateFlow(0f)
+        private val mutedFlow = MutableStateFlow(false)
 
         val engineState: StateFlow<EngineState> = stateFlow.asStateFlow()
         val partialText: StateFlow<String> = partialFlow.asStateFlow()
         val amplitude: StateFlow<Float> = amplitudeFlow.asStateFlow()
+        val isMuted: StateFlow<Boolean> = mutedFlow.asStateFlow()
 
         @Volatile private var instance: KavyaMicrophoneEngine? = null
         private var pendingListener: ((String) -> Unit)? = null
@@ -66,14 +69,15 @@ class KavyaMicrophoneEngine private constructor(private val appContext: Context)
 
                 scope.launch {
                     mic.engineState.collect { state ->
+                        mutedFlow.value = state == MicrophoneEngine.State.MUTED
                         stateFlow.value = when (state) {
                             MicrophoneEngine.State.IDLE -> EngineState.MIC_OFF
                             MicrophoneEngine.State.STARTING -> EngineState.MIC_STARTING
                             MicrophoneEngine.State.LISTENING -> EngineState.MIC_ACTIVE
                             MicrophoneEngine.State.SPEECH_DETECTED -> EngineState.MIC_SPEECH_DETECTED
                             MicrophoneEngine.State.PROCESSING -> EngineState.MIC_PROCESSING
-                            MicrophoneEngine.State.TTS_PLAYBACK,
-                            MicrophoneEngine.State.MUTED -> EngineState.MIC_ACTIVE
+                            MicrophoneEngine.State.TTS_PLAYBACK -> EngineState.MIC_ACTIVE
+                            MicrophoneEngine.State.MUTED -> EngineState.MIC_MUTED
                             MicrophoneEngine.State.SLEEPING -> EngineState.MIC_SLEEPING
                             MicrophoneEngine.State.STOPPING -> EngineState.MIC_STOPPING
                             MicrophoneEngine.State.ERROR -> EngineState.MIC_ERROR
@@ -114,6 +118,21 @@ class KavyaMicrophoneEngine private constructor(private val appContext: Context)
         fun stopService(context: Context) {
             init(context)
             KavyaVoiceService.stopService(context)
+        }
+
+        fun setMuted(context: Context, muted: Boolean) {
+            init(context)
+            MicrophoneEngine.getInstance(context).setMuted(muted)
+            mutedFlow.value = muted
+        }
+
+        fun toggleMute(context: Context): Boolean {
+            init(context)
+            val mic = MicrophoneEngine.getInstance(context)
+            val next = mic.engineState.value != MicrophoneEngine.State.MUTED
+            mic.setMuted(next)
+            mutedFlow.value = next
+            return next
         }
 
         fun sleep(context: Context) {

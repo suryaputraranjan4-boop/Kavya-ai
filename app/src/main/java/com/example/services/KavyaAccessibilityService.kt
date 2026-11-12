@@ -38,14 +38,70 @@ class KavyaAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val pkg = event.packageName?.toString()
-            if (!pkg.isNullOrBlank()) {
-                currentForegroundPackage = pkg
-                com.example.visual.ScreenAnnotationManager.onForegroundWindowChanged(pkg)
-                Log.d(TAG, "Foreground window changed: $pkg")
+        val pkg = event.packageName?.toString()
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && !pkg.isNullOrBlank()) {
+            currentForegroundPackage = pkg
+            com.example.visual.ScreenAnnotationManager.onForegroundWindowChanged(pkg)
+            val browserUrl = if (isBrowserPackage(pkg)) extractBrowserUrlAndTitle().first else ""
+            ScreenShareManager.updateForegroundAppContext(pkg, browserUrl)
+            Log.d(TAG, "Foreground window changed: $pkg url=$browserUrl")
+        } else if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            !pkg.isNullOrBlank() &&
+            isBrowserPackage(pkg) &&
+            ScreenShareManager.isScreenSharingActive
+        ) {
+            val (browserUrl, _) = extractBrowserUrlAndTitle()
+            if (browserUrl.isNotBlank()) {
+                ScreenShareManager.updateForegroundAppContext(pkg, browserUrl)
             }
         }
+    }
+
+    private fun isBrowserPackage(pkg: String): Boolean {
+        val lower = pkg.lowercase(Locale.ROOT)
+        return lower.contains("chrome") ||
+            lower.contains("browser") ||
+            lower.contains("edge") ||
+            lower.contains("firefox") ||
+            lower.contains("brave") ||
+            lower.contains("opera") ||
+            lower.contains("samsung.android.app.sbrowser")
+    }
+
+    /**
+     * Extracts the active URL / omnibox query & page title when Chrome or a supported browser is active.
+     */
+    fun extractBrowserUrlAndTitle(): Pair<String, String> {
+        val root = safeGetRootInActiveWindow() ?: return Pair("", "")
+        val urlKeywords = listOf("url_bar", "location_bar", "omnibox", "address_bar", "search_box_text")
+        var foundUrl = ""
+        var foundTitle = ""
+
+        fun scan(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 8 || (foundUrl.isNotBlank() && foundTitle.isNotBlank())) return
+            val resId = node.viewIdResourceName?.lowercase(Locale.ROOT) ?: ""
+            val text = node.text?.toString()?.trim().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+
+            if (foundUrl.isBlank() && urlKeywords.any { resId.contains(it) }) {
+                val candidate = text.ifBlank { desc }
+                if (candidate.isNotBlank() && !candidate.equals("Search or type URL", ignoreCase = true)) {
+                    foundUrl = candidate
+                }
+            }
+            if (foundTitle.isBlank() && (resId.contains("title") || resId.contains("tab_title"))) {
+                val candidate = text.ifBlank { desc }
+                if (candidate.isNotBlank()) {
+                    foundTitle = candidate
+                }
+            }
+            for (i in 0 until node.childCount) {
+                scan(node.getChild(i), depth + 1)
+                if (foundUrl.isNotBlank() && foundTitle.isNotBlank()) break
+            }
+        }
+        scan(root, 0)
+        return Pair(foundUrl, foundTitle)
     }
 
     suspend fun captureScreenBitmap(): android.graphics.Bitmap? = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
@@ -55,15 +111,46 @@ class KavyaAccessibilityService : AccessibilityService() {
                 mainExecutor,
                 object : TakeScreenshotCallback {
                     override fun onSuccess(screenshot: android.accessibilityservice.AccessibilityService.ScreenshotResult) {
+                        var hardwareBitmap: android.graphics.Bitmap? = null
                         try {
-                            val bitmap = android.graphics.Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
-                            cont.resumeWith(Result.success(bitmap))
-                        } catch(e: Exception) {
-                            cont.resumeWith(Result.success(null))
+                            hardwareBitmap = android.graphics.Bitmap.wrapHardwareBuffer(
+                                screenshot.hardwareBuffer,
+                                screenshot.colorSpace
+                            )
+                            val softwareCopy = hardwareBitmap?.let { bmp ->
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bmp.config == android.graphics.Bitmap.Config.HARDWARE) {
+                                    bmp.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                                } else {
+                                    bmp
+                                }
+                            }
+                            if (softwareCopy !== hardwareBitmap && hardwareBitmap != null && !hardwareBitmap.isRecycled) {
+                                hardwareBitmap.recycle()
+                            }
+                            if (cont.isActive) {
+                                cont.resumeWith(Result.success(softwareCopy))
+                            } else if (softwareCopy != null && !softwareCopy.isRecycled) {
+                                softwareCopy.recycle()
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed converting accessibility screenshot buffer: ${e.message}")
+                            if (hardwareBitmap != null && !hardwareBitmap.isRecycled) {
+                                hardwareBitmap.recycle()
+                            }
+                            if (cont.isActive) {
+                                cont.resumeWith(Result.success(null))
+                            }
+                        } finally {
+                            try {
+                                screenshot.hardwareBuffer.close()
+                            } catch (_: Throwable) {
+                            }
                         }
                     }
                     override fun onFailure(errorCode: Int) {
-                        cont.resumeWith(Result.success(null))
+                        if (cont.isActive) {
+                            cont.resumeWith(Result.success(null))
+                        }
                     }
                 }
             )

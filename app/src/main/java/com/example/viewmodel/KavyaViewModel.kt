@@ -223,23 +223,28 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         val savedSpeed = com.example.utils.AppPreferences.getVoiceSpeed(application)
 
         viewModelScope.launch {
-            com.example.state.KavyaStateManager.state.collect { global ->
+            kotlinx.coroutines.flow.combine(
+                com.example.state.KavyaStateManager.state,
+                com.example.voice.KavyaMicrophoneEngine.engineState,
+                com.example.services.ScreenShareManager.state
+            ) { global, micState, shareState ->
+                Triple(global, micState, shareState)
+            }.collect { (global, micState, shareState) ->
                 _voiceState.value = global.voiceState
-                val currentOrb = com.example.visual.JarvisOverlayController.orbState.value
-                if (currentOrb != com.example.visual.JarvisOrbState.EXPLAINING &&
-                    currentOrb != com.example.visual.JarvisOrbState.GUIDING
-                ) {
-                    val mappedOrb = when (global.voiceState) {
-                        VoiceState.UNDERSTANDING -> com.example.visual.JarvisOrbState.LISTENING
-                        VoiceState.THINKING -> com.example.visual.JarvisOrbState.THINKING
-                        VoiceState.SPEAKING -> com.example.visual.JarvisOrbState.SPEAKING
-                        VoiceState.EXECUTING -> com.example.visual.JarvisOrbState.WORKING
-                        VoiceState.ERROR -> com.example.visual.JarvisOrbState.ERROR
-                        VoiceState.IDLE -> com.example.visual.JarvisOrbState.IDLE
-                        else -> com.example.visual.JarvisOrbState.IDLE
-                    }
-                    com.example.visual.JarvisOverlayController.setOrbState(mappedOrb)
-                }
+                val screenSharingLive = shareState is com.example.services.ScreenShareManager.ScreenShareState.Active ||
+                    shareState is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame ||
+                    shareState is com.example.services.ScreenShareManager.ScreenShareState.Paused
+                com.example.visual.JarvisOverlayController.syncWithMicrophoneState(
+                    micState = micState,
+                    voiceState = global.voiceState,
+                    isScreenSharingActive = screenSharingLive
+                )
+            }
+        }
+
+        viewModelScope.launch {
+            com.example.agent.MicrophoneEngine.getInstance(application).amplitude.collect { amp ->
+                com.example.visual.JarvisOverlayController.setAudioAmplitude(amp)
             }
         }
 
@@ -390,6 +395,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun toggleMicMute(): Boolean {
+        return com.example.voice.KavyaMicrophoneEngine.toggleMute(getApplication())
+    }
+
     private fun handleProactiveSpeech(text: String?, reason: String) {
         if (_isProcessing.value || _voiceState.value == VoiceState.SPEAKING) {
             return
@@ -518,7 +527,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         _isScreenSharing.value = true
                         refreshScreenContext()
                     }
-                    is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame -> {
+                    is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame,
+                    is com.example.services.ScreenShareManager.ScreenShareState.Paused -> {
                         _isScreenSharing.value = true
                         refreshScreenContext()
                     }

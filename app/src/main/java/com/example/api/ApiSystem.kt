@@ -22,7 +22,7 @@ class ApiSystem {
             val keys = json.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
-                paramsMap[key] = json.getString(key)
+                paramsMap[key] = json.optString(key, "")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing params JSON", e)

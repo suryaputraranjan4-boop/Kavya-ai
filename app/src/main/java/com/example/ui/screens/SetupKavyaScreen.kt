@@ -56,7 +56,13 @@ fun SetupKavyaScreen(
     var openRouterTestResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 
     var huggingFaceKeyInput by remember { mutableStateOf(AppPreferences.getHuggingFaceApiKey(context)) }
-    var huggingFaceModelInput by remember { mutableStateOf(AppPreferences.getHuggingFaceModel(context).ifBlank { "distilbert-base-uncased" }) }
+    var huggingFaceModelInput by remember {
+        mutableStateOf(
+            AppPreferences.getHuggingFaceModel(context)
+                .takeIf { it.isNotBlank() && !it.equals("distilbert-base-uncased", ignoreCase = true) }
+                ?: com.example.ai.providers.HuggingFaceProvider.MODEL_TEXT_GEN
+        )
+    }
     var isHfTesting by remember { mutableStateOf(false) }
     var hfTestResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 

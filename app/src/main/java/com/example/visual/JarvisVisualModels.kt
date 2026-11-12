@@ -18,17 +18,43 @@ enum class JarvisMode {
 }
 
 /**
- * 9 animated states of the JARVIS Orb.
+ * Animated states of the JARVIS Orb.
  */
 enum class JarvisOrbState {
     IDLE,
     LISTENING,
     THINKING,
+    PROCESSING,
     SPEAKING,
     WORKING,
     EXPLAINING,
     GUIDING,
+    CONNECTING,
+    LOADING,
+    SCREEN_SHARE_ACTIVE,
     SUCCESS,
+    ERROR
+}
+
+/**
+ * Transient motion states for tactile drag, dock, expand, and collapse feedback.
+ */
+enum class OrbTransientMotion {
+    NONE,
+    EXPANDING,
+    COLLAPSING,
+    DRAGGING,
+    DOCKING
+}
+
+/**
+ * Honest WindowManager attachment lifecycle for the Floating Orb.
+ */
+enum class OverlayAttachmentState {
+    STOPPED,
+    STARTING,
+    ATTACHED_VISIBLE,
+    PERMISSION_MISSING,
     ERROR
 }
 
@@ -102,6 +128,7 @@ data class JarvisOrbConfig(
     val soundReactive: Boolean = true,
     val snapToEdge: Boolean = true,
     val showStateBadge: Boolean = true,
+    val reducedMotion: Boolean = false,
     val cursorStyle: CursorStyle = CursorStyle.HOLOGRAPHIC_POINTER
 )
 

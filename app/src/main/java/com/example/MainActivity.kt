@@ -127,6 +127,7 @@ class MainActivity : ComponentActivity() {
   override fun onResume() {
     super.onResume()
     com.example.state.KavyaStateManager.isActivityVisible = true
+    com.example.visual.JarvisOverlayController.syncFloatingOrbFromPreferences(this)
   }
 
   override fun onPause() {

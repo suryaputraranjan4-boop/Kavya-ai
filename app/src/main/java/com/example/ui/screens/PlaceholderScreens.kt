@@ -282,6 +282,10 @@ fun SettingsScreen(navController: NavController) {
                         navController.navigate("screenshare")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
+                    SettingRow("JARVIS Floating Orb", "Enable/disable overlay orb, test animations & permissions", Icons.Default.BlurOn, Primary) {
+                        navController.navigate("jarvis_intelligence")
+                    }
+                    HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
                     SettingRow("Automations & Routines", "Multi-step shortcuts & actions", Icons.Default.AutoMode, AccentPurpleLight) {
                         navController.navigate("routines")
                     }
@@ -1080,11 +1084,16 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
 @Composable
 fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val isSharing by viewModel.isScreenSharing.collectAsState()
-    val screenContext by viewModel.screenContextText.collectAsState()
     val shareState by viewModel.screenShareState.collectAsState()
+    val telemetry by com.example.services.ScreenShareManager.telemetry.collectAsState()
+    val isSharing = shareState is com.example.services.ScreenShareManager.ScreenShareState.Active ||
+        shareState is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame ||
+        shareState is com.example.services.ScreenShareManager.ScreenShareState.Paused
+    val screenContext by viewModel.screenContextText.collectAsState()
 
     var showWorkspace by remember { mutableStateOf(false) }
+    var showPreflightDialog by remember { mutableStateOf(false) }
+    val (preflightSnapshot, refreshPreflight) = com.example.ui.components.rememberScreenSharePreflightSnapshot(shareState)
 
     var selectedPresentationLevel by remember {
         mutableStateOf(
@@ -1093,6 +1102,11 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
             )
         )
     }
+    val perfSnapshot by com.example.visual.PerformanceProfileManager.snapshot.collectAsState()
+
+    LaunchedEffect(Unit) {
+        com.example.visual.PerformanceProfileManager.loadAndRefresh(context)
+    }
 
     val screenCaptureConsentLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
@@ -1100,11 +1114,38 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
         viewModel.onScreenShareConsentResult(context, result.resultCode, result.data)
     }
 
-    fun startScreenShare() {
+    fun launchMediaProjectionConsent() {
         val captureIntent = viewModel.startScreenShareConsent(context)
         if (captureIntent != null) {
             screenCaptureConsentLauncher.launch(captureIntent)
         }
+    }
+
+    fun startScreenShare() {
+        refreshPreflight()
+        if (!preflightSnapshot.canStartMediaProjection) {
+            showPreflightDialog = true
+            return
+        }
+        launchMediaProjectionConsent()
+    }
+
+    if (showPreflightDialog) {
+        com.example.ui.components.ScreenSharePreflightDialog(
+            shareState = shareState,
+            onDismiss = {
+                refreshPreflight()
+                showPreflightDialog = false
+            },
+            onRequestMediaProjection = {
+                showPreflightDialog = false
+                launchMediaProjectionConsent()
+            },
+            onOpenVoiceSettings = {
+                showPreflightDialog = false
+                navController.navigate("voice_settings")
+            }
+        )
     }
 
     if (showWorkspace) {
@@ -1125,6 +1166,7 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .padding(20.dp)
         ) {
             // Live Status Header Card
@@ -1151,18 +1193,43 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
                     Spacer(modifier = Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isSharing) "Screen Share is Active" else "Screen Share is Inactive",
+                            text = when (val s = shareState) {
+                                is com.example.services.ScreenShareManager.ScreenShareState.Active -> when {
+                                    s.isProtectedSurface -> "Protected Surface (Incognito)"
+                                    s.isStaticScreen -> "Screen Share Active (Static Ready)"
+                                    else -> "Screen Share is Active (${s.fps} FPS)"
+                                }
+                                is com.example.services.ScreenShareManager.ScreenShareState.Paused ->
+                                    if (telemetry.isUserPaused) "Screen Share Paused (Privacy Shield)" else "Waiting for Entire Screen"
+                                else -> "Screen Share is Inactive"
+                            },
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = TextPrimary
                         )
                         Text(
-                            text = if (isSharing) "Kavya is observing and analyzing your screen in real time." else "Tap Start to observe and guide your screen hands-free.",
+                            text = when {
+                                telemetry.recoveryHint.isNotBlank() -> telemetry.recoveryHint
+                                telemetry.activeBrowserUrl.isNotBlank() -> "Observing Chrome: ${telemetry.activeBrowserUrl}"
+                                isSharing -> "Kavya is observing and analyzing your screen across apps."
+                                else -> "Tap Start and select 'Entire Screen' to observe Chrome and other apps."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Permission Readiness Preflight Summary Card
+            com.example.ui.components.ScreenSharePreflightSummaryCard(
+                snapshot = preflightSnapshot,
+                onOpenPreflight = {
+                    refreshPreflight()
+                    showPreflightDialog = true
+                }
+            )
 
             Spacer(modifier = Modifier.height(14.dp))
 
@@ -1188,6 +1255,7 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = 48.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .then(
                                 if (isSelected)
@@ -1216,34 +1284,132 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Start / Stop Toggle Button
-            Button(
-                onClick = {
-                    if (isSharing) {
-                        viewModel.toggleScreenSharing(false)
-                    } else {
-                        startScreenShare()
-                    }
-                },
+            // Adaptive Performance Quality Mode Selector (Low-End Device Optimization)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Performance Quality Mode:",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = TextSecondary
+                )
+                Text(
+                    text = "Tier: ${perfSnapshot.effectiveTier.shortLabel} (${perfSnapshot.effectiveTier.maxWidthPx}p)",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        color = AccentCyan
+                    )
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isSharing) Error else Primary
-                )
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceGlass)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(
-                    imageVector = if (isSharing) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
-                    contentDescription = null,
-                    tint = Color.White
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    if (isSharing) "Stop Screen Sharing" else "Start Sharing Screen with Kavya",
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White
-                )
+                com.example.visual.ScreenShareQualityMode.entries.forEach { mode ->
+                    val isSelected = perfSnapshot.selectedMode == mode
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .then(
+                                if (isSelected)
+                                    Modifier.background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Primary, AccentCyan)))
+                                else
+                                    Modifier
+                            )
+                            .clickable {
+                                com.example.visual.PerformanceProfileManager.setQualityMode(context, mode)
+                            }
+                            .padding(vertical = 7.dp, horizontal = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = mode.title,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) Color.White else TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = perfSnapshot.selectedMode.description,
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                color = TextTertiary
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Start / Pause / Stop Toggle Controls
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (isSharing) {
+                    OutlinedButton(
+                        onClick = { com.example.services.ScreenShareManager.toggleUserPause() },
+                        modifier = Modifier
+                            .weight(0.45f)
+                            .height(50.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (telemetry.isUserPaused) Color(0x33FFB300) else SurfaceGlass,
+                            contentColor = if (telemetry.isUserPaused) Color(0xFFFFCA28) else AccentCyan
+                        )
+                    ) {
+                        Icon(
+                            imageVector = if (telemetry.isUserPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = null
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (telemetry.isUserPaused) "Resume" else "Pause",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        if (isSharing) {
+                            viewModel.toggleScreenSharing(false)
+                        } else {
+                            startScreenShare()
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(if (isSharing) 0.55f else 1f)
+                        .height(50.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSharing) Error else Primary
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (isSharing) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
+                        contentDescription = null,
+                        tint = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        if (isSharing) "Stop Sharing" else "Start Sharing Screen with Kavya",
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -1299,6 +1465,12 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
+            com.example.ui.components.FloatingOrbControlCard(
+                modifier = Modifier.fillMaxWidth()
+            )
+
             Spacer(modifier = Modifier.height(14.dp))
 
             Text("Live Perception Feed:", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
@@ -1307,7 +1479,7 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
             GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .height(180.dp),
                 shape = RoundedCornerShape(16.dp),
                 backgroundColor = Background.copy(alpha = 0.85f),
                 borderColor = Outline
@@ -1325,6 +1497,7 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
                     }
                 }
             }
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }

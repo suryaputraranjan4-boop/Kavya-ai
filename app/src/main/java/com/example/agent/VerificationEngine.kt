@@ -60,12 +60,28 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
             delay(100)
         }
 
-        val activePkg = if (currentPkg.isNotBlank() && currentPkg != "com.example" && currentPkg != "unknown") currentPkg else expectedPackage
-        Log.d(TAG, "Foreground verification PASS (dispatched) for $expectedPackage -> active: $activePkg")
+        val observedPkg = listOf(currentPkg, service?.safeRootPackage() ?: "")
+            .firstOrNull {
+                it.isNotBlank() &&
+                    !it.equals("unknown", ignoreCase = true) &&
+                    !it.equals("com.example", ignoreCase = true)
+            }
+
+        if (service != null || observedPkg != null) {
+            val actualPkg = observedPkg ?: currentPkg.ifBlank { "unknown" }
+            Log.w(TAG, "Foreground verification FAIL for $expectedPackage -> observed: $actualPkg")
+            return VerificationResult(
+                passed = false,
+                reason = "FAIL: Expected '$expectedPackage' in foreground, but observed '$actualPkg'",
+                currentPackage = actualPkg
+            )
+        }
+
+        Log.d(TAG, "Foreground verification dispatched for $expectedPackage (Accessibility service disabled)")
         return VerificationResult(
             passed = true,
-            reason = "PASS: App launch intent dispatched for $expectedPackage",
-            currentPackage = activePkg
+            reason = "PASS (Launch Dispatched - Accessibility off)",
+            currentPackage = expectedPackage
         )
     }
 

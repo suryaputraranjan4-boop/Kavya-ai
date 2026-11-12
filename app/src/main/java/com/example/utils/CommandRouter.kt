@@ -731,7 +731,7 @@ class CommandRouter(private val context: Context) {
             // Dynamic polling with stabilization for Android WindowManager transition
             val accessibilityService = KavyaAccessibilityService.instance
             var fgAfter = accessibilityService?.getForegroundPackage() ?: app.packageName
-            var isForegroundVerified = true
+            var isForegroundVerified = accessibilityService == null
 
             if (accessibilityService != null) {
                 val timeoutMs = 3000L
@@ -739,15 +739,16 @@ class CommandRouter(private val context: Context) {
                 while (System.currentTimeMillis() - startTime < timeoutMs) {
                     fgAfter = accessibilityService.getForegroundPackage()
                     val match = fgAfter.equals(app.packageName, ignoreCase = true) ||
-                            fgAfter.contains(app.packageName, ignoreCase = true) ||
-                            app.packageName.contains(fgAfter, ignoreCase = true) ||
-                            (app.packageName == "com.whatsapp" && fgAfter.contains("whatsapp")) ||
-                            (app.packageName == "com.google.android.youtube" && fgAfter.contains("youtube")) ||
-                            (app.packageName == "com.spotify.music" && fgAfter.contains("spotify")) ||
-                            (app.packageName == "com.instagram.android" && fgAfter.contains("instagram")) ||
-                            (fgAfter != fgBefore && fgAfter != "com.example" && fgAfter != "unknown")
+                        fgAfter.contains(app.packageName, ignoreCase = true) ||
+                        app.packageName.contains(fgAfter, ignoreCase = true) ||
+                        (app.packageName == "com.whatsapp" && fgAfter.contains("whatsapp")) ||
+                        (app.packageName == "com.google.android.youtube" && fgAfter.contains("youtube")) ||
+                        (app.packageName == "com.spotify.music" && fgAfter.contains("spotify")) ||
+                        (app.packageName == "com.instagram.android" && fgAfter.contains("instagram")) ||
+                        (fgAfter != fgBefore && fgAfter != "com.example" && fgAfter != "unknown")
 
                     if (match) {
+                        isForegroundVerified = true
                         break
                     }
                     delay(100)
@@ -756,7 +757,37 @@ class CommandRouter(private val context: Context) {
                 val rootPkg = root?.packageName?.toString() ?: ""
                 if (rootPkg.isNotBlank() && rootPkg != "com.example") {
                     fgAfter = rootPkg
+                    if (rootPkg.equals(app.packageName, ignoreCase = true) ||
+                        rootPkg.contains(app.packageName, ignoreCase = true)
+                    ) {
+                        isForegroundVerified = true
+                    }
                 }
+            }
+
+            if (accessibilityService != null && !isForegroundVerified) {
+                val diag = AppLaunchDiagnostic(
+                    requestedApp = requestedName,
+                    resolvedApp = app.appName,
+                    packageName = app.packageName,
+                    launchIntent = app.launcherActivity ?: "MainActivity",
+                    confidence = confidenceName,
+                    foregroundBefore = fgBefore,
+                    foregroundAfter = fgAfter.ifBlank { "unknown" },
+                    verification = "FAIL - Expected ${app.packageName} in foreground, observed ${fgAfter.ifBlank { "unknown" }}"
+                )
+                lastDiagnostic = diag
+                return CommandExecutionResult(
+                    "Could not verify that ${app.appName} opened (foreground: ${fgAfter.ifBlank { "unknown" }}).",
+                    false,
+                    diagnostic = diag
+                )
+            }
+
+            val verificationNote = if (accessibilityService == null) {
+                "PASS (Launch Dispatched - Accessibility off)"
+            } else {
+                "PASS"
             }
 
             val diag = AppLaunchDiagnostic(
@@ -767,7 +798,7 @@ class CommandRouter(private val context: Context) {
                 confidence = confidenceName,
                 foregroundBefore = fgBefore,
                 foregroundAfter = if (fgAfter.isNotBlank() && fgAfter != "unknown") fgAfter else app.packageName,
-                verification = "PASS"
+                verification = verificationNote
             )
             lastDiagnostic = diag
             Log.d(TAG, "App launch succeeded for ${app.appName}.")

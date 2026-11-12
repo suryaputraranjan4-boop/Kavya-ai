@@ -31,20 +31,20 @@ class GeminiProvider : AIProvider {
         val VERIFIED_MODELS = listOf(
             ProviderModelInfo(
                 GeminiModelRegistry.DEFAULT_AGENT_MODEL,
-                "Gemini 3.8 Flash",
+                "Gemini 3.5 Flash Lite",
                 ProviderType.GEMINI,
                 listOf("reasoning", "general", "vision", "fast"),
                 1048576,
-                "Current default multimodal Flash model",
+                "Current default multimodal Flash Lite model",
                 true
             ),
             ProviderModelInfo(
                 GeminiModelRegistry.PRO_REASONING_MODEL,
-                "Gemini 3.1 Pro Preview",
+                "Gemini 3.5 Pro",
                 ProviderType.GEMINI,
                 listOf("reasoning", "coding", "analysis", "vision"),
                 1048576,
-                "Preview model for higher-complexity reasoning",
+                "Flagship Gemini 3.5 model for higher-complexity reasoning",
                 false
             )
         )
@@ -167,7 +167,7 @@ class GeminiProvider : AIProvider {
         }
 
         val targetModel = modelOverride?.ifBlank { null } ?: GeminiModelRegistry.DEFAULT_AGENT_MODEL
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$targetModel:streamGenerateContent?key=$apiKey&alt=sse"
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$targetModel:streamGenerateContent?alt=sse"
 
         val contentsArray = JSONArray().apply {
             put(JSONObject().apply {
@@ -231,6 +231,8 @@ class GeminiProvider : AIProvider {
                 }
             }
             response.close()
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             emit(handleError(-1, e.localizedMessage))
         }

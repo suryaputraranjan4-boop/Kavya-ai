@@ -431,8 +431,22 @@ class AndroidAgent(
 
                 DiagnosticEngine.updateLiveState(AgentLiveState.FAILED, "Failed at step ${step.id}", plan.targetAppName)
                 KavyaStateManager.updateTaskState(TaskState.FAILED, stepResult.output)
-                val cleanOutput = stepResult.output.replace("App opened but foreground not verified", "Screen transition pending")
-                val failureMessage = if (step.actionType == UniversalActionType.OPEN_APP) "${plan.targetAppName} खुल गया।" else "${plan.targetAppName} opened, but step ${step.id} could not be completed: $cleanOutput"
+                val cleanOutput = stepResult.output.replace("App opened but foreground not verified", "Foreground verification failed")
+                val isHindiPrompt = plan.originalPrompt.any { it in '\u0900'..'\u097F' } ||
+                    plan.originalPrompt.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("bhejo") }
+                val firstStepOpened = plan.steps.firstOrNull()?.actionType == UniversalActionType.OPEN_APP &&
+                    executionState.completedStepIds.contains(plan.steps.first().stepId)
+                val failureMessage = when {
+                    step.actionType == UniversalActionType.OPEN_APP ->
+                        if (isHindiPrompt) "${plan.targetAppName} नहीं खुल पाया: $cleanOutput"
+                        else "Could not open ${plan.targetAppName}: $cleanOutput"
+                    firstStepOpened ->
+                        if (isHindiPrompt) "${plan.targetAppName} खुल गया, लेकिन आगे का step पूरा नहीं हो पाया: $cleanOutput"
+                        else "${plan.targetAppName} opened, but step ${step.id} could not be completed: $cleanOutput"
+                    else ->
+                        if (isHindiPrompt) "Step ${step.id} पूरा नहीं हो पाया: $cleanOutput"
+                        else "Step ${step.id} could not be completed: $cleanOutput"
+                }
                 DiagnosticEngine.recordAgentExecution(
                     AgentExecutionDiagnostic(
                         id = UUID.randomUUID().toString(),
@@ -1090,6 +1104,17 @@ class AndroidAgent(
         )
 
         contextEngine.updateContext(appName = app.appName, packageName = app.packageName)
+
+        if (!verification.passed) {
+            return StepExecutionResult(
+                stepId = 1,
+                success = false,
+                actionType = UniversalActionType.OPEN_APP,
+                output = verification.reason,
+                verifiedPackage = verification.currentPackage,
+                diagnostic = diag
+            )
+        }
 
         return StepExecutionResult(
             stepId = 1,

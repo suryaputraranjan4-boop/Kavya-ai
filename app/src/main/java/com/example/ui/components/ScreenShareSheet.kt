@@ -55,11 +55,17 @@ fun ScreenShareSheet(
 ) {
     val context = LocalContext.current
     val shareState by viewModel.screenShareState.collectAsState()
-    val isSharing = ScreenShareManager.isScreenSharingActive
+    val telemetry by ScreenShareManager.telemetry.collectAsState()
+    val perfSnapshot by com.example.visual.PerformanceProfileManager.snapshot.collectAsState()
+    val isSharing = shareState is ScreenShareManager.ScreenShareState.Active ||
+        shareState is ScreenShareManager.ScreenShareState.StaleFrame ||
+        shareState is ScreenShareManager.ScreenShareState.Paused
     val screenContext by viewModel.screenContextText.collectAsState()
     val scrollState = rememberScrollState()
 
     var showWorkspaceDialog by remember { mutableStateOf(false) }
+    var showPreflightDialog by remember { mutableStateOf(false) }
+    val (preflightSnapshot, refreshPreflight) = rememberScreenSharePreflightSnapshot(shareState)
 
     var selectedPresentationLevel by remember {
         mutableStateOf(
@@ -67,9 +73,22 @@ fun ScreenShareSheet(
         )
     }
 
+    LaunchedEffect(Unit) {
+        com.example.visual.PerformanceProfileManager.loadAndRefresh(context)
+    }
+
     // Status description from actual state
     val statusText = when (val s = shareState) {
-        is ScreenShareManager.ScreenShareState.Active -> "Active • ${s.width}x${s.height} @ ${s.fps} FPS (${s.framesCaptured} frames)"
+        is ScreenShareManager.ScreenShareState.Active -> when {
+            s.isProtectedSurface -> "Protected • Incognito / FLAG_SECURE window"
+            s.isStaticScreen -> "Active • ${s.width}x${s.height} • Static Page Ready"
+            else -> "Active • ${s.width}x${s.height} @ ${s.fps} FPS (${s.framesCaptured} frames)"
+        }
+        is ScreenShareManager.ScreenShareState.Paused -> if (telemetry.isUserPaused) {
+            "Paused • Privacy Shield ON"
+        } else {
+            "Paused • Select 'Entire Screen' for Chrome"
+        }
         is ScreenShareManager.ScreenShareState.StaleFrame -> "Warning • Screen frame stream is stale"
         is ScreenShareManager.ScreenShareState.WaitingForFirstFrame -> "Connecting • Waiting for first frame..."
         is ScreenShareManager.ScreenShareState.StartingService -> "Starting foreground capture service..."
@@ -79,8 +98,10 @@ fun ScreenShareSheet(
         else -> "Inactive • Ready to share screen"
     }
 
-    val statusDotColor = when (shareState) {
-        is ScreenShareManager.ScreenShareState.Active -> SuccessGreen
+    val statusDotColor = when (val s = shareState) {
+        is ScreenShareManager.ScreenShareState.Active ->
+            if (s.isProtectedSurface) AccentPurpleLight else SuccessGreen
+        is ScreenShareManager.ScreenShareState.Paused -> Color(0xFFFFB300)
         is ScreenShareManager.ScreenShareState.StaleFrame -> Color(0xFFFFB300)
         is ScreenShareManager.ScreenShareState.StartingService,
         is ScreenShareManager.ScreenShareState.WaitingForFirstFrame -> AccentCyan
@@ -95,11 +116,34 @@ fun ScreenShareSheet(
         viewModel.onScreenShareConsentResult(context, result.resultCode, result.data)
     }
 
-    fun startScreenShareWithConsent() {
+    fun launchMediaProjectionConsent() {
         val captureIntent = viewModel.startScreenShareConsent(context)
         if (captureIntent != null) {
             screenCaptureConsentLauncher.launch(captureIntent)
         }
+    }
+
+    fun startScreenShareWithConsent() {
+        refreshPreflight()
+        if (!preflightSnapshot.canStartMediaProjection) {
+            showPreflightDialog = true
+            return
+        }
+        launchMediaProjectionConsent()
+    }
+
+    if (showPreflightDialog) {
+        ScreenSharePreflightDialog(
+            shareState = shareState,
+            onDismiss = {
+                refreshPreflight()
+                showPreflightDialog = false
+            },
+            onRequestMediaProjection = {
+                showPreflightDialog = false
+                launchMediaProjectionConsent()
+            }
+        )
     }
 
     if (showWorkspaceDialog) {
@@ -137,7 +181,7 @@ fun ScreenShareSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     Box(
                         modifier = Modifier
                             .size(46.dp)
@@ -183,20 +227,36 @@ fun ScreenShareSheet(
 
                 IconButton(
                     onClick = { viewModel.refreshScreenContext() },
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(SurfaceGlass)
-                        .border(1.dp, GlassBorder, CircleShape)
+                    modifier = Modifier.size(48.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Refresh screen context",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(SurfaceGlass)
+                            .border(1.dp, GlassBorder, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh screen context",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Permission Readiness Preflight Summary
+            ScreenSharePreflightSummaryCard(
+                snapshot = preflightSnapshot,
+                onOpenPreflight = {
+                    refreshPreflight()
+                    showPreflightDialog = true
+                }
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -221,6 +281,7 @@ fun ScreenShareSheet(
                     Box(
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = 48.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .then(
                                 if (isSelected)
@@ -249,7 +310,94 @@ fun ScreenShareSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Main Toggle Action Button (With Screen Capture Consent Flow)
+            // Recovery Hint or Active Browser URL Banner
+            if (telemetry.recoveryHint.isNotBlank() || telemetry.activeBrowserUrl.isNotBlank()) {
+                Surface(
+                    color = if (telemetry.recoveryHint.isNotBlank()) Color(0x22FFB300) else Primary.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (telemetry.recoveryHint.isNotBlank()) Color(0x66FFB300) else AccentCyan.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (telemetry.recoveryHint.isNotBlank()) Icons.Default.Shield else Icons.Default.Language,
+                            contentDescription = null,
+                            tint = if (telemetry.recoveryHint.isNotBlank()) Color(0xFFFFCA28) else AccentCyan,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = telemetry.recoveryHint.ifBlank { "Chrome URL: ${telemetry.activeBrowserUrl}" },
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = TextPrimary
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // Quality Mode Pills
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Performance Profile:",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = TextSecondary)
+                )
+                Text(
+                    text = "${perfSnapshot.effectiveTier.shortLabel} (${perfSnapshot.effectiveTier.maxWidthPx}p)",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, color = AccentCyan)
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceGlass)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                com.example.visual.ScreenShareQualityMode.entries.forEach { mode ->
+                    val isSelected = perfSnapshot.selectedMode == mode
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .then(
+                                if (isSelected) Modifier.background(Brush.linearGradient(listOf(Primary, AccentCyan)))
+                                else Modifier
+                            )
+                            .clickable { com.example.visual.PerformanceProfileManager.setQualityMode(context, mode) }
+                            .padding(horizontal = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = mode.title,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) Color.White else TextSecondary,
+                                fontSize = 10.sp
+                            ),
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Main Toggle Action Buttons (With Privacy Pause / Resume + Screen Capture Consent Flow)
             val toggleInteraction = remember { MutableInteractionSource() }
             val isTogglePressed by toggleInteraction.collectIsPressedAsState()
             val toggleScale by animateFloatAsState(
@@ -258,38 +406,70 @@ fun ScreenShareSheet(
                 label = "ToggleScale"
             )
 
-            Button(
-                onClick = {
-                    if (isSharing) {
-                        viewModel.toggleScreenSharing(false)
-                    } else {
-                        startScreenShareWithConsent()
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .scale(toggleScale)
-                    .testTag("toggle_screen_share_button"),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isSharing) Error else Primary
-                ),
-                contentPadding = PaddingValues(horizontal = 16.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(
-                    imageVector = if (isSharing) Icons.Default.Stop else Icons.Default.ScreenShare,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = if (isSharing) "Stop Screen Sharing" else "Start Screen Share with Kavya",
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
-                    fontSize = 15.sp
-                )
+                if (isSharing) {
+                    OutlinedButton(
+                        onClick = { ScreenShareManager.toggleUserPause() },
+                        modifier = Modifier
+                            .weight(0.45f)
+                            .height(52.dp)
+                            .testTag("pause_resume_screen_share_button"),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (telemetry.isUserPaused) Color(0x33FFB300) else SurfaceGlass,
+                            contentColor = if (telemetry.isUserPaused) Color(0xFFFFCA28) else AccentCyan
+                        )
+                    ) {
+                        Icon(
+                            imageVector = if (telemetry.isUserPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (telemetry.isUserPaused) "Resume" else "Pause",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        if (isSharing) {
+                            viewModel.toggleScreenSharing(false)
+                        } else {
+                            startScreenShareWithConsent()
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(if (isSharing) 0.55f else 1f)
+                        .height(52.dp)
+                        .scale(toggleScale)
+                        .testTag("toggle_screen_share_button"),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSharing) Error else Primary
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isSharing) Icons.Default.Stop else Icons.Default.ScreenShare,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (isSharing) "Stop Sharing" else "Start Screen Share with Kavya",
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                        fontSize = 14.sp
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))

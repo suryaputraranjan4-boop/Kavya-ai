@@ -276,20 +276,28 @@ class JarvisVisualIntelligenceTest {
     }
 
     // -------------------------------------------------------------------------
-    // TEST 8: 9 Orb States & Theme Presets
+    // TEST 8: 13 Orb States, Transient Motions, Attachment States & Theme Presets
     // -------------------------------------------------------------------------
     @Test
     fun testOrbStatesAndThemePresets() {
-        assertEquals(9, JarvisOrbState.entries.size)
+        assertEquals(13, JarvisOrbState.entries.size)
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.IDLE))
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.LISTENING))
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.THINKING))
+        assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.PROCESSING))
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.SPEAKING))
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.WORKING))
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.EXPLAINING))
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.GUIDING))
+        assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.CONNECTING))
+        assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.LOADING))
+        assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.SCREEN_SHARE_ACTIVE))
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.SUCCESS))
         assertTrue(JarvisOrbState.entries.contains(JarvisOrbState.ERROR))
+
+        // Transient motion & attachment states
+        assertEquals(5, OrbTransientMotion.entries.size)
+        assertEquals(5, OverlayAttachmentState.entries.size)
 
         // Themes
         assertEquals(5, JarvisThemePreset.entries.size)
@@ -502,6 +510,92 @@ class JarvisVisualIntelligenceTest {
         assertEquals(JarvisMode.EXPLAINS_ANYTHING, explainPlan.mode)
         assertTrue("Multi-step explanation must contain >= 2 instructions", explainPlan.instructions.size >= 2)
         assertTrue(explainPlan.instructions.all { it.isPassThroughTouch })
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST 14: Floating Orb Honest Attachment, Mic Mute Sync & Screen Share Safety
+    // -------------------------------------------------------------------------
+    @Test
+    fun testFloatingOrbAttachmentTruthfulnessMicSyncAndScreenShareContinuity() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        JarvisOverlayController.stopOverlay(context)
+
+        // Without overlay permission granted in Robolectric sandbox, startOverlay must NOT report fake running=true
+        val startResult = JarvisOverlayController.startOverlay(context)
+        assertFalse("startOverlay must return false when overlay permission is missing", startResult)
+        assertFalse("isOverlayRunning must remain false until WindowManager attaches", JarvisOverlayController.isOverlayRunning.value)
+        assertEquals(OverlayAttachmentState.PERMISSION_MISSING, JarvisOverlayController.attachmentState.value)
+        assertNotNull(JarvisOverlayController.lastOverlayError.value)
+
+        // Simulate genuine WindowManager attach -> detached -> service destroyed
+        JarvisOverlayController.reportOverlayAttached(true)
+        assertTrue(JarvisOverlayController.isOverlayRunning.value)
+        assertEquals(OverlayAttachmentState.ATTACHED_VISIBLE, JarvisOverlayController.attachmentState.value)
+        assertNull(JarvisOverlayController.lastOverlayError.value)
+
+        // Microphone state sync (including MIC_MUTED)
+        JarvisOverlayController.syncWithMicrophoneState(
+            micState = com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_ACTIVE,
+            voiceState = com.example.ui.components.VoiceState.IDLE,
+            isScreenSharingActive = false
+        )
+        assertEquals(JarvisOrbState.LISTENING, JarvisOverlayController.orbState.value)
+
+        // When mic is muted while screen share is off, Orb settles to IDLE rather than staying stuck in LISTENING
+        JarvisOverlayController.syncWithMicrophoneState(
+            micState = com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_MUTED,
+            voiceState = com.example.ui.components.VoiceState.IDLE,
+            isScreenSharingActive = false
+        )
+        assertEquals(JarvisOrbState.IDLE, JarvisOverlayController.orbState.value)
+
+        // When screen share is active and mic is muted, Orb stays SCREEN_SHARE_ACTIVE and remains attached
+        JarvisOverlayController.syncWithMicrophoneState(
+            micState = com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_MUTED,
+            voiceState = com.example.ui.components.VoiceState.IDLE,
+            isScreenSharingActive = true
+        )
+        assertEquals(JarvisOrbState.SCREEN_SHARE_ACTIVE, JarvisOverlayController.orbState.value)
+        assertTrue(JarvisOverlayController.isOverlayRunning.value)
+
+        // Frame-level Active updates must not clobber LISTENING/SPEAKING or detach the overlay
+        JarvisOverlayController.syncWithMicrophoneState(
+            micState = com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_SPEECH_DETECTED,
+            voiceState = com.example.ui.components.VoiceState.IDLE,
+            isScreenSharingActive = true
+        )
+        assertEquals(JarvisOrbState.LISTENING, JarvisOverlayController.orbState.value)
+        JarvisOverlayController.syncWithUnifiedSessionState(
+            com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Active(
+                width = 1080,
+                height = 2400,
+                sessionId = "test-session"
+            )
+        )
+        assertEquals(JarvisOrbState.LISTENING, JarvisOverlayController.orbState.value)
+        assertTrue(JarvisOverlayController.isOverlayRunning.value)
+
+        // Amplitude clamping & Expand/Minimize transitions
+        JarvisOverlayController.setAudioAmplitude(1.8f)
+        assertEquals(1.0f, JarvisOverlayController.audioAmplitude.value, 0.001f)
+        JarvisOverlayController.setOrbExpanded(true)
+        assertTrue(JarvisOverlayController.isOrbExpanded.value)
+        JarvisOverlayController.setOrbMinimized(true)
+        assertTrue(JarvisOverlayController.isOrbMinimized.value)
+        assertFalse(JarvisOverlayController.isOrbExpanded.value)
+
+        // Persisted theme + reducedMotion update
+        JarvisOverlayController.updateAndPersistConfig(context) {
+            it.copy(theme = JarvisThemePreset.AMBER_GOLD, reducedMotion = true)
+        }
+        JarvisOverlayController.loadPersistedConfig(context)
+        assertEquals(JarvisThemePreset.AMBER_GOLD, JarvisOverlayController.orbConfig.value.theme)
+        assertTrue(JarvisOverlayController.orbConfig.value.reducedMotion)
+
+        // Clean teardown
+        JarvisOverlayController.emergencyStopJarvis(context)
+        assertFalse(JarvisOverlayController.isOverlayRunning.value)
+        assertEquals(OverlayAttachmentState.STOPPED, JarvisOverlayController.attachmentState.value)
     }
 }
 

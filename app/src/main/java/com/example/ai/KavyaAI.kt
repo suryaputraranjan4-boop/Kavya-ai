@@ -337,7 +337,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
         val hfKey = com.example.utils.AppPreferences.getHuggingFaceApiKey(ctx)
         if (hfKey.isBlank() || !com.example.utils.AppPreferences.isHuggingFaceEnabled(ctx)) return@withContext null
 
-        val model = com.example.utils.AppPreferences.getHuggingFaceModel(ctx).ifBlank { "distilbert-base-uncased" }
+        val model = com.example.utils.AppPreferences.getHuggingFaceModel(ctx)
+            .ifBlank { com.example.ai.providers.HuggingFaceProvider.MODEL_TEXT_GEN }
         val startTime = System.currentTimeMillis()
         return@withContext try {
             val url = "https://router.huggingface.co/hf-inference/models/$model"
@@ -350,11 +351,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 .post(body)
                 .build()
 
-            val response = RetrofitClient.okHttpClient.newCall(request).execute()
+            val (code, raw) = RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                Pair(response.code, response.body?.string() ?: "")
+            }
             val latency = System.currentTimeMillis() - startTime
-            val raw = response.body?.string() ?: ""
-            val code = response.code
-            response.close()
 
             if (code in 200..299) {
                 com.example.ai.providers.RuntimeActivityTracker.logEvent(

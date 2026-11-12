@@ -950,7 +950,7 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.setHuggingFaceModel(context, it)
                     },
                     presetModels = availableHfModels,
-                    modelPlaceholder = "e.g. distilbert-base-uncased or cardiffnlp/twitter-roberta...",
+                    modelPlaceholder = "e.g. meta-llama/Llama-3.2-1B-Instruct or cardiffnlp/twitter-roberta...",
                     isTesting = isHfTesting,
                     testResult = hfTestResult,
                     onTestConnection = {

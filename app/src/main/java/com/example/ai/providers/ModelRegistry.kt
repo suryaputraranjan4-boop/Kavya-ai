@@ -11,7 +11,7 @@ object ModelRegistry {
         RegisteredModel(
             providerId = "gemini",
             modelId = com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL,
-            displayName = "Gemini 2.5 Flash",
+            displayName = "Gemini 3.5 Flash Lite",
             task = "Primary Multimodal Orchestration & Planning",
             capabilities = listOf("Chat", "Reasoning", "Planning", "Tools", "Fast", "Vision"),
             isFree = true
@@ -19,7 +19,7 @@ object ModelRegistry {
         RegisteredModel(
             providerId = "gemini",
             modelId = com.example.ai.GeminiModelRegistry.PRO_REASONING_MODEL,
-            displayName = "Gemini 2.5 Pro",
+            displayName = "Gemini 3.5 Pro",
             task = "Deep Reasoning & Complex Architecture Planning",
             capabilities = listOf("Chat", "Deep Reasoning", "Vision", "Tools"),
             isFree = false

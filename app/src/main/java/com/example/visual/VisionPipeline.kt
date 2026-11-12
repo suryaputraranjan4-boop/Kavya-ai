@@ -25,7 +25,6 @@ import java.security.MessageDigest
 object VisionPipeline {
 
     private const val TAG = "KavyaVisionPipeline"
-    private const val MIN_FRAME_INTERVAL_MS = 250L // Cap visual frame processing rate
 
     data class VisualPerceptionState(
         val isPipelineActive: Boolean = false,
@@ -45,6 +44,8 @@ object VisionPipeline {
     private var previousFrameHash = ""
     private var previousPackage = ""
     private var framesProcessedCount = 0
+    private val hashSampleLock = Any()
+    private val hashSampleBuffer = ByteArray(256)
 
     /**
      * Ingests a new raw frame from the ScreenCaptureService VirtualDisplay.
@@ -52,7 +53,8 @@ object VisionPipeline {
     fun onNewFrame(bitmap: Bitmap) {
         if (bitmap.isRecycled) return
         val now = System.currentTimeMillis()
-        if (now - lastProcessTimestamp < MIN_FRAME_INTERVAL_MS) {
+        val minIntervalMs = PerformanceProfileManager.snapshot.value.minFrameIntervalMs
+        if (now - lastProcessTimestamp < minIntervalMs) {
             return
         }
         lastProcessTimestamp = now
@@ -62,6 +64,9 @@ object VisionPipeline {
 
         val frameHash = computeFrameHash(bitmap)
         val hasChanged = frameHash != previousFrameHash
+        if (!hasChanged && previousFrameHash.isNotEmpty()) {
+            PerformanceProfileManager.recordSkippedUnchangedFrame()
+        }
         previousFrameHash = frameHash
 
         val activePkg = KavyaAccessibilityService.instance?.getForegroundPackage() ?: "unknown"
@@ -89,28 +94,100 @@ object VisionPipeline {
      * Compresses the latest captured frame for Gemini Vision multimodal analysis
      * only when semantic visual reasoning is genuinely required.
      */
-    fun getCompressedJpegFrame(maxDimension: Int = 720, quality: Int = 75): ByteArray? {
+    fun getCompressedJpegFrame(
+        maxDimension: Int = PerformanceProfileManager.snapshot.value.jpegMaxDimension,
+        quality: Int = PerformanceProfileManager.snapshot.value.jpegQuality
+    ): ByteArray? {
         val frame = getLatestFrame() ?: return null
+        return compressBitmapToJpeg(frame, maxDimension, quality)
+    }
+
+    /**
+     * Crops a normalized region [0f..1f] from the captured frame (inspired by Circle-to-Share
+     * / Circle-to-Search) and compresses it to JPEG without leaking intermediate bitmaps.
+     */
+    fun cropNormalizedRegionCompressed(
+        leftNorm: Float,
+        topNorm: Float,
+        rightNorm: Float,
+        bottomNorm: Float,
+        sourceBitmap: Bitmap? = getLatestFrame(),
+        maxDimension: Int = PerformanceProfileManager.snapshot.value.jpegMaxDimension,
+        quality: Int = PerformanceProfileManager.snapshot.value.jpegQuality
+    ): ByteArray? {
+        val frame = sourceBitmap ?: return null
+        if (frame.isRecycled || frame.width <= 0 || frame.height <= 0) return null
+
+        val normL = minOf(leftNorm, rightNorm).coerceIn(0f, 1f)
+        val normR = maxOf(leftNorm, rightNorm).coerceIn(0f, 1f)
+        val normT = minOf(topNorm, bottomNorm).coerceIn(0f, 1f)
+        val normB = maxOf(topNorm, bottomNorm).coerceIn(0f, 1f)
+
+        val x = (normL * frame.width).toInt().coerceIn(0, (frame.width - 1).coerceAtLeast(0))
+        val y = (normT * frame.height).toInt().coerceIn(0, (frame.height - 1).coerceAtLeast(0))
+        val rawRight = (normR * frame.width).toInt().coerceIn(x + 1, frame.width)
+        val rawBottom = (normB * frame.height).toInt().coerceIn(y + 1, frame.height)
+        val cropW = (rawRight - x).coerceAtLeast(minOf(16, frame.width))
+            .coerceAtMost(frame.width - x)
+        val cropH = (rawBottom - y).coerceAtLeast(minOf(16, frame.height))
+            .coerceAtMost(frame.height - y)
+        if (cropW <= 0 || cropH <= 0) return null
+
+        var croppedBitmap: Bitmap? = null
         return try {
-            val width = frame.width
-            val height = frame.height
-            val scale = if (width > maxDimension || height > maxDimension) {
+            croppedBitmap = Bitmap.createBitmap(frame, x, y, cropW, cropH)
+            compressBitmapToJpeg(croppedBitmap, maxDimension, quality)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cropping region for visual explanation: ${e.message}")
+            null
+        } finally {
+            val crop = croppedBitmap
+            if (crop != null && crop !== frame && !crop.isRecycled) {
+                crop.recycle()
+            }
+        }
+    }
+
+    private fun compressBitmapToJpeg(
+        source: Bitmap,
+        maxDimension: Int,
+        quality: Int
+    ): ByteArray? {
+        if (source.isRecycled) return null
+        var scaledBitmap: Bitmap? = null
+        return try {
+            val width = source.width
+            val height = source.height
+            if (width <= 0 || height <= 0) return null
+
+            val safeMaxDim = maxDimension.coerceAtLeast(64)
+            val safeQuality = quality.coerceIn(30, 100)
+            val scale = if (width > safeMaxDim || height > safeMaxDim) {
                 val max = maxOf(width, height)
-                maxDimension.toFloat() / max
+                safeMaxDim.toFloat() / max
             } else 1.0f
 
-            val scaledBitmap = if (scale < 1.0f) {
-                Bitmap.createScaledBitmap(frame, (width * scale).toInt(), (height * scale).toInt(), true)
+            val targetBitmap = if (scale < 1.0f) {
+                val targetW = (width * scale).toInt().coerceAtLeast(1)
+                val targetH = (height * scale).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(source, targetW, targetH, true).also {
+                    scaledBitmap = it
+                }
             } else {
-                frame
+                source
             }
 
             val stream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+            targetBitmap.compress(Bitmap.CompressFormat.JPEG, safeQuality, stream)
             stream.toByteArray()
         } catch (e: Exception) {
             Log.e(TAG, "Error compressing visual frame: ${e.message}")
             null
+        } finally {
+            val scaled = scaledBitmap
+            if (scaled != null && scaled !== source && !scaled.isRecycled) {
+                scaled.recycle()
+            }
         }
     }
 
@@ -180,24 +257,24 @@ object VisionPipeline {
     private fun computeFrameHash(bitmap: Bitmap): String {
         return try {
             if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return ""
-            // Sample 16x16 grid directly without allocating a new Bitmap
-            val bytes = ByteArray(256)
+            // Sample 16x16 grid into synchronized reusable 256-byte buffer without Bitmap or ByteArray churn
             val w = bitmap.width
             val h = bitmap.height
-            var idx = 0
-            for (y in 0 until 16) {
-                val py = ((y * h) / 16).coerceIn(0, h - 1)
-                for (x in 0 until 16) {
-                    val px = ((x * w) / 16).coerceIn(0, w - 1)
-                    val color = bitmap.getPixel(px, py)
-                    val r = (color shr 16) and 0xFF
-                    val g = (color shr 8) and 0xFF
-                    val b = color and 0xFF
-                    bytes[idx++] = ((r + g + b) / 3).toByte()
+            val digest = synchronized(hashSampleLock) {
+                var idx = 0
+                for (y in 0 until 16) {
+                    val py = ((y * h) / 16).coerceIn(0, h - 1)
+                    for (x in 0 until 16) {
+                        val px = ((x * w) / 16).coerceIn(0, w - 1)
+                        val color = bitmap.getPixel(px, py)
+                        val r = (color shr 16) and 0xFF
+                        val g = (color shr 8) and 0xFF
+                        val b = color and 0xFF
+                        hashSampleBuffer[idx++] = ((r + g + b) / 3).toByte()
+                    }
                 }
+                MessageDigest.getInstance("MD5").digest(hashSampleBuffer)
             }
-            val md = MessageDigest.getInstance("MD5")
-            val digest = md.digest(bytes)
             digest.joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
             bitmap.generationId.toString()

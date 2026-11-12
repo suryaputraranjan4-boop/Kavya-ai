@@ -170,12 +170,17 @@ object TaskRouter {
                     explanation = "Routing image analysis to Hugging Face BLIP."
                 )
             } else if (isOpenRouterConfigured) {
+                val selected = OpenRouterModelRouter.selectModelForTask(
+                    ClassifiedTaskCategory.VISION,
+                    OpenRouterProvider.DEFAULT_VERIFIED_MODELS,
+                    context
+                )
                 return TaskRoutingDecision(
                     taskType = TaskType.VISION,
                     provider = "OPENROUTER",
-                    selectedModel = "google/gemini-3.5-flash-lite-exp:free",
+                    selectedModel = selected,
                     requiresVision = true,
-                    explanation = "Routing visual analysis to OpenRouter multimodal model."
+                    explanation = "Routing visual analysis to OpenRouter multimodal model ($selected)."
                 )
             }
         }

@@ -218,12 +218,13 @@ object JarvisGuidanceEngine {
                 applyPlanToState(localPlan, autoAdvance = localPlan.instructions.size > 1)
 
                 // 3. If a visual frame is available, invoke GeminiVisionAnalyzer on background thread
-                val jpegBytes = VisionPipeline.getCompressedJpegFrame(maxDimension = 720, quality = 75)
+                val jpegBytes = VisionPipeline.getCompressedJpegFrame()
                     ?: frameBitmap?.let { bmp ->
                         withContext(Dispatchers.IO) {
                             try {
+                                val q = PerformanceProfileManager.snapshot.value.jpegQuality
                                 val baos = ByteArrayOutputStream()
-                                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, baos)
+                                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, q, baos)
                                 baos.toByteArray()
                             } catch (_: Exception) { null }
                         }
@@ -268,10 +269,11 @@ object JarvisGuidanceEngine {
                             )
                         }
 
+                        val finalSummary = visionSummary.ifBlank { refinedSteps.first().spokenExplanation }
                         val enrichedCard = VisualCardData(
                             type = VisualCardType.SUMMARY,
                             title = "Vision Screen Analysis",
-                            summary = visionSummary.ifBlank { refinedSteps.first().spokenExplanation },
+                            summary = finalSummary,
                             bullets = refinedSteps.map { "Step ${it.stepNumber}: ${it.title} — ${it.label}" },
                             detailText = visionSummary,
                             targetAnchorBounds = refinedSteps.first().bounds,
@@ -283,12 +285,190 @@ object JarvisGuidanceEngine {
                             cards = listOf(enrichedCard) + localPlan.cards.drop(1)
                         )
                         applyPlanToState(enrichedPlan, autoAdvance = refinedSteps.size > 1)
+                        com.example.services.ScreenShareManager.saveSnapshotToVault(
+                            title = "Screen Explanation",
+                            summary = finalSummary,
+                            appPackage = initialMap.packageName
+                        )
+                    } else if (visionSummary.isNotBlank()) {
+                        com.example.services.ScreenShareManager.saveSnapshotToVault(
+                            title = "Screen Summary",
+                            summary = visionSummary,
+                            appPackage = initialMap.packageName
+                        )
                     }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
                 Log.w(TAG, "explainActiveScreenAsync failed: ${e.message}")
+                JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+            }
+        }
+    }
+
+    /**
+     * Circle / Region Select to Explain (inspired by Circle-to-Share / CircleToSearch).
+     * Crops the user-selected region from the live screen frame and runs targeted Vision AI analysis.
+     */
+    fun explainRegionAsync(
+        context: Context,
+        leftNorm: Float,
+        topNorm: Float,
+        rightNorm: Float,
+        bottomNorm: Float,
+        query: String = "Explain only the highlighted/selected area concisely in simple Hinglish/English."
+    ) {
+        activeAnalysisJob?.cancel()
+        JarvisOverlayController.setOrbState(JarvisOrbState.THINKING)
+
+        activeAnalysisJob = engineScope.launch {
+            try {
+                val frameBitmap = VisionPipeline.getLatestFrame()
+                    ?: withContext(Dispatchers.IO) { ScreenshotManager(context).captureScreen() }
+
+                val regionBytes = withContext(Dispatchers.IO) {
+                    VisionPipeline.cropNormalizedRegionCompressed(
+                        leftNorm = leftNorm,
+                        topNorm = topNorm,
+                        rightNorm = rightNorm,
+                        bottomNorm = bottomNorm,
+                        sourceBitmap = frameBitmap
+                    )
+                }
+
+                if (regionBytes == null || regionBytes.isEmpty()) {
+                    publishExplanation(
+                        title = "Region Select",
+                        summary = "No live frame available yet. Start Screen Share and switch to the target app first.",
+                        bulletPoints = listOf("Tip: Select 'Entire Screen' when prompted for MediaProjection consent")
+                    )
+                    JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+                    return@launch
+                }
+
+                val telemetry = com.example.services.ScreenShareManager.telemetry.value
+                val base64 = Base64.encodeToString(regionBytes, Base64.NO_WRAP)
+                val hierarchyHint = if (telemetry.activeBrowserUrl.isNotBlank()) {
+                    "Active Browser URL: ${telemetry.activeBrowserUrl}"
+                } else {
+                    "User selected normalized screen region (${(leftNorm * 100).toInt()}%..${(rightNorm * 100).toInt()}%)."
+                }
+
+                val (visionSummary, visionSteps) = GeminiVisionAnalyzer(context)
+                    .analyzeScreenForVisualExplanation(
+                        base64Image = base64,
+                        userQuery = query,
+                        currentApp = telemetry.foregroundPackage.ifBlank { "Selected Screen Region" },
+                        hierarchySummary = hierarchyHint
+                    )
+
+                val summaryText = visionSummary.ifBlank {
+                    visionSteps.firstOrNull()?.spokenExplanation ?: "Highlighted region analyzed."
+                }
+                val bullets = visionSteps.take(4).map { "${it.title}: ${it.label}" }.ifEmpty {
+                    listOf("Focused crop analyzed (${regionBytes.size / 1024} KB)")
+                }
+
+                publishExplanation(
+                    title = "Region Focus Analysis",
+                    summary = summaryText,
+                    bulletPoints = bullets,
+                    details = summaryText,
+                    citations = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }),
+                    confidence = 0.96f
+                )
+                com.example.services.ScreenShareManager.saveSnapshotToVault(
+                    title = "Region Focus",
+                    summary = summaryText,
+                    appPackage = telemetry.foregroundPackage,
+                    urlOrContext = telemetry.activeBrowserUrl
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
+                Log.w(TAG, "explainRegionAsync failed: ${e.message}")
+                JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+            }
+        }
+    }
+
+    /**
+     * One-tap Chrome / Webpage quick action (Summarize, Translate HI/EN, Key Takeaways).
+     */
+    fun analyzeBrowserPageAsync(
+        context: Context,
+        actionTitle: String,
+        prompt: String
+    ) {
+        activeAnalysisJob?.cancel()
+        JarvisOverlayController.setOrbState(JarvisOrbState.THINKING)
+
+        activeAnalysisJob = engineScope.launch {
+            try {
+                val screenMap = withContext(Dispatchers.Default) {
+                    SemanticScreenAnalyzer.analyzeScreen()
+                }
+                val telemetry = com.example.services.ScreenShareManager.telemetry.value
+                val urlLine = telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }?.let { "URL: $it\n" }.orEmpty()
+                val textContext = screenMap.elements.take(25).joinToString("\n") { it.displayLabel }
+
+                val frameBytes = withContext(Dispatchers.IO) {
+                    VisionPipeline.getCompressedJpegFrame()
+                        ?: ScreenshotManager(context).captureScreen()?.let { bmp ->
+                            try {
+                                val q = PerformanceProfileManager.snapshot.value.jpegQuality
+                                val baos = ByteArrayOutputStream()
+                                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, q, baos)
+                                baos.toByteArray()
+                            } catch (_: Exception) { null }
+                        }
+                }
+
+                if (frameBytes != null && frameBytes.isNotEmpty()) {
+                    val base64 = Base64.encodeToString(frameBytes, Base64.NO_WRAP)
+                    val (visionSummary, visionSteps) = GeminiVisionAnalyzer(context)
+                        .analyzeScreenForVisualExplanation(
+                            base64Image = base64,
+                            userQuery = prompt,
+                            currentApp = telemetry.foregroundPackage.ifBlank { screenMap.packageName.ifBlank { "Chrome" } },
+                            hierarchySummary = "$urlLine$textContext"
+                        )
+                    val cleanSummary = visionSummary.ifBlank {
+                        visionSteps.firstOrNull()?.spokenExplanation ?: textContext.lines().take(3).joinToString(" • ")
+                    }.ifBlank { "No text or visual content found yet on this page." }
+
+                    val bullets = visionSteps.take(4).map { "${it.title}: ${it.label}" }
+                        .ifEmpty { cleanSummary.split(". ").filter { it.isNotBlank() }.take(3) }
+
+                    publishExplanation(
+                        title = actionTitle,
+                        summary = cleanSummary,
+                        bulletPoints = bullets,
+                        details = cleanSummary,
+                        citations = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }),
+                        confidence = 0.95f
+                    )
+                    com.example.services.ScreenShareManager.saveSnapshotToVault(
+                        title = actionTitle,
+                        summary = cleanSummary,
+                        appPackage = telemetry.foregroundPackage.ifBlank { screenMap.packageName },
+                        urlOrContext = telemetry.activeBrowserUrl
+                    )
+                } else {
+                    val fallbackText = textContext.lines().take(5).joinToString(" • ")
+                        .ifBlank { "Switch to Chrome with Screen Share active to analyze the live page." }
+                    publishExplanation(
+                        title = actionTitle,
+                        summary = fallbackText,
+                        bulletPoints = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }),
+                        details = fallbackText
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
+                Log.w(TAG, "analyzeBrowserPageAsync failed: ${e.message}")
                 JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
             }
         }

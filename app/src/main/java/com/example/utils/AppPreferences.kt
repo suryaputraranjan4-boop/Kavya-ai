@@ -507,14 +507,7 @@ object AppPreferences {
         if (cleanKey.isBlank() || isPlaceholderKey(cleanKey)) {
             return@withContext Pair(false, "API Key is empty or placeholder.")
         }
-        val candidateModels = listOf(
-            com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL,
-            "gemini-3.5-flash-lite",
-            "gemini-3.5-flash",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash"
-        )
+        val candidateModels = com.example.ai.GeminiModelRegistry.CHAT_MODEL_TIERS.distinct()
         val testRequest = GenerateContentRequest(
             contents = listOf(
                 Content(
@@ -630,11 +623,14 @@ object AppPreferences {
     /**
      * Validates Hugging Face connection by sending an inference request to Hugging Face Inference API.
      */
-    suspend fun validateHuggingFaceConnection(apiKey: String, model: String = "distilbert-base-uncased"): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+    suspend fun validateHuggingFaceConnection(
+        apiKey: String,
+        model: String = com.example.ai.providers.HuggingFaceProvider.MODEL_TEXT_GEN
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Pair(false, "Hugging Face connection failed. Please enter your API key.")
         }
-        val targetModel = model.ifBlank { "distilbert-base-uncased" }
+        val targetModel = model.ifBlank { com.example.ai.providers.HuggingFaceProvider.MODEL_TEXT_GEN }
         try {
             val url = "https://router.huggingface.co/hf-inference/models/$targetModel"
             val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -645,9 +641,7 @@ object AppPreferences {
                 .post(requestBody)
                 .build()
 
-            val response = RetrofitClient.okHttpClient.newCall(request).execute()
-            val code = response.code
-            response.close()
+            val code = RetrofitClient.okHttpClient.newCall(request).execute().use { it.code }
 
             when (code) {
                 200 -> Pair(true, "Hugging Face connected successfully ($targetModel).")
@@ -966,6 +960,80 @@ object AppPreferences {
 
     fun setScreenPresentationLevel(context: Context, level: String) {
         getPrefs(context).edit().putString("key_screen_presentation_level", level).apply()
+    }
+
+    // Floating Orb & Adaptive Motion / Screen Share Quality Preferences
+    private const val KEY_FLOATING_ORB_ENABLED = "key_floating_orb_enabled"
+    private const val KEY_FLOATING_ORB_X = "key_floating_orb_x"
+    private const val KEY_FLOATING_ORB_Y = "key_floating_orb_y"
+    private const val KEY_ORB_THEME = "key_orb_theme"
+    private const val KEY_ORB_CURSOR_STYLE = "key_orb_cursor_style"
+    private const val KEY_REDUCED_MOTION = "key_reduced_motion"
+    private const val KEY_CONTINUOUS_LISTENING = "key_continuous_listening"
+    private const val KEY_SCREEN_SHARE_QUALITY_MODE = "key_screen_share_quality_mode"
+
+    fun isFloatingOrbEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_FLOATING_ORB_ENABLED, false)
+    }
+
+    fun setFloatingOrbEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_FLOATING_ORB_ENABLED, enabled).apply()
+    }
+
+    fun getFloatingOrbPosX(context: Context): Int {
+        return getPrefs(context).getInt(KEY_FLOATING_ORB_X, 20)
+    }
+
+    fun setFloatingOrbPosX(context: Context, x: Int) {
+        getPrefs(context).edit().putInt(KEY_FLOATING_ORB_X, x).apply()
+    }
+
+    fun getFloatingOrbPosY(context: Context): Int {
+        return getPrefs(context).getInt(KEY_FLOATING_ORB_Y, 240)
+    }
+
+    fun setFloatingOrbPosY(context: Context, y: Int) {
+        getPrefs(context).edit().putInt(KEY_FLOATING_ORB_Y, y).apply()
+    }
+
+    fun getOrbThemeName(context: Context): String {
+        return getPrefs(context).getString(KEY_ORB_THEME, "NEON_CYAN") ?: "NEON_CYAN"
+    }
+
+    fun setOrbThemeName(context: Context, themeName: String) {
+        getPrefs(context).edit().putString(KEY_ORB_THEME, themeName).apply()
+    }
+
+    fun getOrbCursorStyleName(context: Context): String {
+        return getPrefs(context).getString(KEY_ORB_CURSOR_STYLE, "HOLOGRAPHIC_POINTER") ?: "HOLOGRAPHIC_POINTER"
+    }
+
+    fun setOrbCursorStyleName(context: Context, cursorStyleName: String) {
+        getPrefs(context).edit().putString(KEY_ORB_CURSOR_STYLE, cursorStyleName).apply()
+    }
+
+    fun isReducedMotionEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_REDUCED_MOTION, false)
+    }
+
+    fun setReducedMotionEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_REDUCED_MOTION, enabled).apply()
+    }
+
+    fun isContinuousListeningEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_CONTINUOUS_LISTENING, true)
+    }
+
+    fun setContinuousListeningEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_CONTINUOUS_LISTENING, enabled).apply()
+    }
+
+    fun getScreenShareQualityMode(context: Context): String {
+        return getPrefs(context).getString(KEY_SCREEN_SHARE_QUALITY_MODE, "AUTO") ?: "AUTO"
+    }
+
+    fun setScreenShareQualityMode(context: Context, mode: String) {
+        getPrefs(context).edit().putString(KEY_SCREEN_SHARE_QUALITY_MODE, mode).apply()
     }
 }
 
