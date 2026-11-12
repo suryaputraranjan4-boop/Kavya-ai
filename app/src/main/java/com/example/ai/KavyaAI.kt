@@ -1117,7 +1117,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     lastStreamClassifiedError = classified
                     if (hasEmittedTokens && classified.category == AiErrorCategory.STREAMING_INTERRUPTION) {
                         // Never silently present a truncated streamed answer as complete.
-                        emit("\\n\\n${classified.toErrorPrefixString()}")
+                        emit("\n\n${classified.toErrorPrefixString()}")
                     }
                     Log.w(TAG, "Stream error on $model: ${classified.redactedLogSummary}")
                     if (classified.category == AiErrorCategory.NETWORK_UNAVAILABLE ||
