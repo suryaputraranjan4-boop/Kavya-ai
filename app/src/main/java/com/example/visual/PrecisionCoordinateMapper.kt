@@ -98,14 +98,12 @@ class PrecisionCoordinateMapper(private val context: Context) {
         screenshotWidth: Int,
         screenshotHeight: Int
     ): DeviceCoordinates {
-        val mapped = ScreenAnnotationManager.coordinateMapper.mapBitmapPointToScreen(
-            bitmapX = screenshotX,
-            bitmapY = screenshotY,
-            bitmapWidth = screenshotWidth,
-            bitmapHeight = screenshotHeight,
-            context = context
-        )
-        return DeviceCoordinates(mapped.first.toFloat(), mapped.second.toFloat())
+        val dims = getPhysicalDimensions()
+        val scaleX = dims.width.toFloat() / screenshotWidth.coerceAtLeast(1)
+        val scaleY = dims.height.toFloat() / screenshotHeight.coerceAtLeast(1)
+        val clampedX = (screenshotX * scaleX).coerceIn(0f, dims.width.toFloat())
+        val clampedY = (screenshotY * scaleY).coerceIn(0f, dims.height.toFloat())
+        return DeviceCoordinates(clampedX, clampedY)
     }
 
     /**

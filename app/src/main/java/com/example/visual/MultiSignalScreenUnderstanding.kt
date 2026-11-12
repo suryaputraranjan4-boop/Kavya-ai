@@ -735,7 +735,7 @@ object ShortTermNavigationMemory {
  */
 object PromptInjectionGuard {
     private val injectionPatterns = listOf(
-        Regex("""(?i)ignore\s+(all\s+)?(previous|prior|above)\s+instructions"""),
+        Regex("""(?i)ignore\s+(all\s+)?(previous|prior|above)(\s+\w+)?\s+instructions"""),
         Regex("""(?i)system\s*prompt\s*:"""),
         Regex("""(?i)you\s+are\s+now\s+in\s+developer\s+mode"""),
         Regex("""(?i)\[ACTION\s*:[^\]]*\]"""),
