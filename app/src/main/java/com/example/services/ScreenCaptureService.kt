@@ -58,6 +58,9 @@ class ScreenCaptureService : Service() {
 
     private var currentDensityDpi: Int = DisplayMetrics.DENSITY_DEVICE_STABLE
 
+    @Volatile
+    private var activeSessionId: String = ""
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             Log.i(TAG, "MediaProjection was stopped by the system.")
@@ -68,13 +71,13 @@ class ScreenCaptureService : Service() {
             super.onCapturedContentResize(width, height)
             if (width <= 0 || height <= 0) return
             Log.i(TAG, "MediaProjection captured content resized to ${width}x${height}")
-            resizeCapturePipeline(width, height)
+            resizeCapturePipeline(width, height, activeSessionId)
         }
 
         override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
             super.onCapturedContentVisibilityChanged(isVisible)
             Log.i(TAG, "MediaProjection captured content visibility changed: isVisible=$isVisible")
-            ScreenShareManager.onCapturedContentVisibilityChanged(isVisible)
+            ScreenShareManager.onCapturedContentVisibilityChanged(isVisible, activeSessionId)
         }
     }
 
@@ -112,7 +115,8 @@ class ScreenCaptureService : Service() {
                 return START_NOT_STICKY
             }
 
-            val sessionId = intent.getStringExtra("EXTRA_SESSION_ID") ?: java.util.UUID.randomUUID().toString()
+            val sessionId = intent.getStringExtra("EXTRA_SESSION_ID") ?: return START_NOT_STICKY
+            activeSessionId = sessionId
             startForegroundWithNotification()
             startCapture(resultCode, resultData, sessionId)
         }
@@ -161,6 +165,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun startCapture(resultCode: Int, resultData: Intent, sessionId: String) {
+        activeSessionId = sessionId
         try {
             val projection = mediaProjectionManager?.getMediaProjection(resultCode, resultData)
             if (projection == null) {
@@ -187,7 +192,7 @@ class ScreenCaptureService : Service() {
             val targetWidth = if (screenWidth > 720) 720 else screenWidth
             val targetHeight = (screenHeight * (targetWidth.toFloat() / screenWidth.coerceAtLeast(1))).toInt().coerceAtLeast(1)
 
-            val reader = createConfiguredImageReader(targetWidth, targetHeight)
+            val reader = createConfiguredImageReader(targetWidth, targetHeight, sessionId)
             imageReader = reader
 
             ScreenShareManager.onServiceStarted(sessionId)
@@ -211,7 +216,7 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun createConfiguredImageReader(targetWidth: Int, targetHeight: Int): ImageReader {
+    private fun createConfiguredImageReader(targetWidth: Int, targetHeight: Int, sessionId: String): ImageReader {
         val reader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2)
         var lastFrameExtractMs = 0L
         reader.setOnImageAvailableListener({ imageReaderInstance ->
@@ -219,7 +224,7 @@ class ScreenCaptureService : Service() {
             try {
                 val now = System.currentTimeMillis()
                 if (now - lastFrameExtractMs < 280L) {
-                    ScreenShareManager.onFrameHeartbeat(targetWidth, targetHeight)
+                    ScreenShareManager.onFrameHeartbeat(targetWidth, targetHeight, sessionId)
                     return@setOnImageAvailableListener
                 }
                 lastFrameExtractMs = now
@@ -245,8 +250,11 @@ class ScreenCaptureService : Service() {
                     cropped
                 }
 
-                ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight)
-                VisionPipeline.onNewFrame(cleanBitmap)
+                if (ScreenShareManager.onFrameCaptured(cleanBitmap, targetWidth, targetHeight, sessionId)) {
+                    VisionPipeline.onNewFrame(cleanBitmap)
+                } else if (!cleanBitmap.isRecycled) {
+                    cleanBitmap.recycle()
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Exception processing VirtualDisplay frame: ${e.message}")
             } finally {
@@ -256,17 +264,18 @@ class ScreenCaptureService : Service() {
         return reader
     }
 
-    private fun resizeCapturePipeline(rawWidth: Int, rawHeight: Int) {
+    private fun resizeCapturePipeline(rawWidth: Int, rawHeight: Int, sessionId: String) {
+        if (sessionId.isBlank() || sessionId != activeSessionId) return
         try {
             val targetWidth = if (rawWidth > 720) 720 else rawWidth.coerceAtLeast(1)
             val targetHeight = (rawHeight * (targetWidth.toFloat() / rawWidth.coerceAtLeast(1))).toInt().coerceAtLeast(1)
             val oldReader = imageReader
-            val newReader = createConfiguredImageReader(targetWidth, targetHeight)
+            val newReader = createConfiguredImageReader(targetWidth, targetHeight, sessionId)
             imageReader = newReader
             virtualDisplay?.resize(targetWidth, targetHeight, currentDensityDpi)
             virtualDisplay?.surface = newReader.surface
             try { oldReader?.close() } catch (_: Exception) {}
-            ScreenShareManager.onCapturedContentResized(targetWidth, targetHeight)
+            ScreenShareManager.onCapturedContentResized(targetWidth, targetHeight, sessionId)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to dynamically resize VirtualDisplay/ImageReader: ${e.message}")
         }
@@ -278,6 +287,9 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stopCapture() {
+        val stoppedSessionId = activeSessionId
+        if (stoppedSessionId.isBlank() && mediaProjection == null && virtualDisplay == null && imageReader == null) return
+        activeSessionId = ""
         Log.i(TAG, "Cleaning up screen capture service resources...")
         try {
             virtualDisplay?.release()
@@ -293,7 +305,7 @@ class ScreenCaptureService : Service() {
             Log.w(TAG, "Error cleaning projection: ${e.message}")
         }
 
-        ScreenShareManager.onServiceStopped()
+        ScreenShareManager.onServiceStopped(stoppedSessionId)
         VisionPipeline.reset()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
