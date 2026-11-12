@@ -184,28 +184,52 @@ class KavyaComprehensiveTestInfrastructureTest {
     // ==========================================
 
     @Test
-    fun testCoordinateMapperHandlesRotatedDimensions() {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        val mapper = PrecisionCoordinateMapper(context)
-
-        val portraitMapped = mapper.fromScreenshotCoordinates(
-            screenshotX = 540f,
-            screenshotY = 1200f,
-            screenshotWidth = 1080,
-            screenshotHeight = 2400
+    fun testCoordinateMapperUsesExactScalingAndClampsFrameEdges() {
+        val center = PrecisionCoordinateMapper.mapScreenshotPoint(
+            screenshotX = 99.5f,
+            screenshotY = 49.5f,
+            screenshotWidth = 200,
+            screenshotHeight = 100,
+            screenWidth = 400,
+            screenHeight = 200
         )
+        assertEquals(200f, center.x, 0.01f)
+        assertEquals(100f, center.y, 0.01f)
 
-        val landscapeMapped = mapper.fromScreenshotCoordinates(
-            screenshotX = 1200f,
-            screenshotY = 540f,
-            screenshotWidth = 2400,
-            screenshotHeight = 1080
+        val bottomRight = PrecisionCoordinateMapper.mapScreenshotPoint(
+            screenshotX = 199f,
+            screenshotY = 99f,
+            screenshotWidth = 200,
+            screenshotHeight = 100,
+            screenWidth = 400,
+            screenHeight = 200
         )
+        assertEquals(399f, bottomRight.x, 0.01f)
+        assertEquals(199f, bottomRight.y, 0.01f)
 
-        assertNotNull(portraitMapped)
-        assertNotNull(landscapeMapped)
-        assertTrue(portraitMapped.x > 0f)
-        assertTrue(landscapeMapped.x > 0f)
+        val invalid = PrecisionCoordinateMapper.mapScreenshotPoint(
+            screenshotX = 1f,
+            screenshotY = 1f,
+            screenshotWidth = 0,
+            screenshotHeight = 100,
+            screenWidth = 400,
+            screenHeight = 200
+        )
+        assertEquals(0f, invalid.x, 0.01f)
+        assertEquals(0f, invalid.y, 0.01f)
+    }
+
+    @Test
+    fun testStaleScreenShareCallbacksCannotReviveIdleSession() {
+        val staleFrame = android.graphics.Bitmap.createBitmap(8, 8, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            assertFalse(ScreenShareManager.onFrameCaptured(staleFrame, 8, 8, "old-session"))
+            ScreenShareManager.onServiceStarted("old-session")
+            assertTrue(ScreenShareManager.state.value is ScreenShareManager.ScreenShareState.Idle)
+        } finally {
+            staleFrame.recycle()
+            ScreenShareManager.resetToIdle()
+        }
     }
 
     // ==========================================
