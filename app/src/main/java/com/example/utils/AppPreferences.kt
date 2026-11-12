@@ -183,10 +183,14 @@ object AppPreferences {
         return com.example.security.SecureStorage.getSecret(context, "gemini_api_key")
     }
 
-    fun setCustomApiKey(context: Context, key: String) {
+    fun setCustomApiKey(context: Context, key: String): Boolean {
         val trimmed = key.trim()
-        com.example.security.SecureStorage.saveSecret(context, "gemini_api_key", trimmed)
-        getPrefs(context).edit().remove(KEY_CUSTOM_API_KEY).apply()
+        // Do not silently report success when Android Keystore cannot persist the key.
+        // The caller must not validate the typed key while runtime still uses an older one.
+        val saved = com.example.security.SecureStorage.saveSecret(context, "gemini_api_key", trimmed)
+        if (!saved) return false
+        getPrefs(context).edit().remove(KEY_CUSTOM_API_KEY).commit()
+        return getCustomApiKey(context) == trimmed
     }
 
     fun clearCustomApiKey(context: Context) {
