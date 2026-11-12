@@ -1057,7 +1057,7 @@ fun AiApiHubScreen(navController: NavController) {
                         AppPreferences.setGeminiModel(context, it)
                     },
                     presetModels = geminiPresetModels,
-                    modelPlaceholder = "gemini-2.5-flash",
+                    modelPlaceholder = "gemini-3.5-flash-lite",
                     isTesting = isGeminiTesting,
                     testResult = geminiTestResult,
                     onTestConnection = {

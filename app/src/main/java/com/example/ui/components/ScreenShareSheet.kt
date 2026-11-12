@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -39,8 +38,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.services.ScreenShareManager
+import com.example.ui.screens.ScreenSharePresentationWorkspace
 import com.example.ui.theme.*
+import com.example.utils.AppPreferences
 import com.example.viewmodel.KavyaViewModel
+import com.example.visual.JarvisGuidanceEngine
+import com.example.visual.ScreenSharePresentationLevel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,35 +55,38 @@ fun ScreenShareSheet(
 ) {
     val context = LocalContext.current
     val shareState by viewModel.screenShareState.collectAsState()
-    val isSharing = shareState is com.example.services.ScreenShareManager.ScreenShareState.Active || shareState is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame
+    val isSharing = ScreenShareManager.isScreenSharingActive
     val screenContext by viewModel.screenContextText.collectAsState()
     val scrollState = rememberScrollState()
 
+    var showWorkspaceDialog by remember { mutableStateOf(false) }
+
+    var selectedPresentationLevel by remember {
+        mutableStateOf(
+            ScreenSharePresentationLevel.fromId(AppPreferences.getScreenPresentationLevel(context))
+        )
+    }
+
     // Status description from actual state
     val statusText = when (val s = shareState) {
-        is com.example.services.ScreenShareManager.ScreenShareState.Active -> "Active • ${s.width}x${s.height} @ ${s.fps} FPS (${s.framesCaptured} frames)"
-        is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame -> "Warning • Screen frame stream is stale"
-        is com.example.services.ScreenShareManager.ScreenShareState.WaitingForFirstFrame -> "Connecting • Waiting for first frame..."
-        is com.example.services.ScreenShareManager.ScreenShareState.StartingService -> "Starting foreground capture service..."
-        is com.example.services.ScreenShareManager.ScreenShareState.RequestingPermission -> "Requesting system consent..."
-        is com.example.services.ScreenShareManager.ScreenShareState.PermissionDenied -> "Permission Denied: ${s.reason}"
-        is com.example.services.ScreenShareManager.ScreenShareState.Error -> "Error: ${s.message}"
+        is ScreenShareManager.ScreenShareState.Active -> "Active • ${s.width}x${s.height} @ ${s.fps} FPS (${s.framesCaptured} frames)"
+        is ScreenShareManager.ScreenShareState.StaleFrame -> "Warning • Screen frame stream is stale"
+        is ScreenShareManager.ScreenShareState.WaitingForFirstFrame -> "Connecting • Waiting for first frame..."
+        is ScreenShareManager.ScreenShareState.StartingService -> "Starting foreground capture service..."
+        is ScreenShareManager.ScreenShareState.RequestingPermission -> "Requesting system consent..."
+        is ScreenShareManager.ScreenShareState.PermissionDenied -> "Permission Denied: ${s.reason}"
+        is ScreenShareManager.ScreenShareState.Error -> "Error: ${s.message}"
         else -> "Inactive • Ready to share screen"
     }
 
     val statusDotColor = when (shareState) {
-        is com.example.services.ScreenShareManager.ScreenShareState.Active -> SuccessGreen
-        is com.example.services.ScreenShareManager.ScreenShareState.StaleFrame -> Color(0xFFFFB300)
-        is com.example.services.ScreenShareManager.ScreenShareState.StartingService,
-        is com.example.services.ScreenShareManager.ScreenShareState.WaitingForFirstFrame -> AccentCyan
-        is com.example.services.ScreenShareManager.ScreenShareState.PermissionDenied,
-        is com.example.services.ScreenShareManager.ScreenShareState.Error -> Error
+        is ScreenShareManager.ScreenShareState.Active -> SuccessGreen
+        is ScreenShareManager.ScreenShareState.StaleFrame -> Color(0xFFFFB300)
+        is ScreenShareManager.ScreenShareState.StartingService,
+        is ScreenShareManager.ScreenShareState.WaitingForFirstFrame -> AccentCyan
+        is ScreenShareManager.ScreenShareState.PermissionDenied,
+        is ScreenShareManager.ScreenShareState.Error -> Error
         else -> TextTertiary
-    }
-
-    // Android Official Screen Capture Consent Launcher (MediaProjection)
-    val mediaProjectionManager = remember {
-        context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
     }
 
     val screenCaptureConsentLauncher = rememberLauncherForActivityResult(
@@ -92,6 +99,20 @@ fun ScreenShareSheet(
         val captureIntent = viewModel.startScreenShareConsent(context)
         if (captureIntent != null) {
             screenCaptureConsentLauncher.launch(captureIntent)
+        }
+    }
+
+    if (showWorkspaceDialog) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showWorkspaceDialog = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            ScreenSharePresentationWorkspace(
+                viewModel = viewModel,
+                initialLevel = selectedPresentationLevel,
+                onClose = { showWorkspaceDialog = false },
+                modifier = Modifier.fillMaxSize()
+            )
         }
     }
 
@@ -130,7 +151,7 @@ fun ScreenShareSheet(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ScreenShare,
+                            imageVector = Icons.Default.ScreenShare,
                             contentDescription = "Screen Share",
                             tint = Color.White,
                             modifier = Modifier.size(24.dp)
@@ -139,7 +160,7 @@ fun ScreenShareSheet(
                     Spacer(modifier = Modifier.width(14.dp))
                     Column {
                         Text(
-                            text = "Live Screen Sharing",
+                            text = "Screen Share",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextPrimary)
                         )
                         Spacer(modifier = Modifier.height(2.dp))
@@ -179,31 +200,54 @@ fun ScreenShareSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Companion Prompt Glass Bubble
-            GlassCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                backgroundColor = SurfaceGlass.copy(alpha = 0.8f),
-                borderColor = GlassBorder
+            // Presentation Level Selection (Basic, Standard, Advanced)
+            Text(
+                text = "Explain Screen Presentation Level:",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = TextSecondary)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceGlass)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "✨",
-                        fontSize = 22.sp,
-                        modifier = Modifier.padding(end = 10.dp)
-                    )
-                    Text(
-                        text = if (isSharing)
-                            "\"I can see your screen now! I will observe and guide you in real time ✨\""
-                        else
-                            "\"Share your screen so I can follow along and guide you in real time ✨\"",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 19.sp),
-                        color = PrimaryLight
-                    )
+                ScreenSharePresentationLevel.entries.forEach { level ->
+                    val isSelected = selectedPresentationLevel == level
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .then(
+                                if (isSelected)
+                                    Modifier.background(Brush.linearGradient(listOf(Primary, AccentCyan)))
+                                else
+                                    Modifier
+                            )
+                            .clickable {
+                                selectedPresentationLevel = level
+                                AppPreferences.setScreenPresentationLevel(context, level.id)
+                            }
+                            .padding(vertical = 7.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = level.title,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) Color.White else TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Main Toggle Action Button (With Screen Capture Consent Flow)
             val toggleInteraction = remember { MutableInteractionSource() }
@@ -234,25 +278,47 @@ fun ScreenShareSheet(
                 contentPadding = PaddingValues(horizontal = 16.dp)
             ) {
                 Icon(
-                    imageVector = if (isSharing) Icons.Default.Stop else Icons.AutoMirrored.Filled.ScreenShare,
+                    imageVector = if (isSharing) Icons.Default.Stop else Icons.Default.ScreenShare,
                     contentDescription = null,
                     tint = Color.White,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = if (isSharing) "Stop Screen Sharing" else "Start Sharing Screen with Kavya",
+                    text = if (isSharing) "Stop Screen Sharing" else "Start Screen Share with Kavya",
                     fontWeight = FontWeight.SemiBold,
                     color = Color.White,
                     fontSize = 15.sp
                 )
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // Quick Inquiries
+            // Open Full Screen Share Workspace Button
+            OutlinedButton(
+                onClick = { showWorkspaceDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = SurfaceGlass.copy(alpha = 0.6f),
+                    contentColor = AccentCyan
+                ),
+                border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
+                    brush = Brush.linearGradient(listOf(AccentCyan.copy(alpha = 0.5f), GlassBorder))
+                )
+            ) {
+                Icon(Icons.Default.OpenInFull, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Open Visual Workspace (${selectedPresentationLevel.title})", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // Quick Inquiries & Visual Intelligence Actions
             Text(
-                text = "Screen Inquiries (Live Guidance):",
+                text = "Visual Intelligence & Actions:",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
@@ -260,9 +326,8 @@ fun ScreenShareSheet(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
-                        viewModel.analyzeScreenWithKavya("What's on my screen right now? Please guide me.")
-                        onDismiss()
-                        onNavigateToChat()
+                        JarvisGuidanceEngine.explainActiveScreenAsync(context, "Explain this screen in detail")
+                        showWorkspaceDialog = true
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -274,7 +339,26 @@ fun ScreenShareSheet(
                 ) {
                     Icon(Icons.Default.Psychology, contentDescription = null, tint = PrimaryLight, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(10.dp))
-                    Text("Explain what's on screen ✨", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp))
+                    Text("Explain Screen (Visual Intelligence) ✨", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp))
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        viewModel.analyzeScreenWithKavya("What clickable buttons or action items are available on this screen?")
+                        onDismiss()
+                        onNavigateToChat()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = SurfaceGlass.copy(alpha = 0.5f),
+                        contentColor = TextPrimary
+                    ),
+                    border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(brush = Brush.linearGradient(listOf(Outline, GlassBorder)))
+                ) {
+                    Icon(Icons.Default.TouchApp, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text("Shows You How (Guidance) 🔍", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp))
                 }
 
                 OutlinedButton(
@@ -295,28 +379,9 @@ fun ScreenShareSheet(
                     Spacer(modifier = Modifier.width(10.dp))
                     Text("Read screen text aloud 🎙️", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp))
                 }
-
-                OutlinedButton(
-                    onClick = {
-                        viewModel.analyzeScreenWithKavya("What clickable buttons or action items are available on this screen?")
-                        onDismiss()
-                        onNavigateToChat()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = SurfaceGlass.copy(alpha = 0.5f),
-                        contentColor = TextPrimary
-                    ),
-                    border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(brush = Brush.linearGradient(listOf(Outline, GlassBorder)))
-                ) {
-                    Icon(Icons.Default.TouchApp, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Find clickable buttons and actions 🔍", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp))
-                }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
             // Perception Inspector Feed
             Text(
@@ -343,4 +408,3 @@ fun ScreenShareSheet(
         }
     }
 }
-

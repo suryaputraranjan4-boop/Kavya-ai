@@ -1082,9 +1082,16 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val isSharing by viewModel.isScreenSharing.collectAsState()
     val screenContext by viewModel.screenContextText.collectAsState()
+    val shareState by viewModel.screenShareState.collectAsState()
 
-    val mediaProjectionManager = remember {
-        context.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as? android.media.projection.MediaProjectionManager
+    var showWorkspace by remember { mutableStateOf(false) }
+
+    var selectedPresentationLevel by remember {
+        mutableStateOf(
+            com.example.visual.ScreenSharePresentationLevel.fromId(
+                com.example.utils.AppPreferences.getScreenPresentationLevel(context)
+            )
+        )
     }
 
     val screenCaptureConsentLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -1100,12 +1107,27 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
         }
     }
 
-    SimpleScreen("Screen Share & Vision", navController) {
+    if (showWorkspace) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showWorkspace = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            com.example.ui.screens.ScreenSharePresentationWorkspace(
+                viewModel = viewModel,
+                initialLevel = selectedPresentationLevel,
+                onClose = { showWorkspace = false },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+
+    SimpleScreen("Screen Share", navController) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(20.dp)
         ) {
+            // Live Status Header Card
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
@@ -1129,12 +1151,12 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
                     Spacer(modifier = Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isSharing) "Screen Sharing is Active" else "Screen Sharing is Inactive",
+                            text = if (isSharing) "Screen Share is Active" else "Screen Share is Inactive",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = TextPrimary
                         )
                         Text(
-                            text = if (isSharing) "Kavya is observing your screen in real time." else "Kavya observes your screen to guide tasks hands-free.",
+                            text = if (isSharing) "Kavya is observing and analyzing your screen in real time." else "Tap Start to observe and guide your screen hands-free.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
@@ -1144,6 +1166,57 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
 
             Spacer(modifier = Modifier.height(14.dp))
 
+            // Presentation Level Selection (Basic, Standard, Advanced)
+            Text(
+                text = "Explain Screen Presentation Level:",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = TextSecondary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceGlass)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                com.example.visual.ScreenSharePresentationLevel.entries.forEach { level ->
+                    val isSelected = selectedPresentationLevel == level
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .then(
+                                if (isSelected)
+                                    Modifier.background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Primary, AccentCyan)))
+                                else
+                                    Modifier
+                            )
+                            .clickable {
+                                selectedPresentationLevel = level
+                                com.example.utils.AppPreferences.setScreenPresentationLevel(context, level.id)
+                            }
+                            .padding(vertical = 7.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = level.title,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) Color.White else TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Start / Stop Toggle Button
             Button(
                 onClick = {
                     if (isSharing) {
@@ -1173,7 +1246,60 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Open Visual Workspace Button
+            OutlinedButton(
+                onClick = { showWorkspace = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = SurfaceGlass.copy(alpha = 0.5f),
+                    contentColor = AccentCyan
+                ),
+                border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
+                    brush = androidx.compose.ui.graphics.Brush.linearGradient(listOf(AccentCyan.copy(alpha = 0.6f), GlassBorder))
+                )
+            ) {
+                Icon(Icons.Default.OpenInFull, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Open Visual Workspace (${selectedPresentationLevel.title})", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Quick Actions: Explain Screen & Shows You How
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        com.example.visual.JarvisGuidanceEngine.explainActiveScreenAsync(context, "Explain this screen in detail")
+                        showWorkspace = true
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Psychology, contentDescription = null, tint = PrimaryLight, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Explain Screen", fontSize = 11.sp, color = PrimaryLight)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        viewModel.analyzeScreenWithKavya("What clickable buttons or action items are available on this screen?")
+                        navController.navigate("chat")
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.TouchApp, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Shows You How", fontSize = 11.sp, color = AccentCyan)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
 
             Text("Live Perception Feed:", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
             Spacer(modifier = Modifier.height(8.dp))
@@ -1198,19 +1324,6 @@ fun ScreenShareScreen(navController: NavController, viewModel: KavyaViewModel) {
                         )
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            OutlinedButton(
-                onClick = {
-                    viewModel.analyzeScreenWithKavya("What's on my screen right now? Please guide me.")
-                    navController.navigate("chat")
-                },
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Analyze Screen in Chat ✨", color = PrimaryLight)
             }
         }
     }

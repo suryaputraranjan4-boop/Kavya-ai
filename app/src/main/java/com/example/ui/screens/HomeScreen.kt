@@ -331,7 +331,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                             .padding(8.dp)
                     ) {
                         Icon(
-                            imageVector = if (isScreenSharing) Icons.Filled.StopScreenShare else Icons.AutoMirrored.Filled.ScreenShare,
+                            imageVector = if (isScreenSharing) Icons.Filled.StopScreenShare else Icons.Filled.ScreenShare,
                             contentDescription = "Screen Share",
                             tint = if (isScreenSharing) Color(0xFFFF4444) else Color.White.copy(alpha = 0.6f),
                             modifier = Modifier.size(18.dp)
@@ -394,18 +394,57 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 AnimatedVisibility(visible = !latestCaption.isNullOrBlank()) {
-                    TypewriterText(
-                        text = latestCaption ?: "",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.W400,
-                            letterSpacing = 0.5.sp,
-                            color = Color.White.copy(alpha = 0.9f)
-                        ),
-                        textAlign = TextAlign.Center,
+                    val caption = latestCaption ?: ""
+                    val isError = com.example.ai.AiErrorClassifier.isErrorText(caption) || caption.contains("API") || caption.contains("कोटा")
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .padding(horizontal = 32.dp, vertical = 16.dp)
+                            .padding(horizontal = 24.dp, vertical = 8.dp)
                             .fillMaxWidth()
-                    )
+                    ) {
+                        TypewriterText(
+                            text = caption,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = if (isError) FontWeight.Bold else FontWeight.W400,
+                                letterSpacing = 0.5.sp,
+                                color = if (isError) Color(0xFFFF6B6B) else Color.White.copy(alpha = 0.9f)
+                            ),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    if (isError) {
+                                        navController.navigate("setup_kavya")
+                                    }
+                                }
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                        if (isError) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(top = 4.dp)
+                            ) {
+                                Text(
+                                    text = "Tap to open API Setup",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Bold),
+                                    color = Color(0xFF00E5FF),
+                                    modifier = Modifier.clickable { navController.navigate("setup_kavya") }
+                                )
+                                Text(
+                                    text = "•",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White.copy(alpha = 0.4f)
+                                )
+                                Text(
+                                    text = "Dismiss ✕",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Bold),
+                                    color = Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.clickable { viewModel.clearErrorState() }
+                                )
+                            }
+                        }
+                    }
                 }
                 KavyaVoiceOrb(
                     state = voiceState,
@@ -491,7 +530,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             }
 
             // Quick Action Capsules
-            val suggestions = listOf("Explain Screen", "JARVIS Guide", "YouTube खोलो", "WhatsApp खोलो", "Google पर सर्च करो", "Torch ON", "Settings")
+            val suggestions = listOf("Explain Screen", "Screen Guide", "YouTube खोलो", "WhatsApp खोलो", "Google पर सर्च करो", "Torch ON", "Settings")
             androidx.compose.foundation.lazy.LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()

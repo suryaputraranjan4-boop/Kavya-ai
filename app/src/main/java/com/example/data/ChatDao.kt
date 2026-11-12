@@ -46,4 +46,10 @@ interface ChatDao {
 
     @Query("DELETE FROM messages")
     suspend fun clearAllMessages()
+
+    @Query("UPDATE chats SET title = 'Conversation' WHERE title LIKE '%noise%' OR title LIKE '%<%' OR title LIKE '%[%'")
+    suspend fun sanitizeNoiseChatTitles()
+
+    @Query("DELETE FROM messages WHERE text LIKE '%<noise>%' OR text LIKE '%[noise]%'")
+    suspend fun deleteNoiseMessages()
 }

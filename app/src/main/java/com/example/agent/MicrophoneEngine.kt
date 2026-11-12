@@ -223,6 +223,8 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
         }
     }
 
+    private val stateLock = Any()
+
     /**
      * Starts continuous physical microphone capture. Idempotent & thread-safe.
      */
@@ -234,79 +236,76 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             return false
         }
 
-        var started = false
-        runBlocking {
-            mutex.withLock {
-                if (isRecordingActive) {
-                    val currentRecord = audioRecord
-                    started = currentRecord != null &&
-                        currentRecord.state == AudioRecord.STATE_INITIALIZED &&
-                        currentRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING
-                    if (started) {
-                        Log.d(TAG, "MicrophoneEngine already active. Skipping duplicate start.")
-                        return@withLock
-                    }
-                    isRecordingActive = false
-                    recordingJob?.cancel()
-                    recordingJob = null
-                    // Release a stale handle before attempting a fresh initialization.
-                    audioRecord?.let { stale ->
-                        try {
-                            if (stale.recordingState == AudioRecord.RECORDSTATE_RECORDING) stale.stop()
-                            stale.release()
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Error releasing stale AudioRecord before restart", e)
-                        }
-                    }
-                    audioRecord = null
+        synchronized(stateLock) {
+            if (isRecordingActive) {
+                val currentRecord = audioRecord
+                val alreadyRecording = currentRecord != null &&
+                    currentRecord.state == AudioRecord.STATE_INITIALIZED &&
+                    currentRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING
+                if (alreadyRecording) {
+                    Log.d(TAG, "MicrophoneEngine already active. Skipping duplicate start.")
+                    return true
                 }
-
-                _engineState.value = State.STARTING
-                if (!initializeAudioRecord()) {
-                    Log.e(TAG, "Failed to initialize physical AudioRecord instance")
-                    _engineState.value = State.ERROR
-                    isRecordingActive = false
-                    return@withLock
-                }
-
-                isRecordingActive = true
-                isSleeping = AppPreferences.getKavyaState(appContext).equals("SLEEP", ignoreCase = true)
-                _engineState.value = if (isSleeping) State.SLEEPING else State.LISTENING
-                startRecordingLoop()
-                started = true
-            }
-        }
-        return started
-    }
-
-    /**
-     * Stops continuous physical microphone capture.
-     */
-    fun stopListening() {
-        runBlocking {
-            mutex.withLock {
-                if (!isRecordingActive) return@runBlocking
-                _engineState.value = State.STOPPING
                 isRecordingActive = false
                 recordingJob?.cancel()
                 recordingJob = null
-
-                try {
-                    audioRecord?.let { record ->
-                        if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                            record.stop()
-                        }
-                        record.release()
+                // Release a stale handle before attempting a fresh initialization.
+                audioRecord?.let { stale ->
+                    try {
+                        if (stale.recordingState == AudioRecord.RECORDSTATE_RECORDING) stale.stop()
+                        stale.release()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error releasing stale AudioRecord before restart", e)
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error stopping AudioRecord", e)
-                } finally {
-                    audioRecord = null
-                    pcmProcessor.reset()
-                    _engineState.value = State.IDLE
-                    _amplitude.value = 0.0f
-                    Log.i(TAG, "Physical AudioRecord session stopped and released.")
                 }
+                audioRecord = null
+            }
+
+            _engineState.value = State.STARTING
+            if (!initializeAudioRecord()) {
+                Log.e(TAG, "Failed to initialize physical AudioRecord instance")
+                _engineState.value = State.ERROR
+                isRecordingActive = false
+                return false
+            }
+
+            isRecordingActive = true
+            isSleeping = AppPreferences.getKavyaState(appContext).equals("SLEEP", ignoreCase = true)
+            _engineState.value = if (isSleeping) State.SLEEPING else State.LISTENING
+            startRecordingLoop()
+            return true
+        }
+    }
+
+    /**
+     * Stops continuous physical microphone capture safely without blocking caller threads.
+     */
+    fun stopListening() {
+        synchronized(stateLock) {
+            if (!isRecordingActive && audioRecord == null) return
+            _engineState.value = State.STOPPING
+            isRecordingActive = false
+            val currentJob = recordingJob
+            recordingJob = null
+            currentJob?.cancel()
+
+            val recordToRelease = audioRecord
+            audioRecord = null
+
+            try {
+                recordToRelease?.let { record ->
+                    if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        record.stop()
+                    }
+                    record.release()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping AudioRecord", e)
+            } finally {
+                pcmProcessor.reset()
+                _engineState.value = State.IDLE
+                _amplitude.value = 0.0f
+                Log.i(TAG, "Physical AudioRecord session stopped and released.")
             }
         }
     }
@@ -384,27 +383,36 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
             while (isActive && isRecordingActive) {
                 val record = audioRecord
                 if (record == null || record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                    if (!isRecordingActive) break
                     Log.w(TAG, "AudioRecord lost recording state. Attempting controlled recovery...")
                     if (!recoverAudioRecord(record)) break
                     consecutiveReadErrors = 0
                     continue
                 }
 
-                val bytesRead = record.read(readBuffer, 0, readBuffer.size)
-                if (bytesRead > 0) {
-                    consecutiveReadErrors = 0
-                    if (!isMuted) {
-                        pcmProcessor.processRawFrame(readBuffer, bytesRead)
-                    }
-                } else if (bytesRead < 0) {
-                    consecutiveReadErrors++
-                    Log.e(TAG, "AudioRecord read error code: $bytesRead ($consecutiveReadErrors consecutive)")
-                    if (consecutiveReadErrors >= MAX_CONSECUTIVE_READ_ERRORS) {
-                        if (!recoverAudioRecord(record)) break
+                try {
+                    val bytesRead = record.read(readBuffer, 0, readBuffer.size)
+                    if (!isRecordingActive) break
+
+                    if (bytesRead > 0) {
                         consecutiveReadErrors = 0
-                    } else {
-                        delay(100)
+                        if (!isMuted) {
+                            pcmProcessor.processRawFrame(readBuffer, bytesRead)
+                        }
+                    } else if (bytesRead < 0) {
+                        consecutiveReadErrors++
+                        Log.e(TAG, "AudioRecord read error code: $bytesRead ($consecutiveReadErrors consecutive)")
+                        if (consecutiveReadErrors >= MAX_CONSECUTIVE_READ_ERRORS) {
+                            if (!recoverAudioRecord(record)) break
+                            consecutiveReadErrors = 0
+                        } else {
+                            delay(100)
+                        }
                     }
+                } catch (e: Exception) {
+                    if (!isRecordingActive) break
+                    Log.w(TAG, "Safe unblock during AudioRecord read: ${e.message}")
+                    delay(50)
                 }
             }
             Log.d(TAG, "Exited PCM audio capture loop.")
@@ -416,44 +424,46 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
      * Normal utterance boundaries and TTS playback never stop or recreate AudioRecord.
      */
     private suspend fun recoverAudioRecord(failedRecord: AudioRecord?): Boolean {
-        return mutex.withLock {
-            if (!isRecordingActive) return@withLock false
+        return withContext(Dispatchers.Default) {
+            synchronized(stateLock) {
+                if (!isRecordingActive) return@synchronized false
 
-            // Another lifecycle action may already have replaced or stopped this handle.
-            if (failedRecord != null && audioRecord !== failedRecord) {
-                val current = audioRecord
-                return@withLock current != null &&
-                    current.state == AudioRecord.STATE_INITIALIZED &&
-                    current.recordingState == AudioRecord.RECORDSTATE_RECORDING
-            }
-
-            val oldRecord = audioRecord
-            audioRecord = null
-            try {
-                oldRecord?.let { record ->
-                    if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) record.stop()
-                    record.release()
+                // Another lifecycle action may already have replaced or stopped this handle.
+                if (failedRecord != null && audioRecord !== failedRecord) {
+                    val current = audioRecord
+                    return@synchronized current != null &&
+                        current.state == AudioRecord.STATE_INITIALIZED &&
+                        current.recordingState == AudioRecord.RECORDSTATE_RECORDING
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Error releasing failed AudioRecord before recovery", e)
-            }
 
-            Log.w(TAG, "Reinitializing AudioRecord after persistent capture failure...")
-            if (initializeAudioRecord()) {
-                _engineState.value = when {
-                    isAssistantSpeaking -> State.TTS_PLAYBACK
-                    isMuted -> State.MUTED
-                    isSleeping -> State.SLEEPING
-                    else -> State.LISTENING
+                val oldRecord = audioRecord
+                audioRecord = null
+                try {
+                    oldRecord?.let { record ->
+                        if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) record.stop()
+                        record.release()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error releasing failed AudioRecord before recovery", e)
                 }
-                Log.i(TAG, "AudioRecord recovery succeeded; continuous capture resumed.")
-                true
-            } else {
-                isRecordingActive = false
-                _engineState.value = State.ERROR
-                _amplitude.value = 0.0f
-                Log.e(TAG, "AudioRecord recovery failed. Capture stopped safely; explicit restart is required.")
-                false
+
+                Log.w(TAG, "Reinitializing AudioRecord after persistent capture failure...")
+                if (initializeAudioRecord()) {
+                    _engineState.value = when {
+                        isAssistantSpeaking -> State.TTS_PLAYBACK
+                        isMuted -> State.MUTED
+                        isSleeping -> State.SLEEPING
+                        else -> State.LISTENING
+                    }
+                    Log.i(TAG, "AudioRecord recovery succeeded; continuous capture resumed.")
+                    true
+                } else {
+                    isRecordingActive = false
+                    _engineState.value = State.ERROR
+                    _amplitude.value = 0.0f
+                    Log.e(TAG, "AudioRecord recovery failed. Capture stopped safely; explicit restart is required.")
+                    false
+                }
             }
         }
     }
@@ -468,7 +478,7 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
                 Log.d(TAG, "Transcribing captured utterance (${pcmData.size} bytes)...")
                 val kavyaAI = KavyaAI(appContext)
                 val transcript = kavyaAI.transcribeAudio(pcmData, SAMPLE_RATE)
-                val cleanText = transcript.trim()
+                val cleanText = com.example.utils.SpeechSanitizer.sanitize(transcript)
 
                 if (cleanText.isNotBlank()) {
                     _lastVoiceError.value = null

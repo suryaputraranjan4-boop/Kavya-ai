@@ -315,7 +315,7 @@ data class AutomationDebugLog(
     val timestamp: Long = System.currentTimeMillis(),
     val classifiedTaskType: String = "GENERAL_REASONING",
     val selectedProvider: String = "GEMINI",
-    val selectedModel: String = "gemini-2.5-flash",
+    val selectedModel: String = "gemini-3.5-flash-lite",
     val requestLatencyMs: Long = 0L,
     val apiResponseStatus: String = "200 OK",
     val retriesCount: Int = 0

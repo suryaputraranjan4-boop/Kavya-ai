@@ -1,9 +1,6 @@
 package com.example.voice
 
-import android.app.Service
 import android.content.Context
-import android.content.Intent
-import android.os.IBinder
 import com.example.agent.MicrophoneEngine
 import com.example.services.KavyaVoiceService
 import kotlinx.coroutines.CoroutineScope
@@ -15,19 +12,28 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Backward-compatibility wrapper bridging legacy call sites to the central
+ * Authoritative facade and backward-compatibility bridge to the central
  * single-AudioRecord [MicrophoneEngine] and [KavyaVoiceService].
  *
- * Completely eliminates SpeechRecognizer recreation loops and Google-style microphone beeps.
+ * Guarantees a single-owner AudioRecord lifecycle, eliminating duplicate service
+ * registrations, speech recognizer recreation loops, and mic beep sounds.
  */
-class KavyaMicrophoneEngine : Service() {
+class KavyaMicrophoneEngine private constructor(private val appContext: Context) {
 
     enum class EngineState {
         MIC_OFF,
         MIC_STARTING,
         MIC_ACTIVE,
+        MIC_LISTENING,
+        MIC_SPEECH_DETECTED,
+        MIC_PROCESSING,
         MIC_SLEEPING,
-        MIC_ERROR
+        MIC_STOPPING,
+        MIC_ERROR;
+
+        val isListening: Boolean
+            get() = this == MIC_ACTIVE || this == MIC_LISTENING ||
+                this == MIC_SPEECH_DETECTED || this == MIC_PROCESSING
     }
 
     companion object {
@@ -46,10 +52,11 @@ class KavyaMicrophoneEngine : Service() {
         @Volatile private var isInitialized = false
 
         fun init(context: Context) {
-            if (isInitialized) return
+            if (isInitialized && instance != null) return
             synchronized(this) {
-                if (isInitialized) return
+                if (isInitialized && instance != null) return
                 val appContext = context.applicationContext
+                instance = KavyaMicrophoneEngine(appContext)
                 val mic = MicrophoneEngine.getInstance(appContext)
 
                 pendingListener?.let {
@@ -60,12 +67,15 @@ class KavyaMicrophoneEngine : Service() {
                 scope.launch {
                     mic.engineState.collect { state ->
                         stateFlow.value = when (state) {
-                            MicrophoneEngine.State.IDLE, MicrophoneEngine.State.STOPPING -> EngineState.MIC_OFF
+                            MicrophoneEngine.State.IDLE -> EngineState.MIC_OFF
                             MicrophoneEngine.State.STARTING -> EngineState.MIC_STARTING
-                            MicrophoneEngine.State.LISTENING, MicrophoneEngine.State.SPEECH_DETECTED,
-                            MicrophoneEngine.State.PROCESSING, MicrophoneEngine.State.TTS_PLAYBACK,
+                            MicrophoneEngine.State.LISTENING -> EngineState.MIC_ACTIVE
+                            MicrophoneEngine.State.SPEECH_DETECTED -> EngineState.MIC_SPEECH_DETECTED
+                            MicrophoneEngine.State.PROCESSING -> EngineState.MIC_PROCESSING
+                            MicrophoneEngine.State.TTS_PLAYBACK,
                             MicrophoneEngine.State.MUTED -> EngineState.MIC_ACTIVE
                             MicrophoneEngine.State.SLEEPING -> EngineState.MIC_SLEEPING
+                            MicrophoneEngine.State.STOPPING -> EngineState.MIC_STOPPING
                             MicrophoneEngine.State.ERROR -> EngineState.MIC_ERROR
                         }
                     }
@@ -131,37 +141,19 @@ class KavyaMicrophoneEngine : Service() {
         fun getInstance(): KavyaMicrophoneEngine? = instance
     }
 
-    override fun onCreate() {
-        super.onCreate()
-        instance = this
-        init(this)
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        KavyaVoiceService.startService(this)
-        return START_STICKY
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        instance = null
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
     fun stopEngine() {
-        MicrophoneEngine.getInstance(this).stopListening()
+        MicrophoneEngine.getInstance(appContext).stopListening()
     }
 
     fun setSleeping() {
-        MicrophoneEngine.getInstance(this).setSleeping(true)
+        MicrophoneEngine.getInstance(appContext).setSleeping(true)
     }
 
     fun setAwake() {
-        MicrophoneEngine.getInstance(this).setSleeping(false)
+        MicrophoneEngine.getInstance(appContext).setSleeping(false)
     }
 
     fun setSpeaking(isSpeaking: Boolean) {
-        MicrophoneEngine.getInstance(this).setAssistantSpeaking(isSpeaking)
+        MicrophoneEngine.getInstance(appContext).setAssistantSpeaking(isSpeaking)
     }
 }

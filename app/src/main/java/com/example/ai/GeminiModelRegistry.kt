@@ -9,25 +9,25 @@ package com.example.ai
  */
 object GeminiModelRegistry {
     // Primary Fast Multimodal & Agent Reasoning Model
-    const val DEFAULT_AGENT_MODEL = "gemini-3.8-flash"
+    const val DEFAULT_AGENT_MODEL = "gemini-3.5-flash-lite"
 
     // High-complexity Planning & Code Architecture Model
-    const val PRO_REASONING_MODEL = "gemini-3.1-pro-preview"
+    const val PRO_REASONING_MODEL = "gemini-3.5-pro"
 
     // Ultra-low Latency Bidi Live Streaming Model (WebSocket)
-    const val LIVE_STREAM_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+    const val LIVE_STREAM_MODEL = "gemini-3.5-flash-lite"
 
     // Primary High-Fidelity Audio & Speech Synthesis Model (Gemini TTS)
-    const val PRIMARY_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+    const val PRIMARY_TTS_MODEL = "gemini-3.5-flash-lite"
 
     // High-volume / Low-latency Audio Model Fallback
-    const val SECONDARY_TTS_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+    const val SECONDARY_TTS_MODEL = "gemini-2.0-flash"
 
     // Real-time Screen & UI Vision Understanding Model
-    const val VISION_ANALYZER_MODEL = "gemini-2.5-flash-image"
+    const val VISION_ANALYZER_MODEL = "gemini-3.5-flash-lite"
 
     // Semantic Text Embedding Model for Knowledge & Memory Retrieval
-    const val EMBEDDING_MODEL = "gemini-embedding-2-preview"
+    const val EMBEDDING_MODEL = "text-embedding-004"
 
     // Ordered candidate tiers for fallback audio generation
     val AUDIO_MODEL_TIERS = listOf(
@@ -35,13 +35,18 @@ object GeminiModelRegistry {
         SECONDARY_TTS_MODEL
     )
 
-    // Ordered candidate tiers for chat and reasoning
+    // Ordered candidate tiers for chat and reasoning (Gemini 3.5 Lite & above prioritized)
     val CHAT_MODEL_TIERS = listOf(
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.5-pro",
+        "gemini-3.0-flash",
         "gemini-2.5-flash",
-        DEFAULT_AGENT_MODEL,
+        "gemini-2.5-flash-lite",
         "gemini-2.0-flash",
-        PRO_REASONING_MODEL,
-        "gemini-1.5-flash"
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
     )
 }
 

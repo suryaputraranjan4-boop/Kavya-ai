@@ -144,7 +144,7 @@ object TaskRouter {
                 return TaskRoutingDecision(
                     taskType = TaskType.OCR,
                     provider = "GEMINI",
-                    selectedModel = "gemini-2.5-flash",
+                    selectedModel = "gemini-3.5-flash-lite",
                     requiresVision = true,
                     explanation = "Routing document OCR to Gemini multimodal engine."
                 )
@@ -157,7 +157,7 @@ object TaskRouter {
                 return TaskRoutingDecision(
                     taskType = TaskType.VISION,
                     provider = "GEMINI",
-                    selectedModel = "gemini-2.5-flash",
+                    selectedModel = "gemini-3.5-flash-lite",
                     requiresVision = true,
                     explanation = "Routing visual scene analysis to Gemini Vision."
                 )
@@ -173,7 +173,7 @@ object TaskRouter {
                 return TaskRoutingDecision(
                     taskType = TaskType.VISION,
                     provider = "OPENROUTER",
-                    selectedModel = "google/gemini-2.0-flash-exp:free",
+                    selectedModel = "google/gemini-3.5-flash-lite-exp:free",
                     requiresVision = true,
                     explanation = "Routing visual analysis to OpenRouter multimodal model."
                 )
@@ -193,7 +193,7 @@ object TaskRouter {
                 return TaskRoutingDecision(
                     taskType = TaskType.RESEARCH,
                     provider = "GEMINI",
-                    selectedModel = "gemini-2.5-flash",
+                    selectedModel = "gemini-3.5-flash-lite",
                     explanation = "Routing research investigation to Gemini."
                 )
             }
@@ -217,7 +217,7 @@ object TaskRouter {
                 return TaskRoutingDecision(
                     taskType = TaskType.CODING,
                     provider = "GEMINI",
-                    selectedModel = "gemini-2.5-flash",
+                    selectedModel = "gemini-3.5-flash-lite",
                     explanation = "Routing coding task to Gemini reasoning engine."
                 )
             }
@@ -228,7 +228,7 @@ object TaskRouter {
             return TaskRoutingDecision(
                 taskType = TaskType.GENERAL_REASONING,
                 provider = "GEMINI",
-                selectedModel = "gemini-2.5-flash",
+                selectedModel = "gemini-3.5-flash-lite",
                 explanation = "Routing reasoning prompt to Gemini."
             )
         } else if (isOpenRouterConfigured) {

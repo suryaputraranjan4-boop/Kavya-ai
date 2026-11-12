@@ -509,6 +509,8 @@ object AppPreferences {
         }
         val candidateModels = listOf(
             com.example.ai.GeminiModelRegistry.DEFAULT_AGENT_MODEL,
+            "gemini-3.5-flash-lite",
+            "gemini-3.5-flash",
             "gemini-2.5-flash",
             "gemini-2.0-flash",
             "gemini-1.5-flash"
@@ -956,6 +958,14 @@ object AppPreferences {
 
     fun setSpeechEngine(context: Context, engine: String) {
         getPrefs(context).edit().putString(KEY_SPEECH_ENGINE, engine).apply()
+    }
+
+    fun getScreenPresentationLevel(context: Context): String {
+        return getPrefs(context).getString("key_screen_presentation_level", "STANDARD") ?: "STANDARD"
+    }
+
+    fun setScreenPresentationLevel(context: Context, level: String) {
+        getPrefs(context).edit().putString("key_screen_presentation_level", level).apply()
     }
 }
 

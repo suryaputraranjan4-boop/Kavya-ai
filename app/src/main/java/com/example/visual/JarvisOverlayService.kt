@@ -104,17 +104,26 @@ class JarvisOverlayService : Service() {
             val externalSpeaker = JarvisGuidanceEngine.externalSpeakCallback
             if (externalSpeaker != null) {
                 externalSpeaker.invoke(text)
-            } else if (isFallbackTtsReady) {
+            } else {
                 try {
-                    fallbackTts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis_step_tts")
+                    com.example.ai.tts.VoiceEngineManager.getInstance(applicationContext).speak(text)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Fallback TTS speak error: ${e.message}")
+                    if (isFallbackTtsReady) {
+                        try {
+                            fallbackTts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis_step_tts")
+                        } catch (ttsErr: Exception) {
+                            Log.w(TAG, "Fallback TTS speak error: ${ttsErr.message}")
+                        }
+                    }
                 }
             }
         }
 
         ExplanationStepController.onStopSpeaking = {
             JarvisGuidanceEngine.externalStopSpeakCallback?.invoke()
+            try {
+                com.example.ai.tts.VoiceEngineManager.getInstance(applicationContext).stop()
+            } catch (_: Exception) {}
             try {
                 fallbackTts?.stop()
             } catch (_: Exception) {}

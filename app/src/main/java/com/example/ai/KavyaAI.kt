@@ -199,12 +199,8 @@ object RetrofitClient {
 
 class KavyaAI(private val context: android.content.Context? = null) {
     fun isApiKeyConfigured(): Boolean {
-        val key = if (context != null) {
-            com.example.utils.AppPreferences.getEffectiveApiKey(context)
-        } else {
-            BuildConfig.GEMINI_API_KEY
-        }
-        return key.isNotBlank()
+        val ctx = context ?: return BuildConfig.GEMINI_API_KEY.isNotBlank()
+        return com.example.utils.AppPreferences.hasConfiguredApiKey(ctx)
     }
 
     companion object {
@@ -720,12 +716,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     }
                     Log.e(TAG, "Gemini API error on model $model (attempt $attempt): ${classified.redactedLogSummary}")
 
-                    // Fast-fail across all models on non-retryable credential/account/quota errors
+                    // Fast-fail across all models only on explicit invalid/missing API key errors
                     if (classified.category in listOf(
                             AiErrorCategory.INVALID_API_KEY,
-                            AiErrorCategory.MISSING_API_KEY,
-                            AiErrorCategory.AUTHENTICATION_FAILURE,
-                            AiErrorCategory.QUOTA_EXHAUSTED
+                            AiErrorCategory.MISSING_API_KEY
                         )
                     ) {
                         break@modelLoop
@@ -1046,9 +1040,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                             }
                             if (classified.category in listOf(
                                     AiErrorCategory.INVALID_API_KEY,
-                                    AiErrorCategory.MISSING_API_KEY,
-                                    AiErrorCategory.AUTHENTICATION_FAILURE,
-                                    AiErrorCategory.QUOTA_EXHAUSTED
+                                    AiErrorCategory.MISSING_API_KEY
                                 )
                             ) {
                                 abortAllModels = true
@@ -1156,7 +1148,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     role = "user",
                     parts = listOf(
                         Part(inlineData = InlineData(mimeType = "audio/wav", data = base64Wav)),
-                        Part(text = "Transcribe the spoken audio accurately. Output only the verbatim transcribed speech text in its spoken language (Hindi, English, or Hinglish) without any commentary.")
+                        Part(text = "Transcribe the spoken audio accurately. Output only the verbatim transcribed speech text in its spoken language (Hindi, English, or Hinglish) without any commentary or bracketed noise tags like <noise> or [music]. If there is no intelligible human speech, return an empty string.")
                     )
                 )
             )
@@ -1174,9 +1166,10 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     apiKey = apiKey,
                     request = request
                 )
-                val transcript = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
-                if (!transcript.isNullOrBlank()) {
-                    return@withContext transcript
+                val rawTranscript = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
+                val cleanTranscript = com.example.utils.SpeechSanitizer.sanitize(rawTranscript)
+                if (cleanTranscript.isNotBlank()) {
+                    return@withContext cleanTranscript
                 } else {
                     AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.EMPTY_TRANSCRIPTION)
                 }

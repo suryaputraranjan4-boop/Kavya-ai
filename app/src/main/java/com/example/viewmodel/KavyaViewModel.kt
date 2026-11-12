@@ -191,6 +191,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun clearErrorState() {
+        _latestKavyaCaption.value = null
+        com.example.ai.AiErrorClassifier.clearLastError()
+        com.example.state.KavyaStateManager.setGeminiState("IDLE", null)
+    }
+
     private fun isVisualInteractionIntent(prompt: String): Boolean {
         val lower = prompt.lowercase(java.util.Locale.ROOT).trim()
         val visualKeywords = listOf(
@@ -246,6 +252,15 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             voiceEngine.stop()
         }
 
+        com.example.visual.JarvisGuidanceEngine.externalSpeakCallback = { textToSpeak ->
+            if (textToSpeak.isNotBlank()) {
+                voiceEngine.processAndSpeak(textToSpeak, enqueue = false)
+            }
+        }
+        com.example.visual.JarvisGuidanceEngine.externalStopSpeakCallback = {
+            voiceEngine.stop()
+        }
+
         voiceEngine.onSpeakingStateChanged = { isSpeaking ->
             com.example.voice.KavyaMicrophoneEngine.onKavyaSpeakingChanged(isSpeaking)
         }
@@ -262,7 +277,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                chatDao.sanitizeNoiseChatTitles()
+                chatDao.deleteNoiseMessages()
+            } catch (_: Exception) {}
             try {
                 schedulerEngine.executeDueSchedules { dueTask ->
                     sendMessage(dueTask.promptOrAction)
@@ -753,7 +772,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             val safeDuration = durationSec.coerceAtLeast(1)
             val transcript = if (pcmData != null && pcmData.isNotEmpty() && !_isOfflineMode.value && !aiClient.isOfflineMode()) {
                 try {
-                    KavyaAI(getApplication<Application>()).transcribeAudio(pcmData, 16000).trim()
+                    val rawTr = KavyaAI(getApplication<Application>()).transcribeAudio(pcmData, 16000)
+                    com.example.utils.SpeechSanitizer.sanitize(rawTr)
                 } catch (_: Exception) {
                     ""
                 }
@@ -869,7 +889,11 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendMessage(text: String) {
-        if (text.isBlank()) return
+        val sanitizedPrompt = com.example.utils.SpeechSanitizer.sanitize(text)
+        if (sanitizedPrompt.isBlank() || com.example.utils.SpeechSanitizer.isNoiseOnly(text)) {
+            Log.w(TAG, "Suppressed noise or blank input in sendMessage: '$text'")
+            return
+        }
 
         val normalized = text.lowercase(java.util.Locale.ROOT).trim()
         val wakeCommand = normalized == "wake kavya" || normalized == "wake up kavya" || normalized == "hey kavya" || normalized == "hi kavya" || normalized == "hello kavya" || normalized == "kavya wake up"
@@ -1066,9 +1090,12 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 if (userMsgEntity != null) {
                     chatDao.insertMessage(userMsgEntity)
                     if (_messages.value.size <= 2) {
-                        val derivedTitle = prompt.trim()
-                            .take(28)
-                            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                        val cleanForTitle = com.example.utils.SpeechSanitizer.sanitize(prompt)
+                        val derivedTitle = if (cleanForTitle.isNotBlank()) {
+                            cleanForTitle.take(28).replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                        } else {
+                            "Conversation"
+                        }
                         chatDao.updateChatTitle(chatId, derivedTitle)
                     }
                 }

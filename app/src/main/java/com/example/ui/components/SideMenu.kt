@@ -303,18 +303,10 @@ fun KavyaSideMenu(
                         )
                         DrawerItemWhiteGlass(
                             icon = Icons.Default.ScreenShare,
-                            label = "Live Screen & Vision",
+                            label = "Screen Share",
                             isSelected = currentRoute == "screenshare",
                             onClick = {
                                 navigateTo(navController, drawerState, scope, "screenshare")
-                            }
-                        )
-                        DrawerItemWhiteGlass(
-                            icon = Icons.Default.Visibility,
-                            label = "JARVIS Screen Intelligence",
-                            isSelected = currentRoute == "jarvis_intelligence",
-                            onClick = {
-                                navigateTo(navController, drawerState, scope, "jarvis_intelligence")
                             }
                         )
                         DrawerItemWhiteGlass(
