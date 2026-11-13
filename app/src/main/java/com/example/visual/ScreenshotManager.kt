@@ -85,6 +85,9 @@ class ScreenshotManager(private val context: Context) {
      * Enforces privacy by discarding/recycling bitmaps when diagnostic logging is disabled.
      */
     fun encodeToOptimizedBase64(bitmap: Bitmap, retainBitmap: Boolean = false): Pair<String, Bitmap?> {
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+            return Pair("", null)
+        }
         var scaledBitmap: Bitmap = bitmap
         try {
             val width = bitmap.width
@@ -101,14 +104,17 @@ class ScreenshotManager(private val context: Context) {
             scaledBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, baos)
             val base64String = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
 
-            val finalRetainedBitmap = if (retainBitmap || AppPreferences.isScreenAwarenessEnabled(context)) {
+            val isSharedPipelineFrame = bitmap === VisionPipeline.getLatestFrame() ||
+                bitmap === com.example.services.ScreenShareManager.latestFrameBitmap
+            val finalRetainedBitmap = if (retainBitmap || AppPreferences.isScreenAwarenessEnabled(context) || isSharedPipelineFrame) {
                 scaledBitmap
             } else {
-                // Enforce immediate privacy discard
-                if (scaledBitmap != bitmap) {
+                if (scaledBitmap !== bitmap && !scaledBitmap.isRecycled) {
                     scaledBitmap.recycle()
                 }
-                bitmap.recycle()
+                if (!isSharedPipelineFrame && !bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
                 null
             }
 

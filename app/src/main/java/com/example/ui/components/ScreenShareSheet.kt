@@ -260,51 +260,38 @@ fun ScreenShareSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Presentation Level Selection (Basic, Standard, Advanced)
-            Text(
-                text = "Explain Screen Presentation Level:",
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = TextSecondary)
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(SurfaceGlass)
-                    .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            // Unified JARVIS Live Overlay & Voice-First Explanation Level Status (Phases 4 & 5)
+            val activeUnifiedLevel by com.example.visual.JarvisOverlayController.activeExplanationLevel.collectAsState()
+            val overlayRunning by com.example.visual.JarvisOverlayController.isOverlayRunning.collectAsState()
+            Surface(
+                color = SurfaceGlass,
+                shape = RoundedCornerShape(14.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                ScreenSharePresentationLevel.entries.forEach { level ->
-                    val isSelected = selectedPresentationLevel == level
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .then(
-                                if (isSelected)
-                                    Modifier.background(Brush.linearGradient(listOf(Primary, AccentCyan)))
-                                else
-                                    Modifier
-                            )
-                            .clickable {
-                                selectedPresentationLevel = level
-                                AppPreferences.setScreenPresentationLevel(context, level.id)
-                            }
-                            .padding(vertical = 7.dp),
-                        contentAlignment = Alignment.Center
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = level.title,
+                            text = "Unified JARVIS Live Overlay",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = TextPrimary)
+                        )
+                        Text(
+                            text = if (overlayRunning) "ACTIVE • ${activeUnifiedLevel.id}" else "AUTO ON SHARE",
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) Color.White else TextSecondary,
-                                fontSize = 11.sp
+                                fontWeight = FontWeight.Bold,
+                                color = if (overlayRunning) SuccessGreenGlow else AccentCyan
                             )
                         )
                     }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "When Screen Share is active, the JARVIS Live Overlay automatically appears over all apps. Ask by voice in Hindi, Hinglish, or English—JARVIS automatically selects Basic, Standard, or Advanced depth and guides you step by step.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.5.sp)
+                    )
                 }
             }
 
@@ -474,90 +461,36 @@ fun ScreenShareSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Open Full Screen Share Workspace Button
-            OutlinedButton(
-                onClick = { showWorkspaceDialog = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(46.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = SurfaceGlass.copy(alpha = 0.6f),
-                    contentColor = AccentCyan
-                ),
-                border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
-                    brush = Brush.linearGradient(listOf(AccentCyan.copy(alpha = 0.5f), GlassBorder))
-                )
-            ) {
-                Icon(Icons.Default.OpenInFull, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Open Visual Workspace (${selectedPresentationLevel.title})", fontWeight = FontWeight.Medium, fontSize = 13.sp)
-            }
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            // Quick Inquiries & Visual Intelligence Actions
+            // Voice-First JARVIS Command Guide (Phase 5)
             Text(
-                text = "Visual Intelligence & Actions:",
+                text = "Voice-First JARVIS Commands (Hindi / Hinglish / English):",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = TextSecondary)
             )
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        JarvisGuidanceEngine.explainActiveScreenAsync(context, "Explain this screen in detail")
-                        showWorkspaceDialog = true
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = SurfaceGlass.copy(alpha = 0.5f),
-                        contentColor = TextPrimary
-                    ),
-                    border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(brush = Brush.linearGradient(listOf(Outline, GlassBorder)))
-                ) {
-                    Icon(Icons.Default.Psychology, contentDescription = null, tint = PrimaryLight, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Explain Screen (Visual Intelligence) ✨", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp))
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        viewModel.analyzeScreenWithKavya("What clickable buttons or action items are available on this screen?")
-                        onDismiss()
-                        onNavigateToChat()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = SurfaceGlass.copy(alpha = 0.5f),
-                        contentColor = TextPrimary
-                    ),
-                    border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(brush = Brush.linearGradient(listOf(Outline, GlassBorder)))
-                ) {
-                    Icon(Icons.Default.TouchApp, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Shows You How (Guidance) 🔍", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp))
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        viewModel.analyzeScreenWithKavya("Read aloud all visible text on the screen.")
-                        onDismiss()
-                        onNavigateToChat()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = SurfaceGlass.copy(alpha = 0.5f),
-                        contentColor = TextPrimary
-                    ),
-                    border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(brush = Brush.linearGradient(listOf(Outline, GlassBorder)))
-                ) {
-                    Icon(Icons.Default.RecordVoiceOver, contentDescription = null, tint = AccentPurpleLight, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Read screen text aloud 🎙️", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp))
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                backgroundColor = SurfaceGlass.copy(alpha = 0.5f),
+                borderColor = GlassBorder
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "• \"Is screen ko samjhao\" / \"Explain this screen\"",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextPrimary, fontSize = 12.sp)
+                    )
+                    Text(
+                        text = "• \"Simple basic bhasha me samjhao\" (Basic Level)",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.5.sp)
+                    )
+                    Text(
+                        text = "• \"Explain in advanced technical detail\" (Advanced Level)",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.5.sp)
+                    )
+                    Text(
+                        text = "• \"Guide me step by step\" • \"Next\" • \"Repeat\" • \"Stop\"",
+                        style = MaterialTheme.typography.bodySmall.copy(color = AccentCyan, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                    )
                 }
             }
 

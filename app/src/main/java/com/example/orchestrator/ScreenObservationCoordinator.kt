@@ -237,8 +237,59 @@ object ScreenObservationCoordinator {
         record
     }
 
+    sealed class ScreenshotValidationResult {
+        data class Valid(
+            val imageBytes: ByteArray,
+            val width: Int,
+            val height: Int,
+            val capturedAtMs: Long,
+            val source: String
+        ) : ScreenshotValidationResult()
+
+        data class Invalid(
+            val code: String,
+            val reason: String
+        ) : ScreenshotValidationResult()
+    }
+
+    /**
+     * Validates a captured screenshot bitmap and its encoded bytes before any visual AI call (Phase 6).
+     */
+    fun validateScreenshotBitmap(
+        bitmap: Bitmap?,
+        capturedAtMs: Long,
+        minTimestampMs: Long = 0L,
+        source: String = "SCREENSHOT",
+        preEncodedBytes: ByteArray? = null
+    ): ScreenshotValidationResult {
+        if (bitmap == null) {
+            return ScreenshotValidationResult.Invalid("NULL_BITMAP", "Captured screenshot bitmap is null.")
+        }
+        if (bitmap.isRecycled) {
+            return ScreenshotValidationResult.Invalid("RECYCLED_BITMAP", "Captured screenshot bitmap is already recycled.")
+        }
+        if (bitmap.width <= 0 || bitmap.height <= 0) {
+            return ScreenshotValidationResult.Invalid("INVALID_DIMENSIONS", "Screenshot dimensions (${bitmap.width}x${bitmap.height}) are invalid.")
+        }
+        if (minTimestampMs > 0L && capturedAtMs < minTimestampMs) {
+            return ScreenshotValidationResult.Invalid("STALE_TIMESTAMP", "Screenshot timestamp ($capturedAtMs) is older than minimum required ($minTimestampMs).")
+        }
+        val bytes = preEncodedBytes ?: encodeScaledJpeg(bitmap)
+        if (bytes == null || bytes.isEmpty()) {
+            return ScreenshotValidationResult.Invalid("EMPTY_IMAGE_BYTES", "Encoded screenshot image bytes are empty.")
+        }
+        return ScreenshotValidationResult.Valid(
+            imageBytes = bytes,
+            width = bitmap.width,
+            height = bitmap.height,
+            capturedAtMs = capturedAtMs,
+            source = source
+        )
+    }
+
     private fun encodeScaledJpeg(bitmap: Bitmap): ByteArray? {
         return try {
+            if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return null
             val maxDim = 1280
             val largest = maxOf(bitmap.width, bitmap.height)
             val scaled = if (largest > maxDim) {
@@ -257,7 +308,7 @@ object ScreenObservationCoordinator {
             if (scaled !== bitmap && !scaled.isRecycled) {
                 scaled.recycle()
             }
-            out.toByteArray()
+            out.toByteArray().takeIf { it.isNotEmpty() }
         } catch (_: Exception) {
             null
         }

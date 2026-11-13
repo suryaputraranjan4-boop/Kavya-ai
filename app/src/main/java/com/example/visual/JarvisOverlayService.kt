@@ -12,294 +12,214 @@ import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.os.Build
-import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
-import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
-import androidx.lifecycle.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.example.MainActivity
-import com.example.agent.MicrophoneEngine
-import com.example.services.KavyaVoiceService
+import com.example.orchestrator.TaskOrchestrationStateMachine
+import com.example.services.ScreenShareManager
 import com.example.utils.AppPreferences
-import java.util.Locale
+import com.example.voice.KavyaMicrophoneEngine
 import kotlin.math.roundToInt
 
 /**
- * Android Foreground Service managing the JARVIS Floating Orb, Passive Screen Annotation Canvas,
- * and Compact Floating Explanation Panel across apps.
+ * Dedicated Lifecycle + SavedState owner for the single Unified JARVIS Live Overlay window.
+ */
+private class OverlayWindowLifecycleOwner : LifecycleOwner, SavedStateRegistryOwner {
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+
+    override val lifecycle: Lifecycle
+        get() = lifecycleRegistry
+
+    override val savedStateRegistry: SavedStateRegistry
+        get() = savedStateRegistryController.savedStateRegistry
+
+    fun onCreate() {
+        savedStateRegistryController.performRestore(null)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+    }
+
+    fun onStart() {
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+    }
+
+    fun onResume() {
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+    }
+
+    fun onDestroy() {
+        if (lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.INITIALIZED)) {
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        }
+    }
+}
+
+/**
+ * Unified JARVIS Live Overlay Service (Phase 3 & Phase 11).
  *
- * CRITICAL TOUCH & WINDOW ARCHITECTURE:
- * 1. [annotationCanvasView]: MATCH_PARENT x MATCH_PARENT with permanent FLAG_NOT_TOUCHABLE |
- *    FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN. Never intercepts touches under any circumstance.
- * 2. [panelComposeView]: WRAP_CONTENT x WRAP_CONTENT with FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL
- *    when an explanation is active, and View.GONE + FLAG_NOT_TOUCHABLE when idle.
- *    Automatically docks at TOP when the highlighted element is in the bottom half of the screen.
- * 3. [orbComposeView]: WRAP_CONTENT x WRAP_CONTENT with FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL.
- *    Updates WindowManager.LayoutParams (x, y) directly on drag with smooth ValueAnimator edge docking
- *    and persists position across orientation changes and app restarts.
+ * Uses a SINGLE authoritative WindowManager attachment (`unifiedOverlayView`) hosting one Compose root
+ * (`UnifiedJarvisLiveOverlayRoot`) that seamlessly combines:
+ * 1. Draggable Floating Orb (with sound reactivity, minimize pill, edge snap, and quick actions).
+ * 2. Live session status badge (Voice state, Screen Share state, CEO Orchestrator task/verification state).
+ * 3. Screen Explanation & Step-by-Step Visual Guidance (`JarvisOverlayCanvas` + `ExplanationPanel` + `JarvisFullScreenExplainer`).
+ *
+ * Window touchability adapts cleanly:
+ * - When only the compact Floating Orb is shown, the window is `WRAP_CONTENT` at `(orbX, orbY)` so the rest
+ *   of the phone screen passes touches directly to the underlying app.
+ * - When an Explanation Panel, Step-by-Step Guidance, or Full-Screen Explainer is active, the single window
+ *   expands to `MATCH_PARENT` so annotations, explanation cards, and the orb render together without
+ *   multi-window lifecycle collisions or `DisposeOnDetachedFromWindow` crashes.
  */
 class JarvisOverlayService : Service() {
 
     companion object {
         private const val TAG = "JarvisOverlayService"
-        const val ACTION_START_OVERLAY = "com.example.visual.ACTION_START_OVERLAY"
-        const val ACTION_STOP_OVERLAY = "com.example.visual.ACTION_STOP_OVERLAY"
-        const val ACTION_EXPLAIN_SCREEN = "com.example.visual.ACTION_EXPLAIN_SCREEN"
+        private const val CHANNEL_ID = "jarvis_overlay_channel"
+        private const val NOTIFICATION_ID = 4049
 
-        private const val NOTIFICATION_CHANNEL_ID = "jarvis_floating_orb_channel"
-        private const val NOTIFICATION_ID = 8802
+        const val ACTION_START_OVERLAY = "com.example.visual.action.START_OVERLAY"
+        const val ACTION_STOP_OVERLAY = "com.example.visual.action.STOP_OVERLAY"
+        const val ACTION_MINIMIZE_ORB = "com.example.visual.action.MINIMIZE_ORB"
+        const val ACTION_RESTORE_ORB = "com.example.visual.action.RESTORE_ORB"
+        const val ACTION_CLEAR_ANNOTATIONS = "com.example.visual.action.CLEAR_ANNOTATIONS"
+        const val ACTION_EXPLAIN_SCREEN = "com.example.visual.action.EXPLAIN_SCREEN"
     }
 
     private var windowManager: WindowManager? = null
-    private var annotationCanvasView: ComposeView? = null
-    private var panelComposeView: ComposeView? = null
-    private var orbComposeView: ComposeView? = null
+    private var unifiedOverlayView: ComposeView? = null
+    private var unifiedLayoutParams: WindowManager.LayoutParams? = null
+    private var isUnifiedWindowAttached: Boolean = false
+    private var isFullScreenLayoutActive: Boolean = false
 
-    private var annotationParams: WindowManager.LayoutParams? = null
-    private var panelParams: WindowManager.LayoutParams? = null
-    private var orbParams: WindowManager.LayoutParams? = null
+    private var snapAnimator: ValueAnimator? = null
+    private var orbWindowX: Int = 24
+    private var orbWindowY: Int = 260
 
-    private var dockAnimator: ValueAnimator? = null
-    private val serviceLifecycleOwner = ServiceLifecycleOwner()
-    private var fallbackTts: TextToSpeech? = null
-    private var isFallbackTtsReady = false
+    private val serviceLifecycleOwner = OverlayWindowLifecycleOwner()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(TAG, "JarvisOverlayService onCreate")
         serviceLifecycleOwner.onCreate()
         serviceLifecycleOwner.onStart()
-        createNotificationChannel()
-        ensureForegroundNotification()
+        serviceLifecycleOwner.onResume()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            Log.w(TAG, "SYSTEM_ALERT_WINDOW permission not granted; stopping service")
-            JarvisOverlayController.reportOverlayError(
-                "Display over other apps permission is missing.",
-                permissionMissing = true
-            )
-            stopSelfCleanly()
-            return
-        }
-
-        JarvisOverlayController.loadPersistedConfig(this)
-        ScreenAnnotationManager.coordinateMapper.refreshGeometry(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-
-        initSpeechCallbacks()
-        ensureOverlaysAttached()
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                "JARVIS Floating Orb",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Keeps the Kavya JARVIS Floating Orb visible and responsive over other apps."
-                setShowBadge(false)
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
-        }
-    }
-
-    private fun ensureForegroundNotification() {
-        try {
-            val openAppIntent = Intent(this, MainActivity::class.java)
-            val openAppPendingIntent = PendingIntent.getActivity(
-                this,
-                0,
-                openAppIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val stopIntent = Intent(this, JarvisOverlayService::class.java).apply {
-                action = ACTION_STOP_OVERLAY
-            }
-            val stopPendingIntent = PendingIntent.getService(
-                this,
-                1,
-                stopIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val notification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-                .setContentTitle("JARVIS Floating Orb Active")
-                .setContentText("Tap orb for quick voice & screen intelligence actions")
-                .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                .setContentIntent(openAppPendingIntent)
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Orb", stopPendingIntent)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setOngoing(true)
-                .build()
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Unable to promote JarvisOverlayService to foreground: ${e.message}")
-        }
-    }
-
-    private fun stopSelfCleanly() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
-        } catch (_: Exception) {}
-        stopSelf()
-    }
-
-    private fun ensureOverlaysAttached() {
-        if (windowManager == null) {
-            windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-        }
         ScreenAnnotationManager.coordinateMapper.refreshGeometry(this)
-        if (annotationCanvasView == null || !annotationCanvasView!!.isAttachedToWindow) {
-            setupAnnotationCanvasOverlay()
-        }
-        if (panelComposeView == null || !panelComposeView!!.isAttachedToWindow) {
-            setupPanelOverlay()
-        }
-        if (orbComposeView == null || !orbComposeView!!.isAttachedToWindow) {
-            setupOrbOverlay()
-        } else {
-            // Confirm genuine attachment without recreating view
-            JarvisOverlayController.reportOverlayAttached(true)
-        }
-    }
-
-    private fun initSpeechCallbacks() {
-        try {
-            fallbackTts = TextToSpeech(applicationContext) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    fallbackTts?.language = Locale.getDefault()
-                    isFallbackTtsReady = true
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Fallback TTS initialization skipped: ${e.message}")
-        }
-
-        ExplanationStepController.onSpeakStep = { text ->
-            val externalSpeaker = JarvisGuidanceEngine.externalSpeakCallback
-            if (externalSpeaker != null) {
-                externalSpeaker.invoke(text)
-            } else {
-                try {
-                    com.example.ai.tts.VoiceEngineManager.getInstance(applicationContext).speak(text)
-                } catch (e: Exception) {
-                    if (isFallbackTtsReady) {
-                        try {
-                            fallbackTts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis_step_tts")
-                        } catch (ttsErr: Exception) {
-                            Log.w(TAG, "Fallback TTS speak error: ${ttsErr.message}")
-                        }
-                    }
-                }
-            }
-        }
-
-        ExplanationStepController.onStopSpeaking = {
-            JarvisGuidanceEngine.externalStopSpeakCallback?.invoke()
-            try {
-                com.example.ai.tts.VoiceEngineManager.getInstance(applicationContext).stop()
-            } catch (_: Exception) {}
-            try {
-                fallbackTts?.stop()
-            } catch (_: Exception) {}
-        }
+        JarvisOverlayController.loadPersistedConfig(this)
+        restoreSavedOrbPosition()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureForegroundNotification()
         when (intent?.action) {
             ACTION_STOP_OVERLAY -> {
-                Log.i(TAG, "Stopping JarvisOverlayService by action")
-                removeAllOverlayViews()
-                JarvisOverlayController.reportOverlayAttached(false)
-                stopSelfCleanly()
+                AppPreferences.setFloatingOrbEnabled(this, false)
+                stopAndDetachAll()
                 return START_NOT_STICKY
             }
-            ACTION_EXPLAIN_SCREEN -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                    JarvisOverlayController.reportOverlayError(
-                        "Display over other apps permission is missing.",
-                        permissionMissing = true
-                    )
-                    stopSelfCleanly()
-                    return START_NOT_STICKY
-                }
-                ensureOverlaysAttached()
-                JarvisGuidanceEngine.explainActiveScreenAsync(applicationContext, "Explain this screen")
+            ACTION_MINIMIZE_ORB -> {
+                JarvisOverlayController.setOrbMinimized(true)
+                return START_STICKY
             }
-            ACTION_START_OVERLAY, null -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                    JarvisOverlayController.reportOverlayError(
-                        "Display over other apps permission is missing.",
-                        permissionMissing = true
-                    )
-                    stopSelfCleanly()
-                    return START_NOT_STICKY
-                }
-                ensureOverlaysAttached()
+            ACTION_RESTORE_ORB -> {
+                JarvisOverlayController.setOrbMinimized(false)
+                return START_STICKY
+            }
+            ACTION_CLEAR_ANNOTATIONS -> {
+                ScreenAnnotationManager.clearAllAnnotations()
+                return START_STICKY
+            }
+            ACTION_EXPLAIN_SCREEN -> {
+                JarvisGuidanceEngine.explainActiveScreenAsync(this)
+                return START_STICKY
             }
         }
-        return if (AppPreferences.isFloatingOrbEnabled(this)) START_STICKY else START_NOT_STICKY
+
+        if (!hasOverlayPermission()) {
+            Log.w(TAG, "SYSTEM_ALERT_WINDOW permission not granted; stopping JarvisOverlayService cleanly.")
+            JarvisOverlayController.reportOverlayError(
+                message = "Display over other apps permission is missing.",
+                permissionMissing = true
+            )
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        try {
+            startOverlayForegroundNotification()
+        } catch (e: Exception) {
+            Log.e(TAG, "Foreground notification failed: ${e.message}", e)
+            JarvisOverlayController.reportOverlayError(
+                message = "Could not start overlay foreground notification: ${e.localizedMessage ?: "error"}"
+            )
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val attached = ensureUnifiedOverlayWindowAttached()
+        if (attached) {
+            JarvisOverlayController.reportOverlayAttached(true)
+        } else {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        return START_STICKY
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        dockAnimator?.cancel()
         ScreenAnnotationManager.onConfigurationChanged(this)
-        val geom = ScreenAnnotationManager.coordinateMapper.getGeometry()
-        val params = orbParams
-        val view = orbComposeView
-        val wm = windowManager
-        if (params != null && view != null && wm != null && view.isAttachedToWindow) {
-            val viewWidth = view.width.takeIf { it > 0 } ?: 140
-            val viewHeight = view.height.takeIf { it > 0 } ?: 180
-            val maxX = (geom.width - viewWidth - 8).coerceAtLeast(12)
-            val maxY = (geom.height - viewHeight - 16).coerceAtLeast(48)
-            params.x = params.x.coerceIn(12, maxX)
-            params.y = params.y.coerceIn(48, maxY)
-            if (JarvisOverlayController.orbConfig.value.snapToEdge) {
-                params.x = if (params.x + viewWidth / 2 < geom.width / 2) 12 else maxX
-            }
-            AppPreferences.setFloatingOrbPosX(this, params.x)
-            AppPreferences.setFloatingOrbPosY(this, params.y)
-            try {
-                wm.updateViewLayout(view, params)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to update orb position on rotation: ${e.message}")
-            }
+        clampOrbPositionToCurrentDisplay()
+        if (!isFullScreenLayoutActive) {
+            updateCompactOrbWindowPosition()
+        }
+    }
+
+    private fun hasOverlayPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Settings.canDrawOverlays(this)
+        } else {
+            true
         }
     }
 
@@ -312,249 +232,195 @@ class JarvisOverlayService : Service() {
         }
     }
 
-    private fun setupAnnotationCanvasOverlay() {
-        val wm = windowManager ?: return
-        annotationCanvasView?.let {
-            try { wm.removeView(it) } catch (_: Exception) {}
-        }
-
-        val overlayType = getOverlayWindowType()
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-        }
-        annotationParams = params
-
-        val view = ComposeView(this).apply {
-            visibility = View.GONE
-            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-            setViewTreeLifecycleOwner(serviceLifecycleOwner)
-            setViewTreeSavedStateRegistryOwner(serviceLifecycleOwner)
-            setViewTreeViewModelStoreOwner(serviceLifecycleOwner)
-
-            setContent {
-                val plan by JarvisOverlayController.activePlan.collectAsState()
-                val orbState by JarvisOverlayController.orbState.collectAsState()
-                val orbConfig by JarvisOverlayController.orbConfig.collectAsState()
-                val activeInstruction by JarvisOverlayController.activeInstruction.collectAsState()
-                val allSteps by ExplanationStepController.steps.collectAsState()
-                val currentStep by ExplanationStepController.currentStep.collectAsState()
-
-                val hasVisualAnnotations = currentStep != null ||
-                        activeInstruction != null ||
-                        (plan != null && plan!!.instructions.isNotEmpty())
-
-                LaunchedEffect(hasVisualAnnotations) {
-                    this@apply.visibility = if (hasVisualAnnotations) View.VISIBLE else View.GONE
-                }
-
-                if (hasVisualAnnotations) {
-                    JarvisOverlayCanvas(
-                        plan = plan,
-                        orbState = orbState,
-                        orbConfig = orbConfig,
-                        activeInstruction = activeInstruction,
-                        theme = orbConfig.theme,
-                        allSteps = allSteps,
-                        currentStep = currentStep,
-                        showInlinePanel = false
-                    )
-                }
-            }
-        }
-        annotationCanvasView = view
-
-        try {
-            wm.addView(view, params)
-            Log.i(TAG, "Passive Annotation Canvas added (FLAG_NOT_TOUCHABLE enforced)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to add Passive Annotation Canvas", e)
-        }
-    }
-
-    private fun setupPanelOverlay() {
-        val wm = windowManager ?: return
-        panelComposeView?.let {
-            try { wm.removeView(it) } catch (_: Exception) {}
-        }
-
-        val overlayType = getOverlayWindowType()
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = 100
-        }
-        panelParams = params
-
-        val view = ComposeView(this).apply {
-            visibility = View.GONE
-            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-            setViewTreeLifecycleOwner(serviceLifecycleOwner)
-            setViewTreeSavedStateRegistryOwner(serviceLifecycleOwner)
-            setViewTreeViewModelStoreOwner(serviceLifecycleOwner)
-
-            setContent {
-                val plan by JarvisOverlayController.activePlan.collectAsState()
-                val orbConfig by JarvisOverlayController.orbConfig.collectAsState()
-                val currentStep by ExplanationStepController.currentStep.collectAsState()
-                val isAutoPlaying by ExplanationStepController.isAutoPlaying.collectAsState()
-                val isMuted by ExplanationStepController.isMuted.collectAsState()
-                val isFullScreenExplainer by JarvisOverlayController.isFullScreenExplainerVisible.collectAsState()
-                val previewBitmap by JarvisOverlayController.screenPreviewBitmap.collectAsState()
-
-                val showPanel = isFullScreenExplainer || currentStep != null || (plan != null && plan!!.cards.isNotEmpty())
-                val dockAtTop = ScreenAnnotationManager.coordinateMapper.shouldDockPanelAtTop(currentStep?.bounds)
-
-                LaunchedEffect(showPanel, isFullScreenExplainer, dockAtTop) {
-                    val p = panelParams ?: return@LaunchedEffect
-                    if (!showPanel) {
-                        this@apply.visibility = View.GONE
-                        p.width = WindowManager.LayoutParams.WRAP_CONTENT
-                        p.height = WindowManager.LayoutParams.WRAP_CONTENT
-                        p.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                    } else if (isFullScreenExplainer) {
-                        this@apply.visibility = View.VISIBLE
-                        p.width = WindowManager.LayoutParams.MATCH_PARENT
-                        p.height = WindowManager.LayoutParams.MATCH_PARENT
-                        p.gravity = Gravity.CENTER
-                        p.y = 0
-                        p.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                    } else {
-                        this@apply.visibility = View.VISIBLE
-                        p.width = WindowManager.LayoutParams.WRAP_CONTENT
-                        p.height = WindowManager.LayoutParams.WRAP_CONTENT
-                        p.gravity = (if (dockAtTop) Gravity.TOP else Gravity.BOTTOM) or Gravity.CENTER_HORIZONTAL
-                        p.y = if (dockAtTop) 84 else 96
-                        p.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                    }
-                    if (this@apply.isAttachedToWindow) {
-                        try {
-                            wm.updateViewLayout(this@apply, p)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Error updating panel layout: ${e.message}")
-                        }
-                    }
-                }
-
-                if (isFullScreenExplainer && plan != null) {
-                    JarvisFullScreenExplainer(
-                        plan = plan!!,
-                        screenPreviewBitmap = previewBitmap,
-                        theme = orbConfig.theme,
-                        onClose = { JarvisOverlayController.dismissFullScreenExplainer() }
-                    )
-                } else if (showPanel) {
-                    ExplanationPanel(
-                        currentStep = currentStep,
-                        activePlan = plan,
-                        theme = orbConfig.theme,
-                        isAutoPlaying = isAutoPlaying,
-                        isMuted = isMuted,
-                        onPreviousStep = { ExplanationStepController.previousStep() },
-                        onNextStep = { ExplanationStepController.nextStep() },
-                        onToggleAutoPlay = { ExplanationStepController.toggleAutoPlay() },
-                        onToggleMute = { ExplanationStepController.toggleMute() },
-                        onToggleDim = { ExplanationStepController.toggleDimming() },
-                        onExplainScreenAgain = {
-                            JarvisGuidanceEngine.explainActiveScreenAsync(applicationContext, "Explain this screen")
-                        },
-                        onDismiss = {
-                            ScreenAnnotationManager.clearAllAnnotations()
-                        },
-                        onEmergencyStopJarvis = {
-                            JarvisOverlayController.emergencyStopJarvis(applicationContext)
-                        }
-                    )
-                }
-            }
-        }
-        panelComposeView = view
-
-        try {
-            wm.addView(view, params)
-            Log.i(TAG, "Compact Explanation Panel added to WindowManager")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to add Explanation Panel overlay", e)
-        }
-    }
-
-    private fun setupOrbOverlay() {
-        val wm = windowManager ?: return
-        orbComposeView?.let {
-            try { wm.removeView(it) } catch (_: Exception) {}
-        }
-
+    private fun restoreSavedOrbPosition() {
         val geom = ScreenAnnotationManager.coordinateMapper.getGeometry()
-        val maxInitialX = (geom.width - 140).coerceAtLeast(12)
-        val maxInitialY = (geom.height - 180).coerceAtLeast(48)
-        val savedX = AppPreferences.getFloatingOrbPosX(this).coerceIn(12, maxInitialX)
-        val savedY = AppPreferences.getFloatingOrbPosY(this).coerceIn(48, maxInitialY)
+        val savedX = AppPreferences.getFloatingOrbPosX(this)
+        val savedY = AppPreferences.getFloatingOrbPosY(this)
+        val marginPx = dpToPx(12)
+        val orbApproxPx = dpToPx(96)
+        val minY = geom.statusBarInsetTop + marginPx
+        val maxY = (geom.height - geom.navBarInsetBottom - orbApproxPx - marginPx).coerceAtLeast(minY + 40)
+        val maxX = (geom.width - orbApproxPx - marginPx).coerceAtLeast(marginPx)
 
-        val overlayType = getOverlayWindowType()
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = savedX
-            y = savedY
+        if (savedX >= 0 && savedY >= 0) {
+            orbWindowX = savedX.coerceIn(marginPx, maxX)
+            orbWindowY = savedY.coerceIn(minY, maxY)
+        } else {
+            orbWindowX = maxX
+            orbWindowY = (geom.height * 0.28f).roundToInt().coerceIn(minY, maxY)
         }
-        orbParams = params
+    }
 
-        val view = ComposeView(this).apply {
-            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-            setViewTreeLifecycleOwner(serviceLifecycleOwner)
-            setViewTreeSavedStateRegistryOwner(serviceLifecycleOwner)
-            setViewTreeViewModelStoreOwner(serviceLifecycleOwner)
+    private fun clampOrbPositionToCurrentDisplay() {
+        val geom = ScreenAnnotationManager.coordinateMapper.refreshGeometry(this)
+        val marginPx = dpToPx(8)
+        val orbApproxPx = dpToPx(96)
+        val minX = geom.navBarInsetLeft + marginPx
+        val maxX = (geom.width - geom.navBarInsetRight - orbApproxPx - marginPx).coerceAtLeast(minX)
+        val minY = geom.statusBarInsetTop + marginPx
+        val maxY = (geom.height - geom.navBarInsetBottom - orbApproxPx - marginPx).coerceAtLeast(minY)
+        orbWindowX = orbWindowX.coerceIn(minX, maxX)
+        orbWindowY = orbWindowY.coerceIn(minY, maxY)
+    }
 
-            addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-                override fun onViewAttachedToWindow(v: View) {
-                    Log.i(TAG, "Floating Orb verified attached to WindowManager")
-                    JarvisOverlayController.reportOverlayAttached(true)
+    private fun attachComposeOwnerTree(view: View) {
+        view.setViewTreeLifecycleOwner(serviceLifecycleOwner)
+        view.setViewTreeSavedStateRegistryOwner(serviceLifecycleOwner)
+    }
+
+    /**
+     * Attaches the SINGLE authoritative Unified JARVIS Live Overlay window to WindowManager.
+     * Prevents duplicate addView() calls and lifecycle collisions.
+     */
+    private fun ensureUnifiedOverlayWindowAttached(): Boolean {
+        val wm = windowManager ?: return false
+        if (isUnifiedWindowAttached && unifiedOverlayView != null && unifiedOverlayView?.parent != null) {
+            return true
+        }
+
+        return try {
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                getOverlayWindowType(),
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = orbWindowX
+                y = orbWindowY
+                title = "KavyaUnifiedJarvisOverlay"
+            }
+
+            val composeView = ComposeView(this).apply {
+                attachComposeOwnerTree(this)
+                // Use DisposeOnLifecycleDestroyed so transient layout updates NEVER dispose the composition!
+                setViewCompositionStrategy(
+                    ViewCompositionStrategy.DisposeOnLifecycleDestroyed(serviceLifecycleOwner.lifecycle)
+                )
+                setContent {
+                    UnifiedJarvisLiveOverlayRoot()
                 }
+            }
 
-                override fun onViewDetachedFromWindow(v: View) {
-                    Log.i(TAG, "Floating Orb detached from WindowManager")
-                    if (orbComposeView === v) {
-                        JarvisOverlayController.reportOverlayAttached(false)
-                    }
-                }
-            })
+            wm.addView(composeView, params)
+            unifiedOverlayView = composeView
+            unifiedLayoutParams = params
+            isUnifiedWindowAttached = true
+            isFullScreenLayoutActive = false
+            JarvisOverlayController.setActiveWindowCount(1)
+            Log.i(TAG, "Attached single Unified JARVIS Live Overlay window at ($orbWindowX, $orbWindowY)")
+            true
+        } catch (se: SecurityException) {
+            Log.e(TAG, "SecurityException attaching Unified JARVIS Overlay window: ${se.message}", se)
+            isUnifiedWindowAttached = false
+            JarvisOverlayController.reportOverlayError(
+                message = "Overlay permission revoked by system.",
+                permissionMissing = true
+            )
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to attach Unified JARVIS Overlay window: ${e.message}", e)
+            isUnifiedWindowAttached = false
+            JarvisOverlayController.reportOverlayError(
+                message = "Overlay window failed to attach: ${e.localizedMessage ?: "unknown error"}"
+            )
+            false
+        }
+    }
 
-            setContent {
-                val orbState by JarvisOverlayController.orbState.collectAsState()
-                val orbConfig by JarvisOverlayController.orbConfig.collectAsState()
-                val amplitude by JarvisOverlayController.audioAmplitude.collectAsState()
-                val isMinimized by JarvisOverlayController.isOrbMinimized.collectAsState()
-                val isExpanded by JarvisOverlayController.isOrbExpanded.collectAsState()
-                val transientMotion by JarvisOverlayController.transientMotion.collectAsState()
-                val micState by com.example.voice.KavyaMicrophoneEngine.engineState.collectAsState()
-                val isMicMuted = micState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_OFF ||
-                    micState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_MUTED ||
-                    MicrophoneEngine.getInstance(applicationContext).engineState.value == MicrophoneEngine.State.MUTED
+    /**
+     * Safely transitions the single WindowManager root between:
+     * - Compact pass-through Orb mode (`WRAP_CONTENT` at `(orbWindowX, orbWindowY)`)
+     * - Expanded Visual Explanation / Guidance mode (`MATCH_PARENT x MATCH_PARENT`)
+     * Never detaches or hides the root view.
+     */
+    private fun updateUnifiedWindowMode(expandFullScreen: Boolean) {
+        val wm = windowManager ?: return
+        val view = unifiedOverlayView ?: return
+        val params = unifiedLayoutParams ?: return
+        if (!isUnifiedWindowAttached || view.parent == null) return
+        if (isFullScreenLayoutActive == expandFullScreen) return
 
+        try {
+            isFullScreenLayoutActive = expandFullScreen
+            if (expandFullScreen) {
+                params.width = WindowManager.LayoutParams.MATCH_PARENT
+                params.height = WindowManager.LayoutParams.MATCH_PARENT
+                params.x = 0
+                params.y = 0
+            } else {
+                params.width = WindowManager.LayoutParams.WRAP_CONTENT
+                params.height = WindowManager.LayoutParams.WRAP_CONTENT
+                params.x = orbWindowX
+                params.y = orbWindowY
+            }
+            wm.updateViewLayout(view, params)
+        } catch (e: Exception) {
+            Log.w(TAG, "Safe window mode update ignored: ${e.message}")
+        }
+    }
+
+    private fun updateCompactOrbWindowPosition() {
+        val wm = windowManager ?: return
+        val view = unifiedOverlayView ?: return
+        val params = unifiedLayoutParams ?: return
+        if (!isUnifiedWindowAttached || view.parent == null || isFullScreenLayoutActive) return
+
+        try {
+            params.x = orbWindowX
+            params.y = orbWindowY
+            wm.updateViewLayout(view, params)
+        } catch (e: Exception) {
+            Log.w(TAG, "Orb window position update ignored: ${e.message}")
+        }
+    }
+
+    @Composable
+    private fun UnifiedJarvisLiveOverlayRoot() {
+        val activePlan by JarvisOverlayController.activePlan.collectAsState()
+        val activeInstruction by JarvisOverlayController.activeInstruction.collectAsState()
+        val orbState by JarvisOverlayController.orbState.collectAsState()
+        val orbConfig by JarvisOverlayController.orbConfig.collectAsState()
+        val isMinimized by JarvisOverlayController.isOrbMinimized.collectAsState()
+        val isExpanded by JarvisOverlayController.isOrbExpanded.collectAsState()
+        val transientMotion by JarvisOverlayController.transientMotion.collectAsState()
+        val showFullScreen by JarvisOverlayController.isFullScreenExplainerVisible.collectAsState()
+        val previewBitmap by JarvisOverlayController.screenPreviewBitmap.collectAsState()
+        val amplitude by JarvisOverlayController.audioAmplitude.collectAsState()
+        val explanationLevel by JarvisOverlayController.activeExplanationLevel.collectAsState()
+        val inlineStatusBanner by JarvisOverlayController.inlineStatusBanner.collectAsState()
+        val unifiedSessionState by JarvisOverlayController.unifiedSessionState.collectAsState()
+
+        val allSteps by ExplanationStepController.steps.collectAsState()
+        val currentStep by ExplanationStepController.currentStep.collectAsState()
+        val isAutoPlaying by ExplanationStepController.isAutoPlaying.collectAsState()
+        val isMuted by ExplanationStepController.isMuted.collectAsState()
+        val micEngineState by KavyaMicrophoneEngine.engineState.collectAsState()
+        val orchestrationSnapshot by TaskOrchestrationStateMachine.snapshot.collectAsState()
+
+        val isMicActive = micEngineState == KavyaMicrophoneEngine.EngineState.MIC_ACTIVE ||
+            micEngineState == KavyaMicrophoneEngine.EngineState.MIC_LISTENING ||
+            micEngineState == KavyaMicrophoneEngine.EngineState.MIC_SPEECH_DETECTED ||
+            micEngineState == KavyaMicrophoneEngine.EngineState.MIC_SLEEPING
+
+        val hasExplanationOrSteps = currentStep != null || activePlan?.cards?.isNotEmpty() == true
+        val hasCanvasAnnotations = currentStep != null || activeInstruction != null || activePlan?.instructions?.isNotEmpty() == true
+        val needFullScreenCanvas = showFullScreen || hasExplanationOrSteps || hasCanvasAnnotations
+
+        LaunchedEffect(needFullScreenCanvas) {
+            updateUnifiedWindowMode(needFullScreenCanvas)
+        }
+
+        if (!needFullScreenCanvas) {
+            // Compact Pass-Through Mode: Only the Orb + Quick Action Bar + Compact Live Status Pill
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .wrapContentSize()
+                    .testTag("unified_jarvis_overlay_compact_root")
+            ) {
                 JarvisFloatingOrb(
                     state = orbState,
                     config = orbConfig,
@@ -563,200 +429,433 @@ class JarvisOverlayService : Service() {
                     isMinimized = isMinimized,
                     isExpanded = isExpanded,
                     transientMotion = transientMotion,
-                    isMicActive = micState.isListening && !isMicMuted,
+                    isMicActive = isMicActive,
                     onTap = {
-                        Log.d(TAG, "Floating orb tapped in state: $orbState")
                         JarvisOverlayController.toggleOrbExpanded()
                     },
                     onDoubleTap = {
-                        JarvisOverlayController.setOrbExpanded(false)
-                        JarvisGuidanceEngine.explainActiveScreenAsync(applicationContext, "Explain this screen")
+                        JarvisOverlayController.setOrbMinimized(!isMinimized)
                     },
                     onLongPress = {
-                        if (JarvisOverlayController.activePlan.value != null ||
-                            JarvisOverlayController.activeInstruction.value != null
-                        ) {
-                            ScreenAnnotationManager.clearAllAnnotations()
-                        } else {
-                            JarvisOverlayController.toggleOrbMinimized()
-                        }
+                        JarvisGuidanceEngine.explainActiveScreenAsync(this@JarvisOverlayService)
                     },
-                    onDragDelta = { delta ->
-                        dockAnimator?.cancel()
-                        JarvisOverlayController.triggerTransientMotion(OrbTransientMotion.DRAGGING)
-                        val p = orbParams ?: return@JarvisFloatingOrb
-                        val currentGeom = ScreenAnnotationManager.coordinateMapper.getGeometry()
-                        val viewW = this@apply.width.takeIf { it > 0 } ?: 140
-                        val viewH = this@apply.height.takeIf { it > 0 } ?: 180
-                        val maxX = (currentGeom.width - viewW).coerceAtLeast(0)
-                        val maxY = (currentGeom.height - viewH).coerceAtLeast(36)
-                        p.x = (p.x + delta.x.roundToInt()).coerceIn(0, maxX)
-                        p.y = (p.y + delta.y.roundToInt()).coerceIn(36, maxY)
-                        if (this@apply.isAttachedToWindow) {
-                            try {
-                                wm.updateViewLayout(this@apply, p)
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed updating orb position: ${e.message}")
-                            }
-                        }
+                    onDragDelta = { dragAmount ->
+                        onOrbDragged(dragAmount.x, dragAmount.y)
                     },
                     onDragFinished = {
-                        val p = orbParams ?: return@JarvisFloatingOrb
-                        val currentGeom = ScreenAnnotationManager.coordinateMapper.getGeometry()
-                        val viewW = this@apply.width.takeIf { it > 0 } ?: 140
-                        val maxX = (currentGeom.width - viewW - 12).coerceAtLeast(12)
-                        val targetX = if (orbConfig.snapToEdge) {
-                            if (p.x + viewW / 2 < currentGeom.width / 2) 12 else maxX
-                        } else {
-                            p.x.coerceIn(12, maxX)
-                        }
-                        AppPreferences.setFloatingOrbPosY(applicationContext, p.y)
-
-                        if (orbConfig.reducedMotion || targetX == p.x) {
-                            p.x = targetX
-                            AppPreferences.setFloatingOrbPosX(applicationContext, targetX)
-                            JarvisOverlayController.triggerTransientMotion(OrbTransientMotion.NONE)
-                            if (this@apply.isAttachedToWindow) {
-                                try { wm.updateViewLayout(this@apply, p) } catch (_: Exception) {}
-                            }
-                        } else {
-                            JarvisOverlayController.triggerTransientMotion(OrbTransientMotion.DOCKING, 260L)
-                            dockAnimator?.cancel()
-                            val orbView = this@apply
-                            dockAnimator = ValueAnimator.ofInt(p.x, targetX).apply {
-                                duration = 220L
-                                interpolator = DecelerateInterpolator()
-                                addUpdateListener { anim ->
-                                    val animatedX = anim.animatedValue as Int
-                                    p.x = animatedX
-                                    if (orbView.isAttachedToWindow) {
-                                        try {
-                                            wm.updateViewLayout(orbView, p)
-                                        } catch (_: Exception) {}
-                                    }
-                                    if (animatedX == targetX) {
-                                        AppPreferences.setFloatingOrbPosX(applicationContext, targetX)
-                                    }
-                                }
-                                start()
-                            }
-                        }
+                        onOrbDragFinished()
                     },
                     onToggleMinimize = {
-                        JarvisOverlayController.toggleOrbMinimized()
+                        JarvisOverlayController.setOrbMinimized(!isMinimized)
                     },
                     onExplainScreen = {
-                        JarvisGuidanceEngine.explainActiveScreenAsync(applicationContext, "Explain this screen")
+                        JarvisGuidanceEngine.explainActiveScreenAsync(this@JarvisOverlayService)
                     },
                     onReadScreenText = {
-                        JarvisGuidanceEngine.explainActiveScreenAsync(applicationContext, "Read all visible text on this screen clearly")
+                        JarvisGuidanceEngine.readCurrentScreenAloud(this@JarvisOverlayService)
                     },
                     onToggleMic = {
-                        val mic = MicrophoneEngine.getInstance(applicationContext)
-                        val currentMicState = mic.engineState.value
-                        if (currentMicState == MicrophoneEngine.State.IDLE ||
-                            currentMicState == MicrophoneEngine.State.ERROR ||
-                            currentMicState == MicrophoneEngine.State.STOPPING
-                        ) {
-                            KavyaVoiceService.startService(applicationContext)
-                        } else {
-                            mic.setMuted(currentMicState != MicrophoneEngine.State.MUTED)
-                        }
+                        handleMicToggleFromOrb(micEngineState)
                     },
                     onCloseOrb = {
-                        JarvisOverlayController.emergencyStopJarvis(applicationContext)
+                        AppPreferences.setFloatingOrbEnabled(this@JarvisOverlayService, false)
+                        stopAndDetachAll()
                     }
                 )
-            }
-        }
-        orbComposeView = view
 
-        try {
-            wm.addView(view, params)
-            if (view.isAttachedToWindow) {
-                JarvisOverlayController.reportOverlayAttached(true)
+                val statusLine = inlineStatusBanner
+                    ?: orchestrationSnapshot.stepDescription.ifBlank { orchestrationSnapshot.lastActionSummary }
+                        .takeIf { orchestrationSnapshot.isRunning && it.isNotBlank() }
+                AnimatedVisibility(
+                    visible = !isMinimized && !statusLine.isNullOrBlank(),
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xEE080E18),
+                        modifier = Modifier
+                            .padding(top = 4.dp)
+                            .widthIn(max = 220.dp)
+                            .border(1.dp, orbConfig.theme.primaryColor.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                    ) {
+                        Text(
+                            text = statusLine.orEmpty(),
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
             }
-            Log.i(TAG, "Floating Orb addView dispatched to WindowManager at (${params.x}, ${params.y})")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to add Floating Orb overlay", e)
-            JarvisOverlayController.reportOverlayError(
-                "Could not display Floating Orb: ${e.localizedMessage ?: e.javaClass.simpleName}",
-                permissionMissing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)
-            )
-            stopSelfCleanly()
+        } else {
+            // Expanded Unified Overlay Mode: Canvas Annotations + Explanation/Step Card + Floating Orb
+            val focusBounds = currentStep?.bounds
+                ?: activeInstruction?.bounds
+                ?: activePlan?.instructions?.firstOrNull()?.bounds
+            val dockAtTop = ScreenAnnotationManager.coordinateMapper.shouldDockPanelAtTop(focusBounds)
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("unified_jarvis_overlay_expanded_root")
+            ) {
+                // 1. Passive Screen Annotations Canvas (Highlight boxes, step numbers, arrows, pointer)
+                JarvisOverlayCanvas(
+                    plan = activePlan,
+                    orbState = orbState,
+                    orbConfig = orbConfig,
+                    activeInstruction = activeInstruction,
+                    theme = orbConfig.theme,
+                    allSteps = allSteps,
+                    currentStep = currentStep,
+                    showInlinePanel = false,
+                    onDismissCard = { cardId ->
+                        JarvisOverlayController.dismissExplanationCard(cardId)
+                    },
+                    onDismissAll = {
+                        ScreenAnnotationManager.clearAllAnnotations()
+                    },
+                    onStepCompleted = {
+                        ExplanationStepController.nextStep()
+                    }
+                )
+
+                // 2. Full-Screen Explainer or Floating Explanation & Step Guidance Card
+                val currentFullPlan = activePlan
+                if (showFullScreen && currentFullPlan != null) {
+                    JarvisFullScreenExplainer(
+                        plan = currentFullPlan,
+                        screenPreviewBitmap = previewBitmap,
+                        theme = orbConfig.theme,
+                        onClose = {
+                            JarvisOverlayController.dismissFullScreenExplainer()
+                        }
+                    )
+                } else if (hasExplanationOrSteps) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .align(if (dockAtTop) Alignment.TopCenter else Alignment.BottomCenter)
+                            .padding(
+                                top = if (dockAtTop) 44.dp else 8.dp,
+                                bottom = if (dockAtTop) 8.dp else 36.dp,
+                                start = 12.dp,
+                                end = 12.dp
+                            )
+                    ) {
+                        // Unified Session & Presentation Level Header Pill
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xF0070D17),
+                            modifier = Modifier
+                                .padding(bottom = 4.dp)
+                                .border(1.dp, orbConfig.theme.primaryColor.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(orbConfig.theme.primaryColor)
+                                )
+                                Text(
+                                    text = "JARVIS LIVE • ${explanationLevel.badgeLabel}",
+                                    color = orbConfig.theme.primaryColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                if (ScreenShareManager.isScreenSharingActive) {
+                                    Text(
+                                        text = "• SCREEN SHARE ON",
+                                        color = Color(0xFF00E676),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        }
+
+                        ExplanationPanel(
+                            currentStep = currentStep,
+                            activePlan = activePlan,
+                            theme = orbConfig.theme,
+                            isAutoPlaying = isAutoPlaying,
+                            isMuted = isMuted,
+                            onPreviousStep = { ExplanationStepController.previousStep() },
+                            onNextStep = { ExplanationStepController.nextStep() },
+                            onToggleAutoPlay = { ExplanationStepController.toggleAutoPlay() },
+                            onToggleMute = { ExplanationStepController.toggleMute() },
+                            onToggleDim = { ExplanationStepController.toggleDimming() },
+                            onExplainScreenAgain = {
+                                JarvisGuidanceEngine.explainActiveScreenAsync(this@JarvisOverlayService)
+                            },
+                            onDismiss = {
+                                ScreenAnnotationManager.clearAllAnnotations()
+                                JarvisGuidanceEngine.dismissExplanation()
+                            },
+                            onEmergencyStopJarvis = {
+                                ScreenAnnotationManager.clearAllAnnotations()
+                                JarvisGuidanceEngine.dismissExplanation()
+                                AppPreferences.setFloatingOrbEnabled(this@JarvisOverlayService, false)
+                                stopAndDetachAll()
+                            }
+                        )
+                    }
+                }
+
+                // 3. Keep the Floating Orb visible and interactive inside the same Unified Overlay Root!
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(orbWindowX.coerceAtLeast(0), orbWindowY.coerceAtLeast(0)) }
+                ) {
+                    JarvisFloatingOrb(
+                        state = orbState,
+                        config = orbConfig,
+                        amplitude = amplitude,
+                        isWindowOverlay = true,
+                        isMinimized = isMinimized,
+                        isExpanded = isExpanded,
+                        transientMotion = transientMotion,
+                        isMicActive = isMicActive,
+                        onTap = {
+                            JarvisOverlayController.toggleOrbExpanded()
+                        },
+                        onDoubleTap = {
+                            ScreenAnnotationManager.clearAllAnnotations()
+                        },
+                        onLongPress = {
+                            JarvisGuidanceEngine.explainActiveScreenAsync(this@JarvisOverlayService)
+                        },
+                        onDragDelta = { dragAmount ->
+                            onOrbDragged(dragAmount.x, dragAmount.y)
+                        },
+                        onDragFinished = {
+                            onOrbDragFinished()
+                        },
+                        onToggleMinimize = {
+                            ScreenAnnotationManager.clearAllAnnotations()
+                            JarvisOverlayController.setOrbMinimized(!isMinimized)
+                        },
+                        onExplainScreen = {
+                            JarvisGuidanceEngine.explainActiveScreenAsync(this@JarvisOverlayService)
+                        },
+                        onReadScreenText = {
+                            JarvisGuidanceEngine.readCurrentScreenAloud(this@JarvisOverlayService)
+                        },
+                        onToggleMic = {
+                            handleMicToggleFromOrb(micEngineState)
+                        },
+                        onCloseOrb = {
+                            AppPreferences.setFloatingOrbEnabled(this@JarvisOverlayService, false)
+                            stopAndDetachAll()
+                        }
+                    )
+                }
+            }
         }
     }
 
-    private fun removeAllOverlayViews() {
-        dockAnimator?.cancel()
-        dockAnimator = null
+    private fun handleMicToggleFromOrb(micState: KavyaMicrophoneEngine.EngineState) {
+        when (micState) {
+            KavyaMicrophoneEngine.EngineState.MIC_OFF,
+            KavyaMicrophoneEngine.EngineState.MIC_ERROR -> {
+                KavyaMicrophoneEngine.startService(this)
+            }
+            KavyaMicrophoneEngine.EngineState.MIC_SLEEPING -> {
+                KavyaMicrophoneEngine.wake(this)
+            }
+            KavyaMicrophoneEngine.EngineState.MIC_MUTED -> {
+                KavyaMicrophoneEngine.setMuted(this, false)
+            }
+            else -> {
+                KavyaMicrophoneEngine.toggleMute(this)
+            }
+        }
+    }
+
+    private fun onOrbDragged(dx: Float, dy: Float) {
+        snapAnimator?.cancel()
+        JarvisOverlayController.triggerTransientMotion(OrbTransientMotion.DRAGGING)
+        val geom = ScreenAnnotationManager.coordinateMapper.getGeometry()
+        val marginPx = dpToPx(6)
+        val orbApproxPx = dpToPx(96)
+        val minX = geom.navBarInsetLeft + marginPx
+        val maxX = (geom.width - geom.navBarInsetRight - orbApproxPx - marginPx).coerceAtLeast(minX)
+        val minY = geom.statusBarInsetTop + marginPx
+        val maxY = (geom.height - geom.navBarInsetBottom - orbApproxPx - marginPx).coerceAtLeast(minY)
+
+        orbWindowX = (orbWindowX + dx.roundToInt()).coerceIn(minX, maxX)
+        orbWindowY = (orbWindowY + dy.roundToInt()).coerceIn(minY, maxY)
+        updateCompactOrbWindowPosition()
+    }
+
+    private fun onOrbDragFinished() {
+        val cfg = JarvisOverlayController.orbConfig.value
+        val geom = ScreenAnnotationManager.coordinateMapper.getGeometry()
+        val marginPx = dpToPx(10)
+        val orbApproxPx = dpToPx(96)
+        val minX = geom.navBarInsetLeft + marginPx
+        val maxX = (geom.width - geom.navBarInsetRight - orbApproxPx - marginPx).coerceAtLeast(minX)
+
+        if (!cfg.snapToEdge) {
+            AppPreferences.setFloatingOrbPosX(this, orbWindowX)
+            AppPreferences.setFloatingOrbPosY(this, orbWindowY)
+            JarvisOverlayController.triggerTransientMotion(OrbTransientMotion.NONE)
+            return
+        }
+
+        val targetX = if (orbWindowX + (orbApproxPx / 2) < geom.width / 2) minX else maxX
+        if (cfg.reducedMotion || kotlin.math.abs(targetX - orbWindowX) < 6) {
+            orbWindowX = targetX
+            updateCompactOrbWindowPosition()
+            AppPreferences.setFloatingOrbPosX(this, orbWindowX)
+            AppPreferences.setFloatingOrbPosY(this, orbWindowY)
+            JarvisOverlayController.triggerTransientMotion(OrbTransientMotion.NONE)
+            return
+        }
+
+        JarvisOverlayController.triggerTransientMotion(OrbTransientMotion.DOCKING)
+        snapAnimator?.cancel()
+        snapAnimator = ValueAnimator.ofInt(orbWindowX, targetX).apply {
+            duration = 210L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { anim ->
+                orbWindowX = anim.animatedValue as Int
+                updateCompactOrbWindowPosition()
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    AppPreferences.setFloatingOrbPosX(this@JarvisOverlayService, orbWindowX)
+                    AppPreferences.setFloatingOrbPosY(this@JarvisOverlayService, orbWindowY)
+                    JarvisOverlayController.triggerTransientMotion(OrbTransientMotion.NONE)
+                }
+            })
+            start()
+        }
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        val density = resources.displayMetrics.density.takeIf { it > 0f } ?: 2.75f
+        return (dp * density).roundToInt()
+    }
+
+    private fun stopAndDetachAll() {
+        snapAnimator?.cancel()
+        snapAnimator = null
+        ScreenAnnotationManager.clearAllAnnotations()
+        removeUnifiedOverlayWindowSafely()
+        JarvisOverlayController.onServiceDestroyed()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun removeUnifiedOverlayWindowSafely() {
         val wm = windowManager
-        orbComposeView?.let {
-            try { wm?.removeViewImmediate(it) } catch (_: Exception) {
-                try { wm?.removeView(it) } catch (_: Exception) {}
-            }
-        }
-        orbComposeView = null
+        val view = unifiedOverlayView
+        unifiedOverlayView = null
+        unifiedLayoutParams = null
+        isUnifiedWindowAttached = false
+        isFullScreenLayoutActive = false
+        JarvisOverlayController.setActiveWindowCount(0)
 
-        panelComposeView?.let {
-            try { wm?.removeViewImmediate(it) } catch (_: Exception) {
-                try { wm?.removeView(it) } catch (_: Exception) {}
+        if (wm != null && view != null) {
+            try {
+                if (view.parent != null) {
+                    wm.removeViewImmediate(view)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Safe removeView ignored: ${e.message}")
             }
         }
-        panelComposeView = null
-
-        annotationCanvasView?.let {
-            try { wm?.removeViewImmediate(it) } catch (_: Exception) {
-                try { wm?.removeView(it) } catch (_: Exception) {}
-            }
-        }
-        annotationCanvasView = null
     }
 
     override fun onDestroy() {
-        Log.i(TAG, "JarvisOverlayService onDestroy")
-        ExplanationStepController.clear()
-        ExplanationStepController.onSpeakStep = null
-        ExplanationStepController.onStopSpeaking = null
-        try {
-            fallbackTts?.stop()
-            fallbackTts?.shutdown()
-        } catch (_: Exception) {}
-        fallbackTts = null
-
-        removeAllOverlayViews()
+        snapAnimator?.cancel()
+        snapAnimator = null
+        removeUnifiedOverlayWindowSafely()
         serviceLifecycleOwner.onDestroy()
         JarvisOverlayController.onServiceDestroyed()
         super.onDestroy()
     }
-}
 
-/**
- * Minimal Service Lifecycle & SavedState Owner enabling Jetpack Compose in Android Service.
- */
-class ServiceLifecycleOwner : LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
-    private val lifecycleRegistry = LifecycleRegistry(this)
-    private val savedStateRegistryController = SavedStateRegistryController.create(this)
-    private val store = ViewModelStore()
+    private fun startOverlayForegroundNotification() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "JARVIS Live Overlay",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Unified JARVIS Floating Orb, Screen Share & Visual Guidance"
+                setShowBadge(false)
+            }
+            nm.createNotificationChannel(channel)
+        }
 
-    override val lifecycle: Lifecycle get() = lifecycleRegistry
-    override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
-    override val viewModelStore: ViewModelStore get() = store
+        val openAppIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
-    fun onCreate() {
-        savedStateRegistryController.performRestore(Bundle())
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
-    }
+        val explainIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, JarvisOverlayService::class.java).apply {
+                action = ACTION_EXPLAIN_SCREEN
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
-    fun onStart() {
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
-    }
+        val clearIntent = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, JarvisOverlayService::class.java).apply {
+                action = ACTION_CLEAR_ANNOTATIONS
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
-    fun onDestroy() {
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
-        store.clear()
+        val stopIntent = PendingIntent.getService(
+            this,
+            3,
+            Intent(this, JarvisOverlayService::class.java).apply {
+                action = ACTION_STOP_OVERLAY
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setContentTitle("JARVIS Live Overlay Active")
+            .setContentText("Tap orb or ask by voice to explain or guide on any screen")
+            .setContentIntent(openAppIntent)
+            .setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_search, "Explain Screen", explainIntent)
+            .addAction(android.R.drawable.ic_menu_revert, "Clear Visuals", clearIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop JARVIS", stopIntent)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 }

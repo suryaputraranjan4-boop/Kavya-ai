@@ -30,8 +30,88 @@ interface RestrictedActionExecutor {
 data class ActionExecutionFeedback(
     val dispatched: Boolean,
     val detail: String,
-    val errorCode: String? = null
+    val errorCode: String? = null,
+    val expectedForegroundPackage: String? = null,
+    val launchedViaBrowser: Boolean = false
 )
+
+/**
+ * Distinguishes Installed App Launch vs Website/Browser URL vs Web Search (Phase 15).
+ */
+object AppAndWebsiteRoutingClassifier {
+    sealed class RouteDecision {
+        data class InstalledApp(val appQuery: String, val canonicalPackageHint: String = "") : RouteDecision()
+        data class BrowserWebsite(val url: String, val label: String) : RouteDecision()
+        data class WebSearch(val searchQuery: String) : RouteDecision()
+    }
+
+    fun classifyTarget(rawTargetOrCommand: String): RouteDecision {
+        val trimmed = rawTargetOrCommand.trim()
+        val lower = trimmed.lowercase(java.util.Locale.ROOT)
+
+        // 1. Explicit website / browser link request ("Open YouTube website", "Open youtube.com", "Open this link in browser")
+        val isExplicitWebsite = lower.contains("website") ||
+            lower.contains("in browser") ||
+            lower.contains("browser me") ||
+            lower.startsWith("http://") ||
+            lower.startsWith("https://") ||
+            Regex("\\b[a-z0-9-]+\\.(?:com|org|io|net|in|dev|ai)\\b").containsMatchIn(lower)
+
+        if (isExplicitWebsite) {
+            val url = when {
+                lower.startsWith("http://") || lower.startsWith("https://") -> trimmed.substringAfter("open ").trim()
+                lower.contains("youtube") -> "https://www.youtube.com"
+                lower.contains("whatsapp") -> "https://web.whatsapp.com"
+                lower.contains("instagram") -> "https://www.instagram.com"
+                lower.contains("github") -> "https://github.com"
+                lower.contains("google") -> "https://www.google.com"
+                else -> {
+                    val domainMatch = Regex("\\b([a-z0-9-]+\\.(?:com|org|io|net|in|dev|ai)(?:/[^\\s]*)?)\\b").find(lower)
+                    if (domainMatch != null) "https://${domainMatch.groupValues[1]}" else "https://www.google.com/search?q=${Uri.encode(trimmed)}"
+                }
+            }
+            return RouteDecision.BrowserWebsite(url = url, label = trimmed)
+        }
+
+        // 2. Explicit web search request ("Search this on Google", "Search cats on Google", "Google par search karo")
+        val isExplicitWebSearch = (lower.contains("search") || lower.contains("सर्च") || lower.contains("dhundo")) &&
+            (lower.contains("on google") || lower.contains("google par") || lower.contains("google pe") || lower.contains("on web"))
+        if (isExplicitWebSearch) {
+            val cleanQ = trimmed
+                .replace(Regex("(?i)^(?:search\\s+(?:for\\s+)?|google\\s+par\\s+|google\\s+pe\\s+)"), "")
+                .replace(Regex("(?i)\\s+(?:on\\s+google|par\\s+search\\s+karo|search\\s+karo)$"), "")
+                .trim()
+                .ifBlank { trimmed }
+            return RouteDecision.WebSearch(cleanQ)
+        }
+
+        // 3. Installed app launch ("Open YouTube", "Open Chrome", "Open WhatsApp")
+        val cleanApp = trimmed
+            .replace(Regex("(?i)^(?:open|launch|start|run)\\s+"), "")
+            .replace(Regex("(?i)\\s+(?:kholo|khol\\s+do|open\\s+karo|chalao|खोलो)$"), "")
+            .trim()
+            .ifBlank { trimmed }
+        val canonicalPkg = when (cleanApp.lowercase(java.util.Locale.ROOT)) {
+            "youtube", "yt" -> "com.google.android.youtube"
+            "chrome", "google chrome" -> "com.android.chrome"
+            "whatsapp" -> "com.whatsapp"
+            "instagram" -> "com.instagram.android"
+            "gmail" -> "com.google.android.gm"
+            "maps", "google maps" -> "com.google.android.apps.maps"
+            "settings" -> "com.android.settings"
+            else -> ""
+        }
+        return RouteDecision.InstalledApp(appQuery = cleanApp, canonicalPackageHint = canonicalPkg)
+    }
+
+    fun verifyForegroundPackageMatch(
+        expectedPackage: String?,
+        observedForegroundPackage: String?
+    ): Boolean {
+        if (expectedPackage.isNullOrBlank() || observedForegroundPackage.isNullOrBlank()) return false
+        return expectedPackage.equals(observedForegroundPackage.trim(), ignoreCase = true)
+    }
+}
 
 object DefaultRestrictedActionExecutor : RestrictedActionExecutor {
     override suspend fun executePermittedAction(
@@ -56,23 +136,74 @@ object DefaultRestrictedActionExecutor : RestrictedActionExecutor {
             when (envelope.action) {
                 OrchestratorActionType.OPEN_APP -> {
                     val target = envelope.appName.ifBlank { envelope.target.description }
-                    val res = AppResolver(context).resolve(target)
-                    val app = res.matchedApp
-                        ?: return@withContext ActionExecutionFeedback(false, "App '$target' not installed.", "APP_NOT_FOUND")
-                    val launched = try {
-                        val launchIntent = context.packageManager.getLaunchIntentForPackage(app.packageName)?.apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        } ?: return@withContext ActionExecutionFeedback(false, "No launch intent for ${app.appName}.", "NO_LAUNCH_INTENT")
-                        context.startActivity(launchIntent)
-                        true
-                    } catch (_: Exception) {
-                        false
+                    when (val route = AppAndWebsiteRoutingClassifier.classifyTarget(target)) {
+                        is AppAndWebsiteRoutingClassifier.RouteDecision.BrowserWebsite -> {
+                            val ok = try {
+                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(route.url)).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(browserIntent)
+                                true
+                            } catch (_: Exception) {
+                                false
+                            }
+                            ActionExecutionFeedback(
+                                dispatched = ok,
+                                detail = if (ok) "Opened website ${route.url} in browser" else "Failed opening website ${route.url}",
+                                errorCode = if (ok) null else "BROWSER_LAUNCH_FAILED",
+                                expectedForegroundPackage = "com.android.chrome",
+                                launchedViaBrowser = true
+                            )
+                        }
+                        is AppAndWebsiteRoutingClassifier.RouteDecision.WebSearch -> {
+                            val ok = try {
+                                val browserIntent = Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://www.google.com/search?q=${Uri.encode(route.searchQuery)}")
+                                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                                context.startActivity(browserIntent)
+                                true
+                            } catch (_: Exception) {
+                                false
+                            }
+                            ActionExecutionFeedback(
+                                dispatched = ok,
+                                detail = if (ok) "Opened browser search for '${route.searchQuery}'" else "Failed opening web search",
+                                errorCode = if (ok) null else "SEARCH_LAUNCH_FAILED",
+                                launchedViaBrowser = true
+                            )
+                        }
+                        is AppAndWebsiteRoutingClassifier.RouteDecision.InstalledApp -> {
+                            val res = AppResolver(context).resolve(route.appQuery)
+                            val app = res.matchedApp
+                                ?: return@withContext ActionExecutionFeedback(
+                                    dispatched = false,
+                                    detail = "App '${route.appQuery}' is not installed on this device.",
+                                    errorCode = "APP_NOT_FOUND"
+                                )
+                            val launched = try {
+                                val launchIntent = context.packageManager.getLaunchIntentForPackage(app.packageName)?.apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                                } ?: return@withContext ActionExecutionFeedback(
+                                    dispatched = false,
+                                    detail = "No launchable Activity found for ${app.appName} (${app.packageName}).",
+                                    errorCode = "NO_LAUNCH_INTENT",
+                                    expectedForegroundPackage = app.packageName
+                                )
+                                context.startActivity(launchIntent)
+                                true
+                            } catch (_: Exception) {
+                                false
+                            }
+                            ActionExecutionFeedback(
+                                dispatched = launched,
+                                detail = if (launched) "Launched installed app ${app.appName} (${app.packageName})" else "Failed launching ${app.appName}",
+                                errorCode = if (launched) null else "LAUNCH_FAILED",
+                                expectedForegroundPackage = app.packageName,
+                                launchedViaBrowser = false
+                            )
+                        }
                     }
-                    ActionExecutionFeedback(
-                        dispatched = launched,
-                        detail = if (launched) "Launched launch intent for ${app.appName} (${app.packageName})" else "Failed launching ${app.appName}",
-                        errorCode = if (launched) null else "LAUNCH_FAILED"
-                    )
                 }
                 OrchestratorActionType.SPLIT_SCREEN -> {
                     val primary = envelope.appName.ifBlank { envelope.target.description }
@@ -86,17 +217,27 @@ object DefaultRestrictedActionExecutor : RestrictedActionExecutor {
                 }
                 OrchestratorActionType.SEARCH_WEB -> {
                     val q = envelope.text.ifBlank { envelope.target.description }.trim()
+                    val route = AppAndWebsiteRoutingClassifier.classifyTarget(q)
+                    val targetUri = when (route) {
+                        is AppAndWebsiteRoutingClassifier.RouteDecision.BrowserWebsite -> Uri.parse(route.url)
+                        is AppAndWebsiteRoutingClassifier.RouteDecision.WebSearch -> Uri.parse("https://www.google.com/search?q=${Uri.encode(route.searchQuery)}")
+                        is AppAndWebsiteRoutingClassifier.RouteDecision.InstalledApp -> Uri.parse("https://www.google.com/search?q=${Uri.encode(q)}")
+                    }
                     val ok = try {
-                        val browserIntent = Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse("https://www.google.com/search?q=${Uri.encode(q)}")
-                        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                        val browserIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
                         context.startActivity(browserIntent)
                         true
                     } catch (_: Exception) {
                         false
                     }
-                    ActionExecutionFeedback(ok, if (ok) "Opened browser search for '$q'" else "Failed opening web search")
+                    ActionExecutionFeedback(
+                        dispatched = ok,
+                        detail = if (ok) "Opened browser URL $targetUri" else "Failed opening web search",
+                        errorCode = if (ok) null else "SEARCH_LAUNCH_FAILED",
+                        launchedViaBrowser = true
+                    )
                 }
                 OrchestratorActionType.TAP -> {
                     if (a11y == null) return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")
@@ -869,6 +1010,11 @@ class CeoAiOrchestrator(
 
         // Wait if explicitly paused
         if (session.isPaused) {
+            TaskOrchestrationStateMachine.transitionTo(
+                OrchestrationLifecycleState.TASK_PAUSED,
+                detail = "Task paused; awaiting user resume",
+                isPaused = true
+            )
             val gate = pauseGate ?: CompletableDeferred<Boolean>().also { pauseGate = it }
             val resumed = try {
                 gate.await()

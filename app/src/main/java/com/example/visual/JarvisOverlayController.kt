@@ -76,6 +76,63 @@ object JarvisOverlayController {
     private val _audioAmplitude = MutableStateFlow(0f)
     val audioAmplitude: StateFlow<Float> = _audioAmplitude.asStateFlow()
 
+    private val _activeExplanationLevel = MutableStateFlow(ScreenSharePresentationLevel.STANDARD)
+    val activeExplanationLevel: StateFlow<ScreenSharePresentationLevel> = _activeExplanationLevel.asStateFlow()
+
+    fun setExplanationLevel(level: ScreenSharePresentationLevel) {
+        _activeExplanationLevel.value = level
+        com.example.services.ScreenShareManager.setUnifiedStage(
+            com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Explaining(
+                level = level,
+                title = _activePlan.value?.title.orEmpty()
+            )
+        )
+    }
+
+    private val _activeWindowCount = MutableStateFlow(0)
+    val activeWindowCount: StateFlow<Int> = _activeWindowCount.asStateFlow()
+
+    internal fun setActiveWindowCount(count: Int) {
+        _activeWindowCount.value = count.coerceAtLeast(0)
+    }
+
+    private val _inlineStatusBanner = MutableStateFlow<String?>(null)
+    val inlineStatusBanner: StateFlow<String?> = _inlineStatusBanner.asStateFlow()
+
+    fun setInlineStatusBanner(message: String?) {
+        _inlineStatusBanner.value = message
+    }
+
+    /**
+     * Automatically starts and displays the Unified JARVIS Live Overlay whenever Screen Share becomes active.
+     */
+    fun onScreenShareSessionActive(context: Context): Boolean {
+        val appCtx = context.applicationContext
+        AppPreferences.setFloatingOrbEnabled(appCtx, true)
+        if (!hasOverlayPermission(appCtx)) {
+            _isOverlayRunning.value = false
+            _attachmentState.value = OverlayAttachmentState.PERMISSION_MISSING
+            _lastOverlayError.value = "Display over other apps permission is required for the JARVIS Live Overlay."
+            _unifiedSessionState.value = com.example.services.ScreenShareManager.UnifiedJarvisSessionState.PermissionRequired("SYSTEM_ALERT_WINDOW")
+            return false
+        }
+        if (_orbState.value == JarvisOrbState.IDLE) {
+            _orbState.value = JarvisOrbState.SCREEN_SHARE_ACTIVE
+        }
+        return startOverlay(appCtx)
+    }
+
+    /**
+     * Synchronizes overlay state cleanly when Screen Share stops.
+     */
+    fun onScreenShareSessionStopped() {
+        _inlineStatusBanner.value = null
+        if (_activePlan.value == null && _activeInstruction.value == null) {
+            _orbState.value = JarvisOrbState.IDLE
+        }
+        _unifiedSessionState.value = com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Stopped
+    }
+
     private val _unifiedSessionState = MutableStateFlow<com.example.services.ScreenShareManager.UnifiedJarvisSessionState>(
         com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Idle
     )
@@ -85,32 +142,66 @@ object JarvisOverlayController {
     fun syncWithUnifiedSessionState(state: com.example.services.ScreenShareManager.UnifiedJarvisSessionState) {
         _unifiedSessionState.value = state
         when (state) {
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.PermissionRequired -> {
+                _orbState.value = JarvisOrbState.ERROR
+                _inlineStatusBanner.value = "Permission required: ${state.missingPermission}"
+            }
             is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.PermissionPending -> {
                 if (_activePlan.value == null && _activeInstruction.value == null) {
                     _orbState.value = JarvisOrbState.CONNECTING
                 }
             }
-            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Starting -> {
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Starting,
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.WaitingForFirstFrame,
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Recovering -> {
                 if (_activePlan.value == null && _activeInstruction.value == null) {
                     _orbState.value = JarvisOrbState.LOADING
                 }
             }
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Analyzing -> {
+                _orbState.value = JarvisOrbState.THINKING
+                if (state.query.isNotBlank()) {
+                    _inlineStatusBanner.value = "Analyzing screen: ${state.query.take(48)}"
+                }
+            }
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Explaining -> {
+                _activeExplanationLevel.value = state.level
+                _orbState.value = JarvisOrbState.EXPLAINING
+                _inlineStatusBanner.value = null
+            }
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Guiding -> {
+                _orbState.value = JarvisOrbState.GUIDING
+                _inlineStatusBanner.value = "Step ${state.stepNumber}/${state.totalSteps}: ${state.title}"
+            }
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Executing -> {
+                _orbState.value = JarvisOrbState.WORKING
+                if (state.actionSummary.isNotBlank()) {
+                    _inlineStatusBanner.value = state.actionSummary
+                }
+            }
+            is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Verifying -> {
+                _orbState.value = JarvisOrbState.PROCESSING
+                if (state.expectedOutcome.isNotBlank()) {
+                    _inlineStatusBanner.value = "Verifying: ${state.expectedOutcome.take(48)}"
+                }
+            }
             is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Active -> {
-                // Only update orb badge to SCREEN_SHARE_ACTIVE if not actively speaking/listening/thinking/guiding.
-                // Never restart/recreate the overlay on frame ticks.
                 val cur = _orbState.value
                 if (_activePlan.value == null &&
                     _activeInstruction.value == null &&
                     cur != JarvisOrbState.LISTENING &&
                     cur != JarvisOrbState.SPEAKING &&
                     cur != JarvisOrbState.THINKING &&
-                    cur != JarvisOrbState.PROCESSING
+                    cur != JarvisOrbState.PROCESSING &&
+                    cur != JarvisOrbState.EXPLAINING &&
+                    cur != JarvisOrbState.GUIDING
                 ) {
                     _orbState.value = JarvisOrbState.SCREEN_SHARE_ACTIVE
                 }
             }
             is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Error -> {
                 _orbState.value = JarvisOrbState.ERROR
+                _inlineStatusBanner.value = state.reason
             }
             is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Stopping,
             is com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Stopped,
@@ -297,6 +388,7 @@ object JarvisOverlayController {
             Log.w(TAG, "Error stopping JarvisOverlayService: ${e.message}")
         }
         _isOverlayRunning.value = false
+        _activeWindowCount.value = 0
         _attachmentState.value = OverlayAttachmentState.STOPPED
         _lastOverlayError.value = null
         Log.i(TAG, "JarvisOverlayService stop request sent")
@@ -414,10 +506,12 @@ object JarvisOverlayController {
     internal fun reportOverlayAttached(attached: Boolean, errorMessage: String? = null) {
         if (attached) {
             _isOverlayRunning.value = true
+            _activeWindowCount.value = 1
             _attachmentState.value = OverlayAttachmentState.ATTACHED_VISIBLE
             _lastOverlayError.value = null
         } else {
             _isOverlayRunning.value = false
+            _activeWindowCount.value = 0
             if (!errorMessage.isNullOrBlank()) {
                 _attachmentState.value = OverlayAttachmentState.ERROR
                 _lastOverlayError.value = errorMessage
@@ -429,6 +523,7 @@ object JarvisOverlayController {
 
     internal fun reportOverlayError(message: String, permissionMissing: Boolean = false) {
         _isOverlayRunning.value = false
+        _activeWindowCount.value = 0
         _lastOverlayError.value = message
         _attachmentState.value = if (permissionMissing) {
             OverlayAttachmentState.PERMISSION_MISSING
@@ -437,7 +532,34 @@ object JarvisOverlayController {
         }
     }
 
+    /**
+     * Displays an error or recovery state inside the Unified JARVIS Live Overlay without
+     * destroying, detaching, or hiding the overlay window (Phase 11).
+     */
+    fun showInlineOverlayError(title: String, message: String) {
+        _orbState.value = JarvisOrbState.ERROR
+        _inlineStatusBanner.value = message
+        _isOrbMinimized.value = false
+        val errCard = VisualCardData(
+            type = VisualCardType.SUMMARY,
+            title = title.ifBlank { "Screen Analysis Issue" },
+            summary = message,
+            bullets = listOf("Tap Scan Screen to retry with a fresh frame", "Check API key or internet connection if needed"),
+            detailText = message,
+            confidence = 0f
+        )
+        _activePlan.value = JarvisVisualPlan(
+            userQuery = title,
+            mode = JarvisMode.EXPLAINS_ANYTHING,
+            title = title.ifBlank { "Screen Analysis Issue" },
+            instructions = emptyList(),
+            cards = listOf(errCard)
+        )
+    }
+
     fun presentVisualPlan(plan: JarvisVisualPlan, autoAdvanceSteps: Boolean = false) {
+        _inlineStatusBanner.value = null
+        _isOrbMinimized.value = false
         _activePlan.value = plan
         _activeInstruction.value = plan.instructions.firstOrNull()
         if (plan.fullScreenExplainerEnabled) {
@@ -450,7 +572,10 @@ object JarvisOverlayController {
             JarvisMode.IDLE -> JarvisOrbState.IDLE
         }
 
-        // Populate ExplanationStepController from plan instructions when valid bounds exist
+        // Populate ExplanationStepController from plan instructions when valid bounds exist.
+        // CRITICAL FIX (Phase 11): When validInstructions is empty (e.g. a general screen explanation card),
+        // do NOT call ExplanationStepController.clear() because clear() invokes onStopSpeaking and kills
+        // the active voice narration! Instead only clear step pointers without stopping speech.
         val validInstructions = plan.instructions.filter { it.bounds != null && it.bounds.width() > 0 && it.bounds.height() > 0 }
         if (validInstructions.isNotEmpty()) {
             val steps = validInstructions.mapIndexed { idx, inst ->
@@ -479,8 +604,20 @@ object JarvisOverlayController {
                 )
             }
             ExplanationStepController.startSequence(steps, autoAdvance = autoAdvanceSteps)
+            com.example.services.ScreenShareManager.setUnifiedStage(
+                com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Guiding(
+                    stepNumber = 1,
+                    totalSteps = steps.size,
+                    title = plan.title
+                )
+            )
         } else {
-            ExplanationStepController.clear()
+            com.example.services.ScreenShareManager.setUnifiedStage(
+                com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Explaining(
+                    level = _activeExplanationLevel.value,
+                    title = plan.title
+                )
+            )
         }
 
         if (plan.targetPackage.isNotBlank()) {
@@ -539,9 +676,14 @@ object JarvisOverlayController {
     fun clearAllVisuals() {
         _activePlan.value = null
         _activeInstruction.value = null
+        _inlineStatusBanner.value = null
         _isFullScreenExplainerVisible.value = false
         ExplanationStepController.clear()
-        _orbState.value = JarvisOrbState.IDLE
+        _orbState.value = if (com.example.services.ScreenShareManager.isScreenSharingActive) {
+            JarvisOrbState.SCREEN_SHARE_ACTIVE
+        } else {
+            JarvisOrbState.IDLE
+        }
     }
 
     fun showFullScreenExplainer(plan: JarvisVisualPlan, previewBitmap: Bitmap? = null) {
@@ -554,7 +696,11 @@ object JarvisOverlayController {
     fun dismissFullScreenExplainer() {
         _isFullScreenExplainerVisible.value = false
         if (_activeInstruction.value == null && ExplanationStepController.currentStep.value == null) {
-            _orbState.value = JarvisOrbState.IDLE
+            _orbState.value = if (com.example.services.ScreenShareManager.isScreenSharingActive) {
+                JarvisOrbState.SCREEN_SHARE_ACTIVE
+            } else {
+                JarvisOrbState.IDLE
+            }
         }
     }
 
@@ -563,6 +709,7 @@ object JarvisOverlayController {
         testShowcaseJob = null
         _isTestShowcaseRunning.value = false
         _isOverlayRunning.value = false
+        _activeWindowCount.value = 0
         _isOrbMinimized.value = false
         _isOrbExpanded.value = false
         _transientMotion.value = OrbTransientMotion.NONE

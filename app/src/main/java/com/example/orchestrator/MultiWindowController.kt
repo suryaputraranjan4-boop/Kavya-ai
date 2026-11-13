@@ -240,7 +240,9 @@ object MultiWindowController {
     }
 
     fun parseSplitAppPair(raw: String): Pair<String, String> {
-        val clean = raw.replace("(?i)split\\s*screen|multi\\s*window|side\\s*by\\s*side|me|mein|in|open|launch|kholo".toRegex(), " ").trim()
+        val clean = raw.replace("(?i)\\b(?:split\\s*screen|multi\\s*window|side\\s*by\\s*side|me|mein|in|open|launch|kholo)\\b".toRegex(), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
         val parts = clean.split(Regex("(?i)\\s+(?:and|aur|with|और)\\s+|\\s*,\\s*|\\s*\\|\\s*"))
             .map { it.trim() }
             .filter { it.isNotBlank() }

@@ -55,8 +55,8 @@ fun AppNavGraph(
         composable("ai_api_hub") { AiApiHubScreen(navController) }
         composable("proactive_settings") { ProactiveSettingsScreen(navController, viewModel) }
         composable("debug_dashboard") { DebugDashboardScreen(onBack = { navController.popBackStack() }) }
-        composable("visual_action_control") { VisualActionControlScreen(navController, viewModel) }
-        composable("jarvis_intelligence") { JarvisScreenIntelligenceScreen(navController, viewModel) }
+        composable("visual_action_control") { ScreenShareScreen(navController, viewModel) }
+        composable("jarvis_intelligence") { ScreenShareScreen(navController, viewModel) }
         composable("help_support") { HelpSupportScreen(navController) }
     }
 }

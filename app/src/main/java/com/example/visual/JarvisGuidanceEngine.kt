@@ -169,6 +169,89 @@ object JarvisGuidanceEngine {
     }
 
     /**
+     * Infers the presentation/explanation depth (`BASIC`, `STANDARD`, `ADVANCED`) from natural
+     * Hindi, Hinglish, or English voice/text commands (Phase 5).
+     * Defaults to `STANDARD` if the user does not specify a level.
+     */
+    fun inferExplanationLevelFromQuery(
+        query: String,
+        fallback: ScreenSharePresentationLevel = ScreenSharePresentationLevel.STANDARD
+    ): ScreenSharePresentationLevel {
+        val lower = query.lowercase(java.util.Locale.ROOT).trim()
+        val basicKeywords = listOf(
+            "basic", "simple", "short", "quick", "brief", "beginner", "easy",
+            "aasan", "saral", "chhota", "sankshipt", "आसान", "सरल", "संक्षेप", "छोटा"
+        )
+        val advancedKeywords = listOf(
+            "advanced", "detailed", "in detail", "deep", "technical", "complete detail",
+            "full detail", "expert", "vistar", "poori jankari", "gहराई", "विस्तार", "टेक्निकल", "पूरी जानकारी"
+        )
+        val standardKeywords = listOf(
+            "standard", "normal", "medium", "regular", "balanced"
+        )
+        return when {
+            advancedKeywords.any { lower.contains(it) } -> ScreenSharePresentationLevel.ADVANCED
+            basicKeywords.any { lower.contains(it) } -> ScreenSharePresentationLevel.BASIC
+            standardKeywords.any { lower.contains(it) } -> ScreenSharePresentationLevel.STANDARD
+            else -> fallback
+        }
+    }
+
+    /**
+     * Handles voice-first step-by-step navigation and explanation-level follow-up commands (Phase 5).
+     * Returns a non-null spoken/chat response when handled as an active JARVIS guidance control command.
+     */
+    fun handleVoiceGuidanceControlCommand(context: Context, command: String): String? {
+        val lower = command.lowercase(java.util.Locale.ROOT).trim()
+        val hasActiveSteps = ExplanationStepController.steps.value.isNotEmpty()
+        val hasActivePlan = JarvisOverlayController.activePlan.value != null
+
+        if (hasActiveSteps) {
+            if (lower in listOf("next", "next step", "continue", "aage", "aage badho", "agla", "agla step", "आगे", "अगला")) {
+                val step = ExplanationStepController.nextStep()
+                return step?.let { "Step ${it.stepNumber} of ${it.totalSteps}: ${it.spokenExplanation}" }
+            }
+            if (lower in listOf("previous", "previous step", "prev", "back step", "piche", "pichla step", "पीछे", "पिछला")) {
+                val step = ExplanationStepController.previousStep()
+                return step?.let { "Step ${it.stepNumber} of ${it.totalSteps}: ${it.spokenExplanation}" }
+            }
+            if (lower in listOf("repeat", "repeat step", "say again", "phir se", "phir se batao", "dobara", "dobara bolo", "फिर से बताओ")) {
+                val step = ExplanationStepController.currentStep.value
+                if (step != null) {
+                    externalSpeakCallback?.invoke(step.spokenExplanation)
+                    return "Step ${step.stepNumber} of ${step.totalSteps}: ${step.spokenExplanation}"
+                }
+            }
+        }
+
+        val isLevelSwitchFollowUp = hasActivePlan && (
+            lower.contains("basic") || lower.contains("simple") || lower.contains("aasan") ||
+            lower.contains("standard") ||
+            lower.contains("advanced") || lower.contains("detailed") || lower.contains("technical") || lower.contains("vistar")
+        ) && (lower.contains("explain") || lower.contains("samjhao") || lower.contains("batao") || lower.contains("level") || lower.contains("detail") || lower.contains("mode"))
+
+        if (isLevelSwitchFollowUp) {
+            val newLevel = inferExplanationLevelFromQuery(command, JarvisOverlayController.activeExplanationLevel.value)
+            JarvisOverlayController.setExplanationLevel(newLevel)
+            explainActiveScreenAsync(context, command, preferredLevel = newLevel)
+            return "Switching screen explanation to ${newLevel.title} (${newLevel.id})..."
+        }
+
+        return null
+    }
+
+    /**
+     * Reads and summarizes the visible screen aloud through the AI-authorized screen explanation pipeline.
+     */
+    fun readCurrentScreenAloud(context: Context) {
+        explainActiveScreenAsync(
+            context = context,
+            query = "Read and summarize the main text on this screen clearly",
+            preferredLevel = ScreenSharePresentationLevel.BASIC
+        )
+    }
+
+    /**
      * Synchronous entry point no longer fabricates local/offline plans without AI authorization.
      */
     fun executeJarvisQuery(query: String) {
@@ -182,81 +265,96 @@ object JarvisGuidanceEngine {
 
     /**
      * Asynchronous full-pipeline screen explanation triggered from the Floating Orb, Panel, or Voice.
-     * Routes strictly through the user's selected online AI provider (Gemini, OpenRouter, HuggingFace, Custom).
-     * Never presents synthetic local plans when API authorization fails.
+     * Routes strictly through the user's selected online AI provider (Gemini, OpenRouter, Custom).
+     * Never destroys or hides the Unified JARVIS Live Overlay on error (Phase 11).
      */
-    fun explainActiveScreenAsync(context: Context, query: String = "Explain this screen") {
+    fun explainActiveScreenAsync(
+        context: Context,
+        query: String = "Explain this screen",
+        preferredLevel: ScreenSharePresentationLevel? = null
+    ) {
         activeAnalysisJob?.cancel()
-        ScreenAnnotationManager.coordinateMapper.refreshGeometry(context)
+        val appCtx = context.applicationContext
+        ScreenAnnotationManager.coordinateMapper.refreshGeometry(appCtx)
+
+        val resolvedLevel = preferredLevel ?: inferExplanationLevelFromQuery(query, ScreenSharePresentationLevel.STANDARD)
+        JarvisOverlayController.setExplanationLevel(resolvedLevel)
+        com.example.services.ScreenShareManager.setUnifiedStage(
+            com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Analyzing(query = query)
+        )
         JarvisOverlayController.setOrbState(JarvisOrbState.THINKING)
+
+        // Ensure the Unified JARVIS Live Overlay is visible if overlay permission is granted
+        if (JarvisOverlayController.hasOverlayPermission(appCtx) && !JarvisOverlayController.isOverlayRunning.value) {
+            JarvisOverlayController.startOverlay(appCtx)
+        }
 
         activeAnalysisJob = engineScope.launch {
             try {
                 val initialMap = withContext(Dispatchers.Default) {
                     SemanticScreenAnalyzer.analyzeScreen()
                 }
-                var frameBitmap = VisionPipeline.getLatestFrame()
-                if (frameBitmap == null) {
-                    frameBitmap = withContext(Dispatchers.IO) {
-                        ScreenshotManager(context).captureScreen()
-                    }
-                    if (frameBitmap != null) {
-                        VisionPipeline.onNewFrame(frameBitmap)
-                    }
-                }
 
-                val jpegBytes = VisionPipeline.getCompressedJpegFrame()
-                    ?: frameBitmap?.let { bmp ->
-                        withContext(Dispatchers.IO) {
-                            try {
-                                val q = PerformanceProfileManager.snapshot.value.jpegQuality
-                                val baos = ByteArrayOutputStream()
-                                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, q, baos)
-                                baos.toByteArray()
-                            } catch (_: Exception) { null }
-                        }
-                    }
+                // Capture & validate screenshot (Phase 6)
+                val observation = com.example.orchestrator.ScreenObservationCoordinator.captureFreshObservation(appCtx)
+                val jpegBytes = observation?.imageBytes ?: VisionPipeline.getCompressedJpegFrame()
 
                 if (jpegBytes == null || jpegBytes.isEmpty()) {
-                    publishExplanation(
-                        title = "Fresh Screen Required",
-                        summary = "No live screen frame available. Start Screen Share and switch to the target app.",
-                        bulletPoints = listOf("Missing fresh screenshot for AI vision analysis"),
-                        confidence = 0.0f
+                    val errMsg = "Unable to capture a valid screen image. Enable Screen Share or Accessibility Service and try again."
+                    JarvisOverlayController.showInlineOverlayError("Screen Capture Required", errMsg)
+                    com.example.services.ScreenShareManager.setUnifiedStage(
+                        com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Error(errMsg)
                     )
-                    JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+                    externalSpeakCallback?.invoke(errMsg)
                     return@launch
+                }
+
+                val isStepByStepRequest = query.lowercase(java.util.Locale.ROOT).let { q ->
+                    q.contains("step by step") || q.contains("guide me") || q.contains("how do i") ||
+                    q.contains("kaise") || q.contains("sikhao") || q.contains("कैसे")
+                }
+
+                val levelInstruction = when (resolvedLevel) {
+                    ScreenSharePresentationLevel.BASIC ->
+                        "EXPLANATION LEVEL: BASIC. Explain in 2-3 very short, simple, beginner-friendly sentences without technical jargon."
+                    ScreenSharePresentationLevel.STANDARD ->
+                        "EXPLANATION LEVEL: STANDARD. Provide a clear, balanced explanation of the current screen, main visible options, and practical next steps."
+                    ScreenSharePresentationLevel.ADVANCED ->
+                        "EXPLANATION LEVEL: ADVANCED. Provide a comprehensive, detailed technical & functional breakdown of all visible sections, controls, settings, and workflows."
                 }
 
                 val hierarchySummary = initialMap.elements.take(20).joinToString("\n") {
                     "- ${it.displayLabel} [${it.type.name}] bounds=${it.bounds}"
                 }
                 val visionPrompt = """
-                    User question: $query
-                    Current app: ${initialMap.packageName.ifBlank { "Current App" }}
+                    User request: $query
+                    $levelInstruction
+                    ${if (isStepByStepRequest) "Format your response as clear numbered steps (1., 2., 3.) so the user can follow step by step." else ""}
+                    Current foreground app: ${observation?.foregroundPackage?.ifBlank { initialMap.packageName }.orEmpty().ifBlank { "Current Screen" }}
                     UI hierarchy context:
                     $hierarchySummary
 
-                    Analyze the live screenshot accurately and explain what is visible and helpful next steps.
+                    Analyze the attached live screenshot image and explain only what is genuinely visible on the screen.
                 """.trimIndent()
 
                 val aiRes = com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
-                    context = context,
+                    context = appCtx,
                     prompt = visionPrompt,
-                    systemInstruction = "You are Kavya, an expert AI visual screen analyst. Describe only what is truly observed on the screen clearly and concisely.",
+                    systemInstruction = "You are Kavya, an expert AI visual screen analyst. Describe only what is truly observed in the attached screenshot image clearly and accurately.",
                     imageBytes = jpegBytes,
                     requiresVision = true
                 )
 
                 when (aiRes) {
                     is com.example.orchestrator.ProviderInvocationResult.Failure -> {
-                        publishExplanation(
-                            title = "AI Authorization Required",
-                            summary = aiRes.message,
-                            bulletPoints = listOf("Error code: ${aiRes.code}", "Configure an online vision-capable AI provider in API Hub."),
-                            confidence = 0.0f
+                        JarvisOverlayController.showInlineOverlayError(
+                            title = "AI Visual Analysis Failed",
+                            message = aiRes.message
                         )
-                        JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+                        com.example.services.ScreenShareManager.setUnifiedStage(
+                            com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Error(aiRes.message)
+                        )
+                        externalSpeakCallback?.invoke(aiRes.message)
                     }
                     is com.example.orchestrator.ProviderInvocationResult.Success -> {
                         val summary = aiRes.text.trim()
@@ -264,27 +362,77 @@ object JarvisGuidanceEngine {
                             .map { it.trim().trimStart('•', '-', '*') }
                             .filter { it.length > 6 }
                             .take(4)
-                            .ifEmpty { listOf("Analyzed by ${aiRes.providerId} (${aiRes.modelId})") }
-                        publishExplanation(
-                            title = "AI Screen Analysis",
-                            summary = summary.take(220),
-                            bulletPoints = bullets,
-                            details = summary,
-                            confidence = 0.95f
-                        )
+                            .ifEmpty { listOf("Analyzed by ${aiRes.providerId} (${aiRes.modelId}) • ${resolvedLevel.title}") }
+
+                        val cardTitle = when (resolvedLevel) {
+                            ScreenSharePresentationLevel.BASIC -> "Basic Screen Summary"
+                            ScreenSharePresentationLevel.STANDARD -> "Screen Explanation"
+                            ScreenSharePresentationLevel.ADVANCED -> "Advanced Screen Analysis"
+                        }
+
+                        // Highlight interactive targets if step-by-step guidance was requested
+                        if (isStepByStepRequest && initialMap.elements.isNotEmpty()) {
+                            val interactiveTargets = initialMap.elements.filter { it.isClickable && it.bounds.width() > 0 && it.bounds.height() > 0 }.take(4)
+                            if (interactiveTargets.isNotEmpty()) {
+                                val instructions = interactiveTargets.mapIndexed { idx, el ->
+                                    VisualInstruction(
+                                        type = VisualInstructionType.HIGHLIGHT_BOX,
+                                        bounds = el.bounds,
+                                        clickPoint = Pair(el.bounds.centerX(), el.bounds.centerY()),
+                                        label = "Step ${idx + 1}: ${el.displayLabel.take(36)}",
+                                        text = bullets.getOrElse(idx) { "Tap ${el.displayLabel}" }
+                                    )
+                                }
+                                val overlayCard = VisualCardData(
+                                    type = VisualCardType.SUMMARY,
+                                    title = cardTitle,
+                                    summary = summary.take(240),
+                                    bullets = bullets,
+                                    detailText = summary,
+                                    confidence = 0.95f
+                                )
+                                val plan = JarvisVisualPlan(
+                                    userQuery = query,
+                                    mode = JarvisMode.SHOWS_YOU_HOW,
+                                    title = cardTitle,
+                                    instructions = instructions,
+                                    cards = listOf(overlayCard),
+                                    targetPackage = initialMap.packageName
+                                )
+                                JarvisOverlayController.presentVisualPlan(plan, autoAdvanceSteps = false)
+                            } else {
+                                publishExplanation(
+                                    title = cardTitle,
+                                    summary = summary.take(240),
+                                    bulletPoints = bullets,
+                                    details = summary,
+                                    confidence = 0.95f
+                                )
+                            }
+                        } else {
+                            publishExplanation(
+                                title = cardTitle,
+                                summary = summary.take(240),
+                                bulletPoints = bullets,
+                                details = summary,
+                                confidence = 0.95f
+                            )
+                        }
+
                         com.example.services.ScreenShareManager.saveSnapshotToVault(
-                            title = "Screen Explanation",
+                            title = cardTitle,
                             summary = summary,
                             appPackage = initialMap.packageName
                         )
-                        JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+                        externalSpeakCallback?.invoke(summary.take(320))
                     }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
                 Log.w(TAG, "explainActiveScreenAsync failed: ${e.message}")
-                JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+                val errMsg = "Screen explanation encountered an error: ${e.localizedMessage ?: "Unknown error"}"
+                JarvisOverlayController.showInlineOverlayError("Screen Analysis Error", errMsg)
             }
         }
     }

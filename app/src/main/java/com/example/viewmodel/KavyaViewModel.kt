@@ -1045,54 +1045,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectCandidateApp(app: InstalledApp, originalQuery: String) {
-        val chatId = _currentChatId.value ?: return
-        val userMsgId = UUID.randomUUID().toString()
-        val selectionText = "Open ${app.appName}"
-        
-        // Save preference as user alias
+        // Save preference as user alias, then route through the central AI authority pipeline (Phase 10)
         commandRouter.appResolver.saveUserAlias(originalQuery, app.packageName)
-
-        val userMsgEntity = MessageEntity(
-            id = userMsgId,
-            chatId = chatId,
-            text = selectionText,
-            isUser = true,
-            timestamp = System.currentTimeMillis()
-        )
-        _messages.value = _messages.value + ChatMessage(id = userMsgId, text = selectionText, isUser = true)
-
-        viewModelScope.launch {
-            chatDao.insertMessage(userMsgEntity)
-            val execResult = commandRouter.launchSpecificApp(app)
-            _latestDiagnostic.value = execResult.diagnostic
-
-            val modelMsgId = UUID.randomUUID().toString()
-            val modelMsg = ChatMessage(
-                id = modelMsgId,
-                text = execResult.output,
-                isUser = false,
-                diagnostic = execResult.diagnostic
-            )
-            _messages.value = _messages.value + modelMsg
-            chatDao.insertMessage(
-                MessageEntity(
-                    id = modelMsgId,
-                    chatId = chatId,
-                    text = execResult.output,
-                    isUser = false,
-                    timestamp = System.currentTimeMillis()
-                )
-            )
-
-            // Add to history
-            val historyItem = CommandHistoryItem(
-                command = "OPEN_APP:${app.appName}",
-                result = execResult.output,
-                timestamp = System.currentTimeMillis(),
-                diagnostic = execResult.diagnostic
-            )
-            _commandHistory.value = listOf(historyItem) + _commandHistory.value
-        }
+        sendMessage("Open ${app.appName}")
     }
     
     private fun processAgentLoop(
@@ -1136,6 +1091,66 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 var launchDiagnostic: AppLaunchDiagnostic? = null
                 var executionResultStr = ""
 
+                // 0. Voice-driven Screen Share & JARVIS Guidance Controls (Phases 5 & 12)
+                val lowerPromptTrimmed = prompt.lowercase(java.util.Locale.ROOT).trim()
+                val isStartScreenShare = lowerPromptTrimmed in listOf(
+                    "start screen share", "screen share start karo", "screen share chalu karo",
+                    "screen share on karo", "share my screen", "screen share karo", "स्क्रीन शेयर चालू करो"
+                )
+                val isStopScreenShare = lowerPromptTrimmed in listOf(
+                    "stop screen share", "screen share band karo", "screen share off karo",
+                    "screen share roko", "स्क्रीन शेयर बंद करो"
+                )
+                val isPauseScreenShare = lowerPromptTrimmed in listOf(
+                    "pause screen share", "screen share pause karo"
+                )
+                val isResumeScreenShare = lowerPromptTrimmed in listOf(
+                    "resume screen share", "screen share resume karo"
+                )
+
+                if (isStartScreenShare) {
+                    com.example.services.ScreenShareManager.requestMediaProjectionConsentFromCommand(getApplication())
+                    cleanResponse = if (com.example.services.ScreenShareManager.isScreenSharingActive) {
+                        "Screen Share and the Unified JARVIS Live Overlay are already active."
+                    } else {
+                        "Opening Screen Share permission prompt. Tap Start Now to share your screen with the Unified JARVIS Live Overlay."
+                    }
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (isStopScreenShare) {
+                    stopScreenShare()
+                    cleanResponse = "Screen Share has been stopped."
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (isPauseScreenShare) {
+                    com.example.services.ScreenShareManager.setUserPaused(true)
+                    cleanResponse = "Screen Share paused for privacy."
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else if (isResumeScreenShare) {
+                    com.example.services.ScreenShareManager.setUserPaused(false)
+                    cleanResponse = "Screen Share resumed."
+                    if (_autoSpeak.value) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                } else {
+                    val jarvisVoiceControlReply = com.example.visual.JarvisGuidanceEngine.handleVoiceGuidanceControlCommand(
+                        getApplication(),
+                        prompt
+                    )
+                    if (jarvisVoiceControlReply != null) {
+                        cleanResponse = jarvisVoiceControlReply
+                        alreadySpoken = true
+                    }
+                }
+
                 // 0a. Master Intent Gate (Requirements 1, 2, 3)
                 val gateDecision = com.example.agent.IntentGate.evaluate(prompt, commandRouter.appResolver)
                 val isConversationalTurn = gateDecision.category in listOf(
@@ -1149,7 +1164,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 com.example.agent.AutomationEventLogger.parsed("GateCategory=${gateDecision.category}, Target=${gateDecision.targetApp}, Reasoning=${gateDecision.reasoning}")
 
                 // Requirement 20: STOP and SLEEP Handling
-                if (gateDecision.category == com.example.agent.IntentCategory.STOP || gateDecision.category == com.example.agent.IntentCategory.CANCEL) {
+                if (cleanResponse.isNotBlank()) {
+                    // Already handled by Screen Share or JARVIS step control above
+                } else if (gateDecision.category == com.example.agent.IntentCategory.STOP || gateDecision.category == com.example.agent.IntentCategory.CANCEL) {
                     com.example.agent.TaskStateMachine.update(
                         phase = com.example.agent.TaskPhase.INTERRUPTED,
                         lastAction = "STOP",

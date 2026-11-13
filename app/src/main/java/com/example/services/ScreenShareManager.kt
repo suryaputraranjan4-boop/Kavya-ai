@@ -86,18 +86,50 @@ object ScreenShareManager {
     }
 
     /**
-     * Unified Jarvis + Screen Share Session State Machine (Upgrade 3).
+     * Unified Jarvis + Screen Share Session State Machine (Phase 13).
      * Shared across ScreenShareManager, ScreenCaptureService, VisionPipeline, and JarvisOverlayController.
      */
     sealed class UnifiedJarvisSessionState {
         object Idle : UnifiedJarvisSessionState()
+        data class PermissionRequired(val missingPermission: String = "MEDIA_PROJECTION") : UnifiedJarvisSessionState()
         object PermissionPending : UnifiedJarvisSessionState()
         object Starting : UnifiedJarvisSessionState()
+        data class WaitingForFirstFrame(val sessionId: String = "") : UnifiedJarvisSessionState()
         data class Active(val width: Int, val height: Int, val sessionId: String, val isLiveStream: Boolean = true) : UnifiedJarvisSessionState()
+        data class Analyzing(val query: String = "", val sessionId: String = "") : UnifiedJarvisSessionState()
+        data class Explaining(
+            val level: com.example.visual.ScreenSharePresentationLevel = com.example.visual.ScreenSharePresentationLevel.STANDARD,
+            val title: String = ""
+        ) : UnifiedJarvisSessionState()
+        data class Guiding(val stepNumber: Int = 1, val totalSteps: Int = 1, val title: String = "") : UnifiedJarvisSessionState()
+        data class Executing(val actionSummary: String = "") : UnifiedJarvisSessionState()
+        data class Verifying(val expectedOutcome: String = "") : UnifiedJarvisSessionState()
         data class Paused(val sessionId: String, val reason: String = "Content hidden or minimized") : UnifiedJarvisSessionState()
+        data class Recovering(val reason: String = "Recovering session") : UnifiedJarvisSessionState()
         object Stopping : UnifiedJarvisSessionState()
         object Stopped : UnifiedJarvisSessionState()
         data class Error(val reason: String, val isPermissionDenied: Boolean = false) : UnifiedJarvisSessionState()
+    }
+
+    @Volatile
+    private var appContextRef: Context? = null
+
+    private val _voiceConsentRequestTimestamp = MutableStateFlow(0L)
+    val voiceConsentRequestTimestamp: StateFlow<Long> = _voiceConsentRequestTimestamp.asStateFlow()
+
+    fun requestMediaProjectionConsentFromCommand(context: Context) {
+        appContextRef = context.applicationContext
+        if (isScreenSharingActive) {
+            com.example.visual.JarvisOverlayController.onScreenShareSessionActive(context.applicationContext)
+            return
+        }
+        _unifiedSessionState.value = UnifiedJarvisSessionState.PermissionRequired("MEDIA_PROJECTION")
+        _voiceConsentRequestTimestamp.value = System.currentTimeMillis()
+    }
+
+    fun setUnifiedStage(stage: UnifiedJarvisSessionState) {
+        _unifiedSessionState.value = stage
+        com.example.visual.JarvisOverlayController.syncWithUnifiedSessionState(stage)
     }
 
     private val _state = MutableStateFlow<ScreenShareState>(ScreenShareState.Idle)
@@ -140,29 +172,52 @@ object ScreenShareManager {
     private var heartbeatJob: Job? = null
 
     private fun updateState(newState: ScreenShareState) {
+        val previousState = _state.value
         _state.value = newState
-        val mappedUnified = when (newState) {
-            is ScreenShareState.Idle -> UnifiedJarvisSessionState.Idle
-            is ScreenShareState.RequestingPermission -> UnifiedJarvisSessionState.PermissionPending
-            is ScreenShareState.PermissionDenied -> UnifiedJarvisSessionState.Error(newState.reason, isPermissionDenied = true)
-            is ScreenShareState.StartingService, is ScreenShareState.WaitingForFirstFrame -> UnifiedJarvisSessionState.Starting
-            is ScreenShareState.Active -> UnifiedJarvisSessionState.Active(newState.width, newState.height, newState.sessionId)
-            is ScreenShareState.Paused -> {
-                val pauseReason = if (isUserPaused) {
-                    "Privacy Shield active (paused by user)"
-                } else {
-                    "Single-app capture hidden — select 'Entire Screen' to share Chrome"
+        val currentUnified = _unifiedSessionState.value
+        val preserveHighLevelStage = newState is ScreenShareState.Active && (
+            currentUnified is UnifiedJarvisSessionState.Analyzing ||
+            currentUnified is UnifiedJarvisSessionState.Explaining ||
+            currentUnified is UnifiedJarvisSessionState.Guiding ||
+            currentUnified is UnifiedJarvisSessionState.Executing ||
+            currentUnified is UnifiedJarvisSessionState.Verifying
+        )
+
+        val mappedUnified = if (preserveHighLevelStage) {
+            currentUnified
+        } else {
+            when (newState) {
+                is ScreenShareState.Idle -> UnifiedJarvisSessionState.Idle
+                is ScreenShareState.RequestingPermission -> UnifiedJarvisSessionState.PermissionPending
+                is ScreenShareState.PermissionDenied -> UnifiedJarvisSessionState.Error(newState.reason, isPermissionDenied = true)
+                is ScreenShareState.StartingService -> UnifiedJarvisSessionState.Starting
+                is ScreenShareState.WaitingForFirstFrame -> UnifiedJarvisSessionState.WaitingForFirstFrame(newState.sessionId)
+                is ScreenShareState.Active -> UnifiedJarvisSessionState.Active(newState.width, newState.height, newState.sessionId)
+                is ScreenShareState.Paused -> {
+                    val pauseReason = if (isUserPaused) {
+                        "Privacy Shield active (paused by user)"
+                    } else {
+                        "Single-app capture hidden — select 'Entire Screen' to share Chrome"
+                    }
+                    UnifiedJarvisSessionState.Paused(newState.sessionId, pauseReason)
                 }
-                UnifiedJarvisSessionState.Paused(newState.sessionId, pauseReason)
+                is ScreenShareState.StaleFrame -> UnifiedJarvisSessionState.Paused(newState.sessionId, "Waiting for fresh screen change")
+                is ScreenShareState.Stopping -> UnifiedJarvisSessionState.Stopping
+                is ScreenShareState.Stopped -> UnifiedJarvisSessionState.Stopped
+                is ScreenShareState.Error -> UnifiedJarvisSessionState.Error(newState.message)
             }
-            is ScreenShareState.StaleFrame -> UnifiedJarvisSessionState.Paused(newState.sessionId, "Waiting for fresh screen change")
-            is ScreenShareState.Stopping -> UnifiedJarvisSessionState.Stopping
-            is ScreenShareState.Stopped -> UnifiedJarvisSessionState.Stopped
-            is ScreenShareState.Error -> UnifiedJarvisSessionState.Error(newState.message)
         }
         _unifiedSessionState.value = mappedUnified
         syncTelemetryFromState(newState)
         com.example.visual.JarvisOverlayController.syncWithUnifiedSessionState(mappedUnified)
+
+        if (newState is ScreenShareState.Active && previousState !is ScreenShareState.Active) {
+            appContextRef?.let { ctx ->
+                com.example.visual.JarvisOverlayController.onScreenShareSessionActive(ctx)
+            }
+        } else if (newState is ScreenShareState.Stopped || newState is ScreenShareState.Idle) {
+            com.example.visual.JarvisOverlayController.onScreenShareSessionStopped()
+        }
     }
 
     private fun syncTelemetryFromState(currentState: ScreenShareState) {
@@ -234,6 +289,7 @@ object ScreenShareManager {
      * to Google Chrome or other apps does not kill or blank the MediaProjection stream.
      */
     fun createConsentIntent(context: Context): Intent? {
+        appContextRef = context.applicationContext
         val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
         if (manager == null) {
             updateState(ScreenShareState.Error("MediaProjectionManager is unavailable on this device.", isFatal = true))
@@ -264,6 +320,7 @@ object ScreenShareManager {
      * Enforces single-use MediaProjection consent token rules (Android 14+).
      */
     fun handleConsentResult(context: Context, resultCode: Int, data: Intent?) {
+        appContextRef = context.applicationContext
         if (resultCode != Activity.RESULT_OK || data == null) {
             Log.w(TAG, "Screen capture consent was denied or cancelled by user.")
             updateState(ScreenShareState.PermissionDenied("User denied screen recording permission."))
@@ -289,6 +346,7 @@ object ScreenShareManager {
 
         Log.i(TAG, "Screen capture consent granted. Starting Foreground Capture Service (sessionId=$newSessionId)...")
         updateState(ScreenShareState.StartingService)
+        com.example.visual.JarvisOverlayController.onScreenShareSessionActive(context.applicationContext)
 
         val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_START

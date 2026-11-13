@@ -103,6 +103,13 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val micAmplitude by com.example.voice.KavyaMicrophoneEngine.amplitude.collectAsState()
     val guidanceState by com.example.visual.JarvisGuidanceEngine.guidanceState.collectAsState()
     val activeExplanation by com.example.visual.JarvisGuidanceEngine.activeExplanation.collectAsState()
+    val voiceConsentTs by com.example.services.ScreenShareManager.voiceConsentRequestTimestamp.collectAsState()
+
+    LaunchedEffect(voiceConsentTs) {
+        if (voiceConsentTs > 0L && !com.example.services.ScreenShareManager.isScreenSharingActive) {
+            showScreenShareSheet = true
+        }
+    }
 
     // Option 1: Camera
     val cameraLauncher = rememberLauncherForActivityResult(
@@ -376,11 +383,23 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     }
                 }
 
-                // Right side: Visual Action Engine shortcut
-                IconButton(onClick = { navController.navigate("visual_action_control") }) {
+                // Right side: Unified JARVIS Live Overlay toggle
+                IconButton(
+                    onClick = {
+                        if (com.example.visual.JarvisOverlayController.hasOverlayPermission(context)) {
+                            if (com.example.visual.JarvisOverlayController.isOverlayRunning.value) {
+                                com.example.visual.JarvisOverlayController.toggleOrbExpanded()
+                            } else {
+                                com.example.visual.JarvisOverlayController.enableFloatingOrb(context)
+                            }
+                        } else {
+                            showScreenShareSheet = true
+                        }
+                    }
+                ) {
                     Icon(
                         imageVector = Icons.Default.TouchApp,
-                        contentDescription = "Visual Screen Control",
+                        contentDescription = "JARVIS Live Overlay",
                         tint = Color.White.copy(alpha = 0.85f),
                         modifier = Modifier.size(22.dp)
                     )

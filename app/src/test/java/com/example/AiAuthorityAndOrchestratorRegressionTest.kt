@@ -22,30 +22,7 @@ import com.example.ai.LocalAssistantEngine
 import com.example.ai.TaskRouter
 import com.example.ai.providers.AgentOrchestrator
 import com.example.ai.providers.AndroidAccessibilityToolProvider
-import com.example.orchestrator.ActionAuthorizationPermit
-import com.example.orchestrator.ActionExecutionFeedback
-import com.example.orchestrator.AiActionEnvelope
-import com.example.orchestrator.AiActionTarget
-import com.example.orchestrator.AiAuthorityGateway
-import com.example.orchestrator.AiCoordinates
-import com.example.orchestrator.CalibratedPoint
-import com.example.orchestrator.CeoAiOrchestrator
-import com.example.orchestrator.CoordinateSpace
-import com.example.orchestrator.DisplayGeometrySnapshot
-import com.example.orchestrator.OrchestrationLifecycleState
-import com.example.orchestrator.OrchestratorActionType
-import com.example.orchestrator.PermitConsumeResult
-import com.example.orchestrator.PermitDecision
-import com.example.orchestrator.PrecisionCalibrationResult
-import com.example.orchestrator.PrecisionController
-import com.example.orchestrator.ProviderInvocationRequest
-import com.example.orchestrator.ProviderInvocationResult
-import com.example.orchestrator.ProviderTransport
-import com.example.orchestrator.RestrictedActionExecutor
-import com.example.orchestrator.ScreenObservationCoordinator
-import com.example.orchestrator.ScreenObservationRecord
-import com.example.orchestrator.SelectedProviderClient
-import com.example.orchestrator.TaskOrchestrationStateMachine
+import com.example.orchestrator.*
 import com.example.proactive.ProactiveController
 import com.example.utils.ActionExecutor
 import com.example.utils.AppPreferences
@@ -1128,22 +1105,274 @@ class AiAuthorityAndOrchestratorRegressionTest {
         assertEquals(0, trackingExecutor.executedEnvelopes.size)
     }
 
-    // 32. Multi-Window / Split-Screen controller parses app pairs and rejects unpermitted execution
+    // 32. Multi-Window / Split-Screen controller parses app pairs and rejects unpermitted requests
     @Test
-    fun test32_multiWindowSplitScreenController_parsesAppsAndRejectsUnpermittedRequests() = runBlocking {
+    fun test32_multiWindowSplitScreenController_parsesAppsAndRejectsUnpermittedRequests(): Unit = runBlocking {
         val pair = MultiWindowController.parseSplitAppPair("Split screen me YouTube aur Chrome kholo")
         assertEquals("YouTube", pair.first)
         assertEquals("Chrome", pair.second)
 
         val fakePermit = ActionAuthorizationPermit(
             permitId = "forged_mw", taskId = "t", sessionId = "s", actionId = "a", sequence = 1,
-            actionType = OrchestratorActionType.SPLIT_SCREEN, screenshotReference = "scr",
-            providerId = "GEMINI", modelId = "gemini-3.5-flash-lite",
+            action = OrchestratorActionType.SPLIT_SCREEN, providerId = "GEMINI", screenshotReference = "scr",
             issuedAtMs = System.currentTimeMillis(), expiresAtMs = System.currentTimeMillis() + 5000L
         )
         val unpermittedResult = MultiWindowController.executeSplitScreen(app, fakePermit, "YouTube", "Chrome")
         assertFalse(unpermittedResult.success)
         assertEquals(OrchestratorVerificationStatus.FAILED, unpermittedResult.verificationStatus)
     }
+
+    // 33. Unified JARVIS Live Overlay lifecycle: persists across explanation and AI errors, single window root, safe expand/minimize/start/stop
+    @Test
+    fun test33_unifiedJarvisOverlayLifecycle_persistsAcrossExplanationAndAiErrorsWithoutDuplicateWindows() {
+        com.example.visual.JarvisOverlayController.reportOverlayAttached(true)
+        assertTrue(com.example.visual.JarvisOverlayController.isOverlayRunning.value)
+        assertEquals(1, com.example.visual.JarvisOverlayController.activeWindowCount.value)
+        assertEquals(
+            com.example.visual.OverlayAttachmentState.ATTACHED_VISIBLE,
+            com.example.visual.JarvisOverlayController.attachmentState.value
+        )
+
+        // Starting an explanation MUST NOT detach or hide the overlay or create duplicate windows
+        com.example.visual.JarvisGuidanceEngine.publishExplanation(
+            title = "Screen Explanation",
+            summary = "YouTube home feed is visible.",
+            bulletPoints = listOf("Search icon at top right", "Home tab selected"),
+            details = "Full explanation",
+            confidence = 0.95f
+        )
+        assertTrue(com.example.visual.JarvisOverlayController.isOverlayRunning.value)
+        assertEquals(1, com.example.visual.JarvisOverlayController.activeWindowCount.value)
+        assertEquals(com.example.visual.JarvisOrbState.EXPLAINING, com.example.visual.JarvisOverlayController.orbState.value)
+        assertNotNull(com.example.visual.JarvisOverlayController.activePlan.value)
+
+        // AI error during explanation MUST keep overlay alive and show inline error card
+        com.example.visual.JarvisOverlayController.showInlineOverlayError(
+            title = "AI Visual Analysis Failed",
+            message = "Temporary network timeout"
+        )
+        assertTrue(com.example.visual.JarvisOverlayController.isOverlayRunning.value)
+        assertEquals(1, com.example.visual.JarvisOverlayController.activeWindowCount.value)
+        assertEquals(com.example.visual.JarvisOrbState.ERROR, com.example.visual.JarvisOverlayController.orbState.value)
+        assertEquals("Temporary network timeout", com.example.visual.JarvisOverlayController.inlineStatusBanner.value)
+
+        // Expand and minimize cleanly
+        com.example.visual.JarvisOverlayController.setOrbExpanded(true)
+        assertTrue(com.example.visual.JarvisOverlayController.isOrbExpanded.value)
+        com.example.visual.JarvisOverlayController.setOrbMinimized(true)
+        assertTrue(com.example.visual.JarvisOverlayController.isOrbMinimized.value)
+        assertFalse(com.example.visual.JarvisOverlayController.isOrbExpanded.value)
+        com.example.visual.JarvisOverlayController.setOrbMinimized(false)
+        assertFalse(com.example.visual.JarvisOverlayController.isOrbMinimized.value)
+
+        // Repeated start/stop must never crash
+        com.example.visual.JarvisOverlayController.stopOverlay(app)
+        com.example.visual.JarvisOverlayController.stopOverlay(app)
+        assertFalse(com.example.visual.JarvisOverlayController.isOverlayRunning.value)
+        assertEquals(0, com.example.visual.JarvisOverlayController.activeWindowCount.value)
+    }
+
+    // 34. Screenshot validation: accepts valid non-empty bitmap and rejects null, recycled, invalid dimensions, or stale timestamps
+    @Test
+    fun test34_screenshotValidation_acceptsValidAndRejectsNullEmptyRecycledOrStaleBitmaps() {
+        val now = System.currentTimeMillis()
+        val validBmp = android.graphics.Bitmap.createBitmap(320, 640, android.graphics.Bitmap.Config.ARGB_8888)
+        val validRes = ScreenObservationCoordinator.validateScreenshotBitmap(
+            bitmap = validBmp,
+            capturedAtMs = now,
+            minTimestampMs = now - 500L,
+            source = "MEDIA_PROJECTION_FRESH"
+        )
+        assertTrue(validRes is ScreenObservationCoordinator.ScreenshotValidationResult.Valid)
+        val validBytes = (validRes as ScreenObservationCoordinator.ScreenshotValidationResult.Valid).imageBytes
+        assertTrue(validBytes.isNotEmpty())
+
+        // Null bitmap rejected
+        val nullRes = ScreenObservationCoordinator.validateScreenshotBitmap(null, now)
+        assertTrue(nullRes is ScreenObservationCoordinator.ScreenshotValidationResult.Invalid)
+        assertEquals("NULL_BITMAP", (nullRes as ScreenObservationCoordinator.ScreenshotValidationResult.Invalid).code)
+
+        // Stale timestamp rejected
+        val staleRes = ScreenObservationCoordinator.validateScreenshotBitmap(
+            bitmap = validBmp,
+            capturedAtMs = now - 10_000L,
+            minTimestampMs = now - 1_000L
+        )
+        assertTrue(staleRes is ScreenObservationCoordinator.ScreenshotValidationResult.Invalid)
+        assertEquals("STALE_TIMESTAMP", (staleRes as ScreenObservationCoordinator.ScreenshotValidationResult.Invalid).code)
+
+        // Empty pre-encoded bytes rejected
+        val emptyBytesRes = ScreenObservationCoordinator.validateScreenshotBitmap(
+            bitmap = validBmp,
+            capturedAtMs = now,
+            preEncodedBytes = ByteArray(0)
+        )
+        assertTrue(emptyBytesRes is ScreenObservationCoordinator.ScreenshotValidationResult.Invalid)
+        assertEquals("EMPTY_IMAGE_BYTES", (emptyBytesRes as ScreenObservationCoordinator.ScreenshotValidationResult.Invalid).code)
+
+        // Recycled bitmap rejected
+        validBmp.recycle()
+        val recycledRes = ScreenObservationCoordinator.validateScreenshotBitmap(validBmp, now)
+        assertTrue(recycledRes is ScreenObservationCoordinator.ScreenshotValidationResult.Invalid)
+        assertEquals("RECYCLED_BITMAP", (recycledRes as ScreenObservationCoordinator.ScreenshotValidationResult.Invalid).code)
+    }
+
+    // 35. Selected provider receives real non-empty screenshot image bytes for visual requests
+    @Test
+    fun test35_aiProviderImagePayload_transmitsNonEmptyImageBytesToSelectedProvider() = runBlocking {
+        var receivedBytes: ByteArray? = null
+        SelectedProviderClient.testTransport = object : ProviderTransport {
+            override suspend fun invoke(context: android.content.Context, request: ProviderInvocationRequest): ProviderInvocationResult {
+                receivedBytes = request.imageBytes
+                return ProviderInvocationResult.Success("Screen shows Settings.", request.providerId, request.modelId)
+            }
+        }
+        val sampleBytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0x01, 0x02)
+        val res = SelectedProviderClient.invokeSelectedProvider(
+            context = app,
+            prompt = "Explain this screen",
+            systemInstruction = "Visual analyst",
+            imageBytes = sampleBytes,
+            requiresVision = true
+        )
+        assertTrue(res is ProviderInvocationResult.Success)
+        assertNotNull(receivedBytes)
+        assertEquals(sampleBytes.size, receivedBytes!!.size)
+    }
+
+    // 36. Voice-first Basic / Standard / Advanced explanation level inference and step-by-step Next / Previous / Repeat controls
+    @Test
+    fun test36_voiceFirstExplanationLevelsAndStepGuidance_basicStandardAdvancedAndNextStop() {
+        // Default unspecified query -> STANDARD
+        assertEquals(
+            com.example.visual.ScreenSharePresentationLevel.STANDARD,
+            com.example.visual.JarvisGuidanceEngine.inferExplanationLevelFromQuery("Is screen ko samjhao")
+        )
+        assertEquals(
+            com.example.visual.ScreenSharePresentationLevel.STANDARD,
+            com.example.visual.JarvisGuidanceEngine.inferExplanationLevelFromQuery("Explain this screen")
+        )
+
+        // Basic / Simple -> BASIC
+        assertEquals(
+            com.example.visual.ScreenSharePresentationLevel.BASIC,
+            com.example.visual.JarvisGuidanceEngine.inferExplanationLevelFromQuery("Simple aasan bhasha me samjhao")
+        )
+        assertEquals(
+            com.example.visual.ScreenSharePresentationLevel.BASIC,
+            com.example.visual.JarvisGuidanceEngine.inferExplanationLevelFromQuery("Give me a quick basic explanation")
+        )
+
+        // Advanced / Detailed / Technical -> ADVANCED
+        assertEquals(
+            com.example.visual.ScreenSharePresentationLevel.ADVANCED,
+            com.example.visual.JarvisGuidanceEngine.inferExplanationLevelFromQuery("Explain this screen in advanced technical detail")
+        )
+        assertEquals(
+            com.example.visual.ScreenSharePresentationLevel.ADVANCED,
+            com.example.visual.JarvisGuidanceEngine.inferExplanationLevelFromQuery("Vistar se poori jankari do")
+        )
+
+        // Step-by-step voice navigation ("Next", "Previous", "Repeat")
+        val steps = listOf(
+            com.example.visual.ScreenAnnotationStep(
+                stepNumber = 1, totalSteps = 2, title = "Step 1", label = "Tap Settings",
+                spokenExplanation = "First tap the Settings icon.", bounds = android.graphics.Rect(10, 10, 100, 100)
+            ),
+            com.example.visual.ScreenAnnotationStep(
+                stepNumber = 2, totalSteps = 2, title = "Step 2", label = "Tap Wi-Fi",
+                spokenExplanation = "Next tap Wi-Fi to configure network.", bounds = android.graphics.Rect(10, 150, 100, 250)
+            )
+        )
+        com.example.visual.ExplanationStepController.startSequence(steps, autoAdvance = false)
+        assertEquals(1, com.example.visual.ExplanationStepController.currentStep.value?.stepNumber)
+
+        val nextReply = com.example.visual.JarvisGuidanceEngine.handleVoiceGuidanceControlCommand(app, "next")
+        assertNotNull(nextReply)
+        assertTrue(nextReply!!.contains("Step 2 of 2"))
+        assertEquals(2, com.example.visual.ExplanationStepController.currentStep.value?.stepNumber)
+
+        val prevReply = com.example.visual.JarvisGuidanceEngine.handleVoiceGuidanceControlCommand(app, "previous")
+        assertNotNull(prevReply)
+        assertTrue(prevReply!!.contains("Step 1 of 2"))
+        assertEquals(1, com.example.visual.ExplanationStepController.currentStep.value?.stepNumber)
+
+        val repeatReply = com.example.visual.JarvisGuidanceEngine.handleVoiceGuidanceControlCommand(app, "phir se batao")
+        assertNotNull(repeatReply)
+        assertTrue(repeatReply!!.contains("First tap the Settings icon"))
+
+        com.example.visual.ExplanationStepController.clear()
+    }
+
+    // 37. App Launch vs Browser Routing: "Open YouTube" launches installed app, "Open YouTube website" opens browser URL
+    @Test
+    fun test37_appLaunchVsBrowserRouting_openYouTubeLaunchesAppAndNotBrowserWebsite() {
+        val ytAppRoute = AppAndWebsiteRoutingClassifier.classifyTarget("Open YouTube")
+        assertTrue(ytAppRoute is AppAndWebsiteRoutingClassifier.RouteDecision.InstalledApp)
+        assertEquals(
+            "com.google.android.youtube",
+            (ytAppRoute as AppAndWebsiteRoutingClassifier.RouteDecision.InstalledApp).canonicalPackageHint
+        )
+
+        val ytHindiAppRoute = AppAndWebsiteRoutingClassifier.classifyTarget("YouTube kholo")
+        assertTrue(ytHindiAppRoute is AppAndWebsiteRoutingClassifier.RouteDecision.InstalledApp)
+        assertEquals(
+            "com.google.android.youtube",
+            (ytHindiAppRoute as AppAndWebsiteRoutingClassifier.RouteDecision.InstalledApp).canonicalPackageHint
+        )
+
+        val ytWebsiteRoute = AppAndWebsiteRoutingClassifier.classifyTarget("Open YouTube website")
+        assertTrue(ytWebsiteRoute is AppAndWebsiteRoutingClassifier.RouteDecision.BrowserWebsite)
+        assertEquals(
+            "https://www.youtube.com",
+            (ytWebsiteRoute as AppAndWebsiteRoutingClassifier.RouteDecision.BrowserWebsite).url
+        )
+
+        val webSearchRoute = AppAndWebsiteRoutingClassifier.classifyTarget("Search Android Compose on Google")
+        assertTrue(webSearchRoute is AppAndWebsiteRoutingClassifier.RouteDecision.WebSearch)
+        assertTrue((webSearchRoute as AppAndWebsiteRoutingClassifier.RouteDecision.WebSearch).searchQuery.contains("Android Compose"))
+
+        val chromeAppRoute = AppAndWebsiteRoutingClassifier.classifyTarget("Open Chrome")
+        assertTrue(chromeAppRoute is AppAndWebsiteRoutingClassifier.RouteDecision.InstalledApp)
+        assertEquals(
+            "com.android.chrome",
+            (chromeAppRoute as AppAndWebsiteRoutingClassifier.RouteDecision.InstalledApp).canonicalPackageHint
+        )
+
+        // Foreground package verification check
+        assertTrue(AppAndWebsiteRoutingClassifier.verifyForegroundPackageMatch("com.google.android.youtube", "com.google.android.youtube"))
+        assertFalse(AppAndWebsiteRoutingClassifier.verifyForegroundPackageMatch("com.google.android.youtube", "com.android.chrome"))
+    }
+
+    // 38. Screen Share lifecycle: consent denial, single-use token guard, real frame requirement for Active, and clean stop
+    @Test
+    fun test38_screenShareLifecycle_consentDenialSingleUseTokenAndRealFrameRequirement() {
+        com.example.services.ScreenShareManager.resetToIdle()
+        assertTrue(com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.Idle)
+
+        // 1. Denied consent transitions cleanly to PermissionDenied & Unified Error
+        com.example.services.ScreenShareManager.handleConsentResult(app, android.app.Activity.RESULT_CANCELED, null)
+        assertTrue(com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.PermissionDenied)
+        assertFalse(com.example.services.ScreenShareManager.isScreenSharingActive)
+
+        // 2. Granted consent transitions to StartingService -> WaitingForFirstFrame, and requires a real frame before becoming Active
+        val tokenIntent = android.content.Intent("test_media_projection_token")
+        com.example.services.ScreenShareManager.handleConsentResult(app, android.app.Activity.RESULT_OK, tokenIntent)
+        assertTrue(
+            com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.StartingService ||
+            com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.WaitingForFirstFrame ||
+            com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.Error
+        )
+
+        // Reusing the exact same single-use MediaProjection consent Intent token MUST be rejected
+        com.example.services.ScreenShareManager.handleConsentResult(app, android.app.Activity.RESULT_OK, tokenIntent)
+        assertTrue(com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.PermissionDenied)
+
+        // Clean stop resets state to Stopped
+        com.example.services.ScreenShareManager.stopScreenShare(app)
+        assertTrue(com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.Stopped)
+        assertFalse(com.example.services.ScreenShareManager.isScreenSharingActive)
+    }
 }
+
 
