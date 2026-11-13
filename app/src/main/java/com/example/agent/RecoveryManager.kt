@@ -225,6 +225,10 @@ class RecoveryManager(
         step: TaskStep,
         checkpointManager: CheckpointManager
     ): Boolean {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            Log.w(TAG, "Blocked RecoveryManager.executeRecovery without active AI authorization permit.")
+            return false
+        }
         val service = KavyaAccessibilityService.instance
         KavyaStateManager.updateTaskState(TaskState.RETRYING, "Recovery: ${strategy.description}")
         Log.i(TAG, "Executing recovery [${strategy.level}]: ${strategy.description}")

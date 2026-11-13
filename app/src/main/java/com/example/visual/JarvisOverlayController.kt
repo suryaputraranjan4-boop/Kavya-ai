@@ -308,6 +308,7 @@ object JarvisOverlayController {
      */
     fun emergencyStopJarvis(context: Context) {
         Log.w(TAG, "Emergency Stop Jarvis triggered!")
+        com.example.orchestrator.AiAuthorityGateway.emergencyStopAll("Floating orb emergency stop")
         AppPreferences.setFloatingOrbEnabled(context, false)
         ScreenAnnotationManager.clearAllAnnotations()
         stopOverlay(context)

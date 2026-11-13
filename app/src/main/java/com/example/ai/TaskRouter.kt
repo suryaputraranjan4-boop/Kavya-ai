@@ -71,7 +71,8 @@ object TaskRouter {
         val isPhoneAction = classification.category == ClassifiedTaskCategory.PHONE_CONTROL ||
             classification.category == ClassifiedTaskCategory.PHONE_AUTOMATION
 
-        // Device actions remain on Android Accessibility; do not route them to a cloud model.
+        // AI = THE ONLY BRAIN: Phone actions must be authorized and planned by the selected online AI provider.
+        // Never route device control to local/offline engines or raw Accessibility without AI authorization.
         if (isPhoneAction) {
             val requiresVision = classification.requiresVision ||
                 prompt.contains("game", ignoreCase = true) ||
@@ -79,12 +80,34 @@ object TaskRouter {
             val requiresConfirm = prompt.contains("delete", ignoreCase = true) ||
                 prompt.contains("format", ignoreCase = true) ||
                 prompt.contains("pay", ignoreCase = true)
+            val normalizedPreferred = preferredProvider.trim().uppercase(java.util.Locale.ROOT)
+            val selectedOnlineProvider = when {
+                isExplicitOffline -> "NONE"
+                normalizedPreferred == "OPENROUTER" && isOpenRouterConfigured -> "OPENROUTER"
+                normalizedPreferred == "HUGGINGFACE" && isHfConfigured -> "HUGGINGFACE"
+                (normalizedPreferred == "CUSTOM" || normalizedPreferred == "CUSTOM_API") &&
+                    AppPreferences.getCustomApis(context).any { it.isEnabled } -> "CUSTOM"
+                normalizedPreferred == "GEMINI" && isGeminiConfigured -> "GEMINI"
+                else -> "NONE"
+            }
+            val selectedModel = when (selectedOnlineProvider) {
+                "GEMINI" -> AppPreferences.getGeminiModel(context)
+                "OPENROUTER" -> AppPreferences.getOpenRouterModel(context)
+                "HUGGINGFACE" -> AppPreferences.getHuggingFaceModel(context)
+                "CUSTOM" -> AppPreferences.getCustomApis(context).firstOrNull { it.isEnabled }?.model
+                else -> null
+            }
             return TaskRoutingDecision(
                 taskType = if (classification.category == ClassifiedTaskCategory.PHONE_AUTOMATION) TaskType.PHONE_AUTOMATION else TaskType.PHONE_CONTROL,
-                provider = "ANDROID_ACCESSIBILITY",
+                provider = selectedOnlineProvider,
+                selectedModel = selectedModel,
                 requiresVision = requiresVision,
                 requiresConfirmation = requiresConfirm,
-                explanation = "Routing phone interaction to Android Accessibility Engine."
+                explanation = if (selectedOnlineProvider == "NONE") {
+                    "Device automation requires a valid online AI provider and key. Offline/local automation is disabled."
+                } else {
+                    "Routing device automation planning exclusively to selected AI provider ($selectedOnlineProvider)."
+                }
             )
         }
 
@@ -255,24 +278,9 @@ object TaskRouter {
                 selectedModel = HuggingFaceProvider.MODEL_TEXT_GEN,
                 explanation = "Routing prompt to Hugging Face text generation."
             )
-        } else if (
-            isGemmaConfigured &&
-            !hasImage &&
-            !classification.requiresVision &&
-            classification.category !in setOf(
-                ClassifiedTaskCategory.OCR,
-                ClassifiedTaskCategory.VISION
-            )
-        ) {
-            return TaskRoutingDecision(
-                taskType = TaskType.GENERAL_REASONING,
-                provider = "GEMMA_OFFLINE",
-                selectedModel = localModelFile?.name,
-                explanation = "Routing text-only task to the selected on-device local model."
-            )
         }
 
-        // Unconfigured fallback
+        // Unconfigured fallback: never silently drop to offline/local engines.
         return TaskRoutingDecision(
             taskType = TaskType.GENERAL_REASONING,
             provider = "NONE",

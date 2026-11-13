@@ -259,14 +259,16 @@ object AppPreferences {
     }
 
     fun setAiProvider(context: Context, provider: String) {
-        getPrefs(context).edit().putString(KEY_AI_PROVIDER, provider.trim().uppercase()).apply()
+        val normalized = provider.trim().uppercase(java.util.Locale.ROOT)
+        getPrefs(context).edit().putString(KEY_AI_PROVIDER, normalized).apply()
+        com.example.orchestrator.AiAuthorityGateway.onProviderSwitched(normalized)
     }
 
     fun getApiKeyForProvider(context: Context, providerName: String): String {
         return when (providerName.trim().uppercase(java.util.Locale.ROOT)) {
             "OPENROUTER" -> getOpenRouterApiKey(context)
             "HUGGINGFACE" -> getHuggingFaceApiKey(context)
-            "CUSTOM" -> getCustomApis(context).firstOrNull { it.isEnabled }?.apiKey.orEmpty()
+            "CUSTOM", "CUSTOM_API" -> getCustomApis(context).firstOrNull { it.isEnabled }?.apiKey.orEmpty()
             "GEMMA_OFFLINE", "PUBLIC_APIS" -> ""
             "GEMINI" -> getEffectiveApiKey(context)
             else -> getEffectiveApiKey(context)
@@ -429,7 +431,7 @@ object AppPreferences {
                 val key = getHuggingFaceApiKey(context).trim()
                 key.isNotBlank() && !isPlaceholderKey(key)
             }
-            "CUSTOM" -> {
+            "CUSTOM", "CUSTOM_API" -> {
                 getCustomApis(context).any { it.isEnabled && it.apiKey.isNotBlank() && !isPlaceholderKey(it.apiKey) }
             }
             "GEMMA_OFFLINE", "PUBLIC_APIS" -> true

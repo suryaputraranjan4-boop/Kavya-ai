@@ -62,8 +62,8 @@ data class IntentGateDecision(
 object IntentGate {
 
     private val STOP_KEYWORDS = listOf(
-        "stop", "kavya stop", "stop kavya", "ruko", "ruk jao", "रुको", "रुक जाओ",
-        "bas karo", "cancel", "band karo", "halt", "quit", "abort"
+        "stop", "kavya stop", "stop kavya", "ruko", "ruk jao", "ab ruk jao", "रुको", "रुक जाओ", "अब रुक जाओ",
+        "bas karo", "cancel", "band karo", "halt", "quit", "abort", "pause", "pause karo", "roko"
     )
 
     private val SLEEP_KEYWORDS = listOf(
@@ -168,9 +168,9 @@ object IntentGate {
         }
 
         // 6. QUESTION & EXPLANATION GUARDS
-        // "What is WhatsApp?", "Explain Spotify algorithms", "I was talking about WhatsApp yesterday"
+        // "What is WhatsApp?", "Instagram kya hai?", "Mujhe Instagram pasand hai", "I was talking about WhatsApp yesterday"
         val isExplicitQuestion = lower.endsWith("?") ||
-                QUESTION_WORDS.any { lower.startsWith("$it ") || lower.startsWith("$it?") }
+                QUESTION_WORDS.any { lower.startsWith("$it ") || lower.startsWith("$it?") || lower.contains(" $it ") || lower.endsWith(" $it") }
         val isExplicitExplanation = EXPLANATION_WORDS.any { lower.startsWith("$it ") || lower.contains(" $it") }
         val isConversationalMention = isConversationalAppMention(lower)
 
@@ -229,7 +229,8 @@ object IntentGate {
             "was talking about", "talked about", "heard about", "told me about",
             "talking about", "yesterday", "last week", "kal maine", "baat kar raha tha",
             "baat ho rahi thi", "ke baare me suna", "kya hai", "what is", "kaise kaam karta hai",
-            "meaning of", "matlab kya hai", "kaisi app hai", "accha app hai"
+            "meaning of", "matlab kya hai", "kaisi app hai", "accha app hai",
+            "pasand hai", "pasand nahi", "i like ", "i love ", "mujhe ", "favorite app", "favourite app"
         )
         return mentionPhrases.any { lower.contains(it) }
     }

@@ -165,6 +165,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         accessibilityProvider = com.example.ai.providers.AndroidAccessibilityToolProvider(androidAgent)
     )
     val apiSystem = com.example.api.ApiSystem()
+    val ceoOrchestrator = com.example.orchestrator.CeoAiOrchestrator(application)
+    val orchestrationState: StateFlow<com.example.orchestrator.OrchestrationSnapshot> =
+        com.example.orchestrator.TaskOrchestrationStateMachine.snapshot
 
     private val recentAssistantResponses = mutableListOf<String>()
 
@@ -176,8 +179,30 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         return trimmed
     }
 
-    fun emergencyStop(reason: String = "User requested stop") {
+    fun pauseAutomation(reason: String = "Paused by user") {
+        ceoOrchestrator.pauseActiveTask(reason)
+        _agentActionStatus.value = "Paused: $reason"
+    }
+
+    fun resumeAutomation() {
+        ceoOrchestrator.resumePausedTask()
+        _agentActionStatus.value = "Resuming with fresh screen check..."
+    }
+
+    fun cancelAutomation(reason: String = "Cancelled by user") {
+        ceoOrchestrator.cancelActiveTask(reason)
         androidAgent.stopExecution(reason)
+        _pendingConfirmation.value?.onCancel?.invoke()
+        _pendingConfirmation.value = null
+        _isProcessing.value = false
+        _agentActionStatus.value = null
+    }
+
+    fun emergencyStop(reason: String = "User requested stop") {
+        ceoOrchestrator.emergencyStop(reason)
+        androidAgent.stopExecution(reason)
+        _pendingConfirmation.value?.onCancel?.invoke()
+        _pendingConfirmation.value = null
         com.example.visual.ScreenAnnotationManager.clearAllAnnotations()
         com.example.visual.JarvisGuidanceEngine.dismissExplanation()
         _isProcessing.value = false
@@ -282,20 +307,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        com.example.orchestrator.AiAuthorityGateway.invalidateAllOnStartup()
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 chatDao.sanitizeNoiseChatTitles()
                 chatDao.deleteNoiseMessages()
             } catch (_: Exception) {}
-            try {
-                schedulerEngine.executeDueSchedules { dueTask ->
-                    sendMessage(dueTask.promptOrAction)
-                }
-            } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-                Log.w(TAG, "Error executing due schedules (${e.javaClass.simpleName}).")
-            }
+            // NO USER COMMAND = NO AUTOMATION: do not autonomously execute due schedules on startup.
         }
     }
 
@@ -363,6 +381,30 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun requestUserConfirmation(
+        req: com.example.orchestrator.PendingConfirmationRequest
+    ): Boolean {
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        _pendingConfirmation.value = PendingConfirmation(
+            title = req.title,
+            description = "${req.reason}\n\nTarget: ${req.action.target.description.ifBlank { req.action.action.name }}",
+            actionType = com.example.agent.UniversalActionType.VERIFY,
+            onConfirm = {
+                if (!deferred.isCompleted) deferred.complete(true)
+            },
+            onCancel = {
+                if (!deferred.isCompleted) deferred.complete(false)
+            }
+        )
+        return try {
+            deferred.await()
+        } catch (cancelled: CancellationException) {
+            _pendingConfirmation.value = null
+            if (!deferred.isCompleted) deferred.complete(false)
+            throw cancelled
+        }
+    }
+
     private var messagesJob: kotlinx.coroutines.Job? = null
     // Keep the latest user command instead of silently dropping it while another turn is running.
     @Volatile private var queuedPrompt: String? = null
@@ -400,33 +442,9 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleProactiveSpeech(text: String?, reason: String) {
-        if (_isProcessing.value || _voiceState.value == VoiceState.SPEAKING) {
-            return
-        }
-        val chatId = _currentChatId.value ?: return
-        viewModelScope.launch {
-            val generatedText = if (text.isNullOrBlank()) {
-                generateDynamicProactiveSpeech(reason, chatId)
-            } else {
-                text
-            }
-            if (generatedText.isNullOrBlank()) return@launch
-
-            val msgId = UUID.randomUUID().toString()
-            val proactiveMsg = ChatMessage(id = msgId, text = generatedText, isUser = false)
-            _messages.value = _messages.value + proactiveMsg
-            chatDao.insertMessage(
-                MessageEntity(
-                    id = msgId,
-                    chatId = chatId,
-                    text = generatedText,
-                    isUser = false,
-                    timestamp = System.currentTimeMillis()
-                )
-            )
-            _latestKavyaCaption.value = generatedText
-            voiceEngine.processAndSpeak(generatedText, enqueue = false)
-        }
+        // NO USER COMMAND = NO AUTOMATION: proactive background triggers are disabled.
+        Log.d(TAG, "Ignored proactive trigger ($reason): explicit user command required.")
+        return
     }
 
     private suspend fun generateDynamicProactiveSpeech(reason: String, chatId: String): String? {
@@ -1158,9 +1176,7 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         alreadySpoken = true
                     }
                 } else if (gateDecision.category == com.example.agent.IntentCategory.SCHEDULE) {
-                    val skill = com.example.skills.SkillsRegistry.findSkillForIntent(gateDecision)
-                    val res = skill?.execute(gateDecision, getApplication())
-                    cleanResponse = res?.outputMessage ?: "Scheduled."
+                    cleanResponse = "Autonomous scheduled background automation is disabled under AI-only explicit command policy. Say or type a command whenever you want the selected AI to perform an action."
                     if (_autoSpeak.value) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
@@ -1185,255 +1201,58 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
                     }
-                } else if (gateDecision.category == com.example.agent.IntentCategory.UNKNOWN_OR_AMBIGUOUS && gateDecision.isAmbiguous) {
-                    isAmbiguous = true
-                    candidateApps = gateDecision.candidateApps
-                    cleanResponse = "Which app would you like to open? Found: " + candidateApps.joinToString(", ") { it.appName }
-                    if (_autoSpeak.value) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
-                    }
                 }
 
-                // 0b. Primary Source: Direct User Command Classification (only for explicit actions)
+                // 0b. CEO AI ORCHESTRATOR ROUTING (AI = ONLY BRAIN, ACCESSIBILITY = RESTRICTED EXECUTOR)
+                // All device actions, app opens, taps, types, scrolls, calls, messages, media, and multi-step commands
+                // MUST pass exclusively through CeoAiOrchestrator -> SelectedProviderClient -> AiAuthorityGateway -> ScreenObservation -> Verification.
                 val classified = if (!isConversationalTurn) {
                     UserCommandClassifier.classify(prompt, commandRouter.appResolver)
                 } else {
                     ClassifiedCommand(CommandCategory.CONVERSATION, rawPrompt = prompt)
                 }
 
-                if (!isConversationalTurn && cleanResponse.isBlank() && classified.isMultiStep && classified.steps.isNotEmpty()) {
-                    viewModelScope.launch(Dispatchers.IO) {
-                        durableTaskEngine.createAndPersistTask(prompt, gateDecision.category, gateDecision.steps)
-                    }
+                val isDeviceAutomationRequest = !isConversationalTurn && (
+                    gateDecision.category == com.example.agent.IntentCategory.ACTION ||
+                    gateDecision.category == com.example.agent.IntentCategory.MULTI_STEP_TASK ||
+                    gateDecision.category == com.example.agent.IntentCategory.UNKNOWN_OR_AMBIGUOUS ||
+                    classified.isMultiStep ||
+                    classified.category in listOf(
+                        CommandCategory.OPEN_APP,
+                        CommandCategory.SEARCH_IN_APP,
+                        CommandCategory.INTERACT_IN_APP,
+                        CommandCategory.PLAY_MEDIA,
+                        CommandCategory.CALL,
+                        CommandCategory.SEND_MESSAGE,
+                        CommandCategory.SYSTEM_ACTION
+                    ) ||
+                    isVisualInteractionIntent(prompt)
+                )
 
-                    val decompPlan = com.example.agent.UniversalTaskDecomposer.decompose(prompt)
-                    val taskPlan = if (decompPlan != null) {
-                        decompPlan
-                    } else {
-                        val appTarget = classified.targetApp ?: classified.steps.firstOrNull()?.targetApp ?: ""
-                        val steps = classified.steps.mapIndexed { idx, step ->
-                            val actionType = when (step.category) {
-                                CommandCategory.OPEN_APP -> com.example.agent.UniversalActionType.OPEN_APP
-                                CommandCategory.PLAY_MEDIA -> com.example.agent.UniversalActionType.PLAY
-                                CommandCategory.SEARCH_IN_APP -> com.example.agent.UniversalActionType.TYPE
-                                CommandCategory.SEND_MESSAGE -> if (appTarget.contains("WhatsApp", ignoreCase = true)) com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE else com.example.agent.UniversalActionType.SEND_MESSAGE
-                                CommandCategory.CALL -> if (appTarget.contains("WhatsApp", ignoreCase = true)) com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL else com.example.agent.UniversalActionType.MAKE_PHONE_CALL
-                                CommandCategory.INTERACT_IN_APP -> com.example.agent.UniversalActionType.TAP
-                                else -> com.example.agent.UniversalActionType.SYSTEM_CONTROL
-                            }
-                            com.example.agent.TaskStep(
-                                id = idx + 1,
-                                actionType = actionType,
-                                targetAppOrUrl = appTarget,
-                                param = step.query ?: step.param ?: "",
-                                actionDescription = "Execute ${step.category.name}"
-                            )
-                        }
-                        com.example.agent.TaskPlan(
-                            originalPrompt = prompt,
-                            targetAppName = appTarget,
-                            steps = steps,
-                            isMultiStep = true
-                        )
-                    }
-
-                    val outcome = androidAgent.executeTaskPlan(
-                        taskPlan,
-                        onSpeakProgress = { spokenAnnouncement ->
-                            _agentActionStatus.value = spokenAnnouncement
-                            if (_autoSpeak.value) {
-                                voiceEngine.processAndSpeak(spokenAnnouncement, enqueue = false)
-                                alreadySpoken = true
-                            }
+                if (cleanResponse.isBlank() && isDeviceAutomationRequest) {
+                    val outcome = ceoOrchestrator.runTask(
+                        userCommand = prompt,
+                        requiresScreenVision = true,
+                        onStatusUpdate = { status ->
+                            _agentActionStatus.value = status
+                        },
+                        onRequestConfirmation = { req ->
+                            requestUserConfirmation(req)
                         }
                     )
                     _agentActionStatus.value = null
-                    cleanResponse = if (outcome.success) {
-                        outcome.finalSpokenMessage.ifBlank { "Task completed successfully." }
-                    } else {
-                        outcome.finalSpokenMessage.ifBlank { "Task stopped: ${outcome.failureReason ?: "Execution incomplete"}" }
-                    }
-
-                    if (_autoSpeak.value && !alreadySpoken) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
-                    }
-                } else if (classified.category == CommandCategory.OPEN_APP && !classified.targetApp.isNullOrBlank()) {
-                    val appTarget = classified.targetApp
-                    val taskCtx = ActionEventBus.startNewTask(prompt, CommandCategory.OPEN_APP, appTarget)
-                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
-                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PLANNED, ActionEvent.TaskPlanned(taskCtx, 1))
-
-                    val resolution = commandRouter.appResolver.resolve(appTarget)
-                    if (resolution.confidence == com.example.utils.MatchConfidence.NONE) {
-                        val failMsg = "I couldn't find that app: '$appTarget'."
-                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "App not installed", failMsg))
-                        cleanResponse = failMsg
-                        launchDiagnostic = AppLaunchDiagnostic(
-                            requestedApp = appTarget,
-                            resolvedApp = "None",
-                            packageName = "None",
-                            launchIntent = "None",
-                            confidence = "NONE",
-                            foregroundBefore = screenInspector.getCurrentForegroundPackage(),
-                            foregroundAfter = "Unchanged",
-                            verification = "FAIL - App not found"
-                        )
-                    } else if (resolution.confidence == com.example.utils.MatchConfidence.AMBIGUOUS) {
-                        isAmbiguous = true
-                        candidateApps = resolution.candidateApps
-                        val disambiguateMsg = "Which app would you like to open? Found: ${candidateApps.joinToString(", ") { it.appName }}"
-                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.BLOCKED, ActionEvent.ActionBlocked(taskCtx, "Ambiguous app selection", disambiguateMsg))
-                        cleanResponse = disambiguateMsg
-                    } else {
-                        val matched = resolution.matchedApp!!
-                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.EXECUTING, ActionEvent.ActionStarted(taskCtx, "Launching ${matched.appName}"))
-                        val execResult = commandRouter.launchSpecificApp(matched)
-                        launchDiagnostic = execResult.diagnostic
-                        if (execResult.success) {
-                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, matched.packageName, execResult.output))
-                            cleanResponse = execResult.output
-                        } else {
-                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Launch failed", execResult.output))
-                            cleanResponse = execResult.output
-                        }
-                    }
-
-                    if (_autoSpeak.value) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
-                    }
-                } else if (classified.category == CommandCategory.SEARCH_IN_APP) {
-                    val appTarget = if (!classified.targetApp.isNullOrBlank()) {
-                        classified.targetApp!!
-                    } else {
-                        contextEngine.activeTargetAppName ?: screenInspector.getCurrentForegroundPackage()
-                    }
-                    val query = classified.query ?: ""
-                    if (appTarget.isBlank()) {
-                        cleanResponse = "Kis app me search karna hai?"
-                        if (_autoSpeak.value) {
-                            voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                            alreadySpoken = true
-                        }
-                    } else if (query.isBlank()) {
-                        cleanResponse = "$appTarget me kya search karna hai?"
-                        if (_autoSpeak.value) {
-                            voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                            alreadySpoken = true
-                        }
-                    } else {
-                        val taskCtx = ActionEventBus.startNewTask(prompt, CommandCategory.SEARCH_IN_APP, appTarget, query)
-                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
-                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.EXECUTING, ActionEvent.ActionStarted(taskCtx, "Searching $query on $appTarget"))
-                        val searchResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, query, "SEARCH"))
-                        launchDiagnostic = searchResult.diagnostic
-                        if (searchResult.success) {
-                            val isHindi = prompt.any { it in '\u0900'..'\u097F' } || prompt.lowercase(java.util.Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("dhoondo") || it.contains("search") }
-                            cleanResponse = if (isHindi) "$appTarget par $query search kar diya hai." else "Searched for '$query' on $appTarget."
-                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
-                        } else {
-                            cleanResponse = searchResult.output
-                            ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Search failed", cleanResponse))
-                        }
-                        if (_autoSpeak.value) {
-                            voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                            alreadySpoken = true
-                        }
-                    }
-                } else if (classified.category == CommandCategory.INTERACT_IN_APP) {
-                    val lowerP = prompt.lowercase(java.util.Locale.ROOT)
-                    if (lowerP.contains("first") || lowerP.contains("पहला") || lowerP.contains("pahla")) {
-                        com.example.agent.TaskStateMachine.update(
-                            phase = com.example.agent.TaskPhase.ACTION_EXECUTION,
-                            currentStep = "Tap first result"
-                        )
-                        com.example.agent.AutomationEventLogger.action("Tapping first result on active screen")
-                        val tapRes = com.example.agent.TapEngine.tapFirstResult(
-                            com.example.services.KavyaAccessibilityService.instance,
-                            screenInspector.getCurrentForegroundPackage()
-                        )
-                        cleanResponse = tapRes.diagnostic
-                        com.example.agent.TaskStateMachine.update(
-                            phase = if (tapRes.success) com.example.agent.TaskPhase.COMPLETED else com.example.agent.TaskPhase.FAILED,
-                            actionResult = tapRes.diagnostic
-                        )
-                        com.example.agent.AutomationEventLogger.verify(tapRes.diagnostic)
-                        if (_autoSpeak.value) {
-                            voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                            alreadySpoken = true
-                        }
-                    }
-                } else if (classified.category == CommandCategory.PLAY_MEDIA && !classified.targetApp.isNullOrBlank()) {
-                    val appTarget = classified.targetApp
-                    val query = classified.query ?: ""
-                    val taskCtx = ActionEventBus.startNewTask(prompt, CommandCategory.PLAY_MEDIA, appTarget, query)
-                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.PARSED, ActionEvent.TaskParsed(taskCtx))
-                    ActionEventBus.transitionTo(taskCtx, ExecutionPhase.EXECUTING, ActionEvent.ActionStarted(taskCtx, "Playing $query on $appTarget"))
-                    val mediaResult = commandRouter.handleCompoundCommand(com.example.utils.AppResolver.CompoundCommand(appTarget, query, "PLAY"))
-                    launchDiagnostic = mediaResult.diagnostic
-                    if (mediaResult.success) {
-                        val isHindi = prompt.any { it in '\u0900'..'\u097F' }
-                        cleanResponse = if (isHindi) "$appTarget par $query play kar diya hai." else "Playing '$query' on $appTarget."
-                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.SUCCESS, ActionEvent.ActionSuccess(taskCtx, appTarget, cleanResponse))
-                    } else {
-                        cleanResponse = mediaResult.output
-                        ActionEventBus.transitionTo(taskCtx, ExecutionPhase.FAILED, ActionEvent.ActionFailed(taskCtx, "Play failed", cleanResponse))
-                    }
-                    if (_autoSpeak.value) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
-                    }
-                } else if (classified.category == CommandCategory.CALL) {
-                    val target = classified.actionParam ?: ""
-                    val isWhatsApp = prompt.contains("WhatsApp", ignoreCase = true) || prompt.contains("व्हाट्सएप", ignoreCase = true)
-                    val stepObj = com.example.agent.TaskStep(
-                        id = 1,
-                        actionType = if (isWhatsApp) com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL else com.example.agent.UniversalActionType.MAKE_PHONE_CALL,
-                        targetAppOrUrl = if (isWhatsApp) "WhatsApp" else "Phone",
-                        param = target
+                    cleanResponse = outcome.finalMessage
+                    aType = if (outcome.success) "CEO_ORCHESTRATED" else outcome.failureCode
+                    aParam = "steps=${outcome.stepsExecuted}, verified=${outcome.verifiedSteps}"
+                    val historyItem = CommandHistoryItem(
+                        command = prompt.take(80),
+                        result = cleanResponse,
+                        timestamp = System.currentTimeMillis()
                     )
-                    val execRes = androidAgent.executeAtomicStep(stepObj)
-                    cleanResponse = execRes.output
-                    if (_autoSpeak.value) {
+                    _commandHistory.value = listOf(historyItem) + _commandHistory.value
+                    if (_autoSpeak.value && cleanResponse.isNotBlank() && !alreadySpoken) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
-                    }
-                } else if (classified.category == CommandCategory.SEND_MESSAGE) {
-                    val rawParam = classified.actionParam ?: ""
-                    val isWhatsApp = prompt.contains("WhatsApp", ignoreCase = true) || prompt.contains("व्हाट्सएप", ignoreCase = true)
-                    val stepObj = com.example.agent.TaskStep(
-                        id = 1,
-                        actionType = if (isWhatsApp) com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE else com.example.agent.UniversalActionType.SEND_SMS,
-                        targetAppOrUrl = if (isWhatsApp) "WhatsApp" else "Messages",
-                        param = rawParam
-                    )
-                    val execRes = androidAgent.executeAtomicStep(stepObj)
-                    cleanResponse = execRes.output
-                    if (_autoSpeak.value) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
-                    }
-                } else if (classified.category == CommandCategory.SYSTEM_ACTION) {
-                    val sysResult = commandRouter.executeDirectUserCommand(prompt)
-                    cleanResponse = sysResult.output
-                    launchDiagnostic = sysResult.diagnostic
-                    if (_autoSpeak.value) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
-                    }
-                }
-
-                // 0b. Fast Local Assistant Engine (instant math, time, date, common greetings)
-                if (cleanResponse.isBlank()) {
-                    val fastLocal = com.example.ai.LocalAssistantEngine.handleFastQuery(prompt)
-                    if (fastLocal != null) {
-                        cleanResponse = fastLocal
-                        if (_autoSpeak.value) {
-                            voiceEngine.processAndSpeak(cleanResponse, enqueue = true)
-                            alreadySpoken = true
-                        }
                     }
                 }
 
@@ -1508,57 +1327,14 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                // 3b. JARVIS Screen Intelligence & Visual Guidance check
+                // 3b. Screen Understanding / Visual Q&A goes ONLY through online AI via JarvisGuidanceEngine / AI stream
                 val jarvisMode = com.example.visual.JarvisIntelligencePlanner.classifyMode(prompt)
                 var isJarvisScreenExplain = false
                 if (!isFastChat && cleanResponse.isBlank() && (jarvisMode == com.example.visual.JarvisMode.EXPLAINS_ANYTHING || jarvisMode == com.example.visual.JarvisMode.SHOWS_YOU_HOW)) {
-                    // Attempt Android 11+ Accessibility takeScreenshot fallback if MediaProjection frame is not active yet
-                    if (com.example.visual.VisionPipeline.getLatestFrame() == null &&
-                        com.example.services.KavyaAccessibilityService.instance != null
-                    ) {
-                        val fallbackShot = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            com.example.visual.ScreenshotManager(getApplication()).captureScreen()
-                        }
-                        if (fallbackShot != null) {
-                            com.example.visual.VisionPipeline.onNewFrame(fallbackShot)
-                        }
-                    }
-
-                    com.example.visual.JarvisGuidanceEngine.executeJarvisQuery(prompt)
-                    val activeExp = com.example.visual.JarvisGuidanceEngine.activeExplanation.value
-                    val guidance = com.example.visual.JarvisGuidanceEngine.guidanceState.value
-                    if (jarvisMode == com.example.visual.JarvisMode.SHOWS_YOU_HOW && guidance.isActive) {
-                        cleanResponse = guidance.instructionText
-                    } else if (jarvisMode == com.example.visual.JarvisMode.EXPLAINS_ANYTHING) {
-                        if (activeExp != null && activeExp.confidenceScore <= 0.0f) {
-                            // Neither Screen Share nor Accessibility is active: report honestly
-                            cleanResponse = "${activeExp.title}: ${activeExp.oneLineSummary}\n${activeExp.bulletChips.joinToString("\n• ", prefix = "• ")}"
-                        } else {
-                            // Real screen perception is active: let Step 5 multimodal LLM analyze the live frame + UI tree!
-                            isJarvisScreenExplain = true
-                            com.example.visual.JarvisGuidanceEngine.explainActiveScreenAsync(getApplication(), prompt)
-                        }
-                    }
-                    if (cleanResponse.isNotBlank() && _autoSpeak.value && !alreadySpoken) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
-                    }
-                }
-
-                // 4. Kavya Visual Action Engine execution check
-                if (!isFastChat && cleanResponse.isBlank() && isVisualInteractionIntent(prompt)) {
-                    val visualOutcome = androidAgent.executeVisualGoal(prompt) { milestoneText ->
-                        _agentActionStatus.value = milestoneText
-                        _latestKavyaCaption.value = milestoneText
-                        if (_autoSpeak.value) {
-                            voiceEngine.processAndSpeak(milestoneText, enqueue = false)
-                        }
-                    }
-                    _agentActionStatus.value = null
-                    cleanResponse = visualOutcome.message
-                    if (_autoSpeak.value && !alreadySpoken) {
-                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
-                        alreadySpoken = true
+                    isJarvisScreenExplain = true
+                    val freshObs = com.example.orchestrator.ScreenObservationCoordinator.captureFreshObservation(getApplication())
+                    if (freshObs != null) {
+                        com.example.visual.JarvisGuidanceEngine.explainActiveScreenAsync(getApplication(), prompt)
                     }
                 }
 
@@ -1683,31 +1459,19 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    // If still blank, check fast offline greeting/command first; otherwise surface the exact classified AI error
+                    // If blank, surface the exact classified AI error — NEVER invent local plans or silent offline fallbacks
                     if (fullResponse.isBlank()) {
-                        val fastOffline = com.example.ai.LocalAssistantEngine.handleFastQuery(prompt)
-                        if (fastOffline != null) {
-                            fullResponse = fastOffline
-                        } else if (streamErrorChunk.isNotBlank()) {
-                            fullResponse = streamErrorChunk
+                        fullResponse = if (streamErrorChunk.isNotBlank()) {
+                            streamErrorChunk
                         } else {
-                            val localCmd = com.example.ai.LocalAssistantEngine.resolveLocalCommandOrFallback(prompt, memoryBlock)
-                            fullResponse = localCmd.ifBlank {
-                                com.example.ai.AiErrorClassifier.lastClassifiedError?.toErrorPrefixString()
-                                    ?: com.example.ai.AiClassifiedError(com.example.ai.AiErrorCategory.SERVICE_UNAVAILABLE).toErrorPrefixString()
-                            }
+                            com.example.ai.AiErrorClassifier.lastClassifiedError?.toErrorPrefixString()
+                                ?: com.example.ai.AiClassifiedError(com.example.ai.AiErrorCategory.SERVICE_UNAVAILABLE).toErrorPrefixString()
                         }
                     }
 
-                    // Parse structured actions (JSON schema or action tags)
-                    val structuredActions = if (fullResponse.startsWith("Error:")) {
-                        emptyList()
-                    } else {
-                        com.example.agent.StructuredActionParser.parseActions(fullResponse)
-                    }
                     val extractedClean = voiceEngine.cleanText(fullResponse)
-                    cleanResponse = if (extractedClean.isNotBlank()) extractedClean else cleanResponseBuilder.toString()
-                    if (isJarvisScreenExplain && cleanResponse.isNotBlank()) {
+                    cleanResponse = if (extractedClean.isNotBlank()) extractedClean else cleanResponseBuilder.toString().ifBlank { fullResponse }
+                    if (isJarvisScreenExplain && cleanResponse.isNotBlank() && !cleanResponse.startsWith("Error:")) {
                         val bulletLines = cleanResponse.lines()
                             .map { it.trim().trimStart('•', '-', '*') }
                             .filter { it.length > 8 }
@@ -1719,186 +1483,6 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                             details = cleanResponse,
                             confidence = 0.95f
                         )
-                    }
-                    
-                    if (structuredActions.isNotEmpty() && !isConversationalTurn) {
-                        val taskSteps = structuredActions.mapIndexed { index, action ->
-                            val mappedAction = when (action.action) {
-                                "OPEN_APP", "OPEN" -> com.example.agent.UniversalActionType.OPEN_APP
-                                "CLOSE_APP" -> com.example.agent.UniversalActionType.CLOSE_APP
-                                "SEARCH", "OPEN_AND_SEARCH", "SEARCH_WEB" -> com.example.agent.UniversalActionType.SEARCH
-                                "TAP", "UI_CLICK", "CLICK" -> com.example.agent.UniversalActionType.TAP
-                                "TYPE", "UI_TYPE", "TYPE_TEXT" -> com.example.agent.UniversalActionType.TYPE
-                                "MAKE_PHONE_CALL", "CALL" -> com.example.agent.UniversalActionType.MAKE_PHONE_CALL
-                                "MAKE_WHATSAPP_CALL" -> com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL
-                                "SEND_SMS", "SMS" -> com.example.agent.UniversalActionType.SEND_SMS
-                                "SEND_WHATSAPP_MESSAGE" -> com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE
-                                "SEND_EMAIL" -> com.example.agent.UniversalActionType.SEND_EMAIL
-                                "CREATE_FOLDER" -> com.example.agent.UniversalActionType.CREATE_FOLDER
-                                "CREATE_FILE" -> com.example.agent.UniversalActionType.CREATE_FILE
-                                "DELETE_FILE" -> com.example.agent.UniversalActionType.DELETE_FILE
-                                "SELECT_RESULT", "SELECT" -> com.example.agent.UniversalActionType.SELECT_RESULT
-                                "PLAY" -> com.example.agent.UniversalActionType.PLAY
-                                "SUBMIT" -> com.example.agent.UniversalActionType.SUBMIT
-                                "CLEAR", "CLEAR_TEXT" -> com.example.agent.UniversalActionType.CLEAR_TEXT
-                                "READ_SCREEN" -> com.example.agent.UniversalActionType.READ_SCREEN
-                                "SCREENSHOT" -> com.example.agent.UniversalActionType.SCREENSHOT
-                                "DOWNLOAD_FILE" -> com.example.agent.UniversalActionType.DOWNLOAD_FILE
-                                "SWITCH_APP" -> com.example.agent.UniversalActionType.SWITCH_APP
-                                "ANALYZE_IMAGE" -> com.example.agent.UniversalActionType.ANALYZE_IMAGE
-                                "RESEARCH_WEB" -> com.example.agent.UniversalActionType.RESEARCH_WEB
-                                "GENERATE_IMAGE" -> com.example.agent.UniversalActionType.GENERATE_IMAGE
-                                "SEMANTIC_SEARCH" -> com.example.agent.UniversalActionType.SEMANTIC_SEARCH
-                                "UI_SCROLL", "SCROLL" -> com.example.agent.UniversalActionType.SCROLL
-                                "SWIPE" -> com.example.agent.UniversalActionType.SWIPE
-                                "BACK" -> com.example.agent.UniversalActionType.BACK
-                                "HOME" -> com.example.agent.UniversalActionType.HOME
-                                "NAVIGATE" -> com.example.agent.UniversalActionType.NAVIGATE
-                                "SYSTEM_CONTROL" -> com.example.agent.UniversalActionType.SYSTEM_CONTROL
-                                "DONE" -> com.example.agent.UniversalActionType.VERIFY
-                                "GLOBAL_ACTION" -> {
-                                    val globalTarget = action.target.ifBlank { action.rawParam }.uppercase()
-                                    when (globalTarget) {
-                                        "BACK" -> com.example.agent.UniversalActionType.BACK
-                                        "HOME" -> com.example.agent.UniversalActionType.HOME
-                                        "RECENTS" -> com.example.agent.UniversalActionType.SWITCH_APP
-                                        else -> com.example.agent.UniversalActionType.SYSTEM_CONTROL
-                                    }
-                                }
-                                "SAVE_MEMORY" -> com.example.agent.UniversalActionType.SAVE_MEMORY
-                                "GOOGLE_MAPS_SEARCH", "MAPS_SEARCH" -> com.example.agent.UniversalActionType.GOOGLE_MAPS_SEARCH
-                                "MEMORY_TOOL", "MEMORY_SEARCH" -> com.example.agent.UniversalActionType.MEMORY_TOOL
-                                else -> com.example.agent.UniversalActionType.SYSTEM_CONTROL
-                            }
-
-                            val paramStr = if (action.query.isNotBlank()) action.query else if (action.text.isNotBlank()) action.text else if (action.selector.isNotBlank()) action.selector else action.rawParam.ifBlank { action.target }
-
-                            com.example.agent.TaskStep(
-                                id = index + 1,
-                                actionType = mappedAction,
-                                targetAppOrUrl = action.target,
-                                param = paramStr,
-                                recipient = action.recipient,
-                                messageText = action.message,
-                                ordinalIndex = action.index,
-                                spokenAnnouncement = action.spokenMessage
-                            )
-                        }
-
-                        val targetAppNameStr = structuredActions.firstOrNull()?.target ?: ""
-                        val targetEntityStr = structuredActions.firstOrNull()?.recipient ?: ""
-                        val relevantWorkflowMem = memoryEngine.findWorkflowMemory(targetAppNameStr, targetEntityStr, query = prompt)
-
-                        val taskPlan = com.example.agent.TaskPlan(
-                            originalPrompt = prompt,
-                            targetAppName = targetAppNameStr,
-                            steps = taskSteps,
-                            isMultiStep = taskSteps.size > 1,
-                            appliedMemory = relevantWorkflowMem,
-                            rememberedWorkflowUsed = relevantWorkflowMem != null
-                        )
-
-                        val sensitiveStep = taskSteps.firstOrNull {
-                            it.actionType in listOf(
-                                com.example.agent.UniversalActionType.CALL,
-                                com.example.agent.UniversalActionType.MAKE_PHONE_CALL,
-                                com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL,
-                                com.example.agent.UniversalActionType.SEND_SMS,
-                                com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE,
-                                com.example.agent.UniversalActionType.SEND_EMAIL,
-                                com.example.agent.UniversalActionType.DELETE_FILE
-                            )
-                        }
-
-                        val executePlan: suspend () -> Unit = {
-                            val outcome = androidAgent.executeTaskPlan(
-                                taskPlan,
-                                onSpeakProgress = { spokenAnnouncement ->
-                                    _agentActionStatus.value = spokenAnnouncement
-                                    if (_autoSpeak.value) {
-                                        voiceEngine.processAndSpeak(spokenAnnouncement, enqueue = false)
-                                        alreadySpoken = true
-                                    }
-                                }
-                            )
-                            _agentActionStatus.value = null
-                            
-                            if (!outcome.success && outcome.finalSpokenMessage.isNotBlank()) {
-                                cleanResponse = outcome.finalSpokenMessage
-                            } else if (outcome.success) {
-                                val hasDone = taskSteps.any { it.actionType == com.example.agent.UniversalActionType.VERIFY }
-                                if (!hasDone) {
-                                    shouldRecurse = true
-                                }
-                            }
-                            isAmbiguous = outcome.isAmbiguous
-                            candidateApps = outcome.candidateApps
-                            launchDiagnostic = outcome.diagnostics.lastOrNull()
-                            executionResultStr = outcome.finalSpokenMessage
-                            aType = "TASK_PLAN"
-                            aParam = taskPlan.targetAppName
-                            
-                            if (launchDiagnostic != null) {
-                                _latestDiagnostic.value = launchDiagnostic
-                            }
-                            
-                            val historyItem = CommandHistoryItem(
-                                command = "TASK_PLAN:${taskPlan.targetAppName}",
-                                result = executionResultStr,
-                                timestamp = System.currentTimeMillis(),
-                                diagnostic = launchDiagnostic
-                            )
-                            _commandHistory.value = listOf(historyItem) + _commandHistory.value
-                        }
-
-                        if (sensitiveStep != null) {
-                            val actionDesc = when (sensitiveStep.actionType) {
-                                com.example.agent.UniversalActionType.CALL,
-                                com.example.agent.UniversalActionType.MAKE_PHONE_CALL -> "Phone call to ${sensitiveStep.param.ifBlank { sensitiveStep.targetAppOrUrl }}"
-                                com.example.agent.UniversalActionType.MAKE_WHATSAPP_CALL -> "WhatsApp call to ${sensitiveStep.param.ifBlank { sensitiveStep.targetAppOrUrl }}"
-                                com.example.agent.UniversalActionType.SEND_SMS -> "Send SMS to ${sensitiveStep.recipient.ifBlank { sensitiveStep.param }}"
-                                com.example.agent.UniversalActionType.SEND_WHATSAPP_MESSAGE -> "Send WhatsApp message to ${sensitiveStep.recipient.ifBlank { sensitiveStep.param }}"
-                                com.example.agent.UniversalActionType.SEND_EMAIL -> "Send Email to ${sensitiveStep.recipient.ifBlank { sensitiveStep.param }}"
-                                com.example.agent.UniversalActionType.DELETE_FILE -> "Delete file ${sensitiveStep.param}"
-                                else -> "Sensitive operation: ${sensitiveStep.actionType.name}"
-                            }
-                            _pendingConfirmation.value = PendingConfirmation(
-                                title = "Security Confirmation",
-                                description = "Kavya is requesting permission to perform:\n$actionDesc\nDo you want to proceed?",
-                                actionType = sensitiveStep.actionType,
-                                onConfirm = executePlan,
-                                onCancel = {
-                                    _pendingConfirmation.value = null
-                                }
-                            )
-                        } else {
-                            executePlan()
-                        }
-                    } else if (!isConversationalTurn) {
-                        // Fallback check: Did taskPlanner detect a real automation intent?
-                        val relevantMems = memoryEngine.findRelevantTaskMemories(
-                            targetApp = null,
-                            targetEntity = null,
-                            action = null,
-                            prompt = prompt
-                        )
-                        val fallbackPlan = taskPlanner.createPlan(prompt, contextEngine, relevantMems)
-                        if (fallbackPlan != null && fallbackPlan.steps.isNotEmpty()) {
-                            val outcome = androidAgent.executeTaskPlan(
-                                fallbackPlan,
-                                onSpeakProgress = { spokenAnnouncement ->
-                                    _agentActionStatus.value = spokenAnnouncement
-                                    if (_autoSpeak.value) {
-                                        voiceEngine.processAndSpeak(spokenAnnouncement, enqueue = false)
-                                        alreadySpoken = true
-                                    }
-                                }
-                            )
-                            _agentActionStatus.value = null
-                            if (outcome.finalSpokenMessage.isNotBlank()) {
-                                cleanResponse = outcome.finalSpokenMessage
-                            }
-                        }
                     }
 
                     // Auto-speak the AI response if not already spoken during streaming

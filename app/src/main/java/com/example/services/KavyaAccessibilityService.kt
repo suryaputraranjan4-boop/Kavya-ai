@@ -523,6 +523,139 @@ class KavyaAccessibilityService : AccessibilityService() {
         return sb.toString().trim()
     }
 
+    private fun requireAuthorizedDispatch(actionName: String): Boolean {
+        val authorized = com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()
+        if (!authorized) {
+            Log.w(TAG, "SECURITY BLOCK: Rejected unpermitted Accessibility execution '$actionName'. No active AI Authority permit.")
+        }
+        return authorized
+    }
+
+    suspend fun performAuthorizedTap(
+        permit: com.example.orchestrator.ActionAuthorizationPermit,
+        x: Float,
+        y: Float
+    ): Boolean {
+        if (!com.example.orchestrator.AiAuthorityGateway.isInFlightPermitValid(permit)) {
+            Log.w(TAG, "Rejected performAuthorizedTap: invalid or expired permit ${permit.permitId}")
+            return false
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val path = android.graphics.Path().apply { moveTo(x, y) }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0L, 90L))
+            .build()
+        return dispatchGestureAndAwait(gesture)
+    }
+
+    /**
+     * Section 7: Multi-Signal Action Precision.
+     * Prefers stable resourceId -> semantic description / visible text -> revalidated node bounds
+     * before falling back to calibrated coordinates.
+     */
+    suspend fun performAuthorizedMultiSignalTap(
+        permit: com.example.orchestrator.ActionAuthorizationPermit,
+        selectorHint: String,
+        descriptionHint: String,
+        fallbackPoint: com.example.orchestrator.CalibratedPoint?
+    ): Pair<Boolean, String> {
+        if (!com.example.orchestrator.AiAuthorityGateway.isInFlightPermitValid(permit)) {
+            return false to "Invalid or expired AI authorization permit"
+        }
+        val root = safeGetRootInActiveWindow()
+        if (root != null) {
+            // 1. Try stable resource-id / selector match first
+            val bySelector = if (selectorHint.isNotBlank()) findNodeRecursively(root, selectorHint) else null
+            if (bySelector != null && clickNodeAndAwait(bySelector)) {
+                return true to "Clicked target via resourceId/selector '$selectorHint'"
+            }
+            // 2. Try semantic description / visible label match
+            val byDesc = if (descriptionHint.isNotBlank()) findNodeRecursively(root, descriptionHint) else null
+            if (byDesc != null && clickNodeAndAwait(byDesc)) {
+                return true to "Clicked target via semantic node '$descriptionHint'"
+            }
+        }
+        // 3. Fallback to calibrated screen coordinates
+        if (fallbackPoint != null) {
+            val ok = performAuthorizedTap(permit, fallbackPoint.xPx, fallbackPoint.yPx)
+            return ok to if (ok) {
+                "Tapped at calibrated coordinates (${fallbackPoint.xPx.toInt()}, ${fallbackPoint.yPx.toInt()})"
+            } else {
+                "Coordinate tap gesture failed"
+            }
+        }
+        return false to "Target '$descriptionHint' not found in UI hierarchy and no calibrated coordinates provided"
+    }
+
+    suspend fun performAuthorizedLongPress(
+        permit: com.example.orchestrator.ActionAuthorizationPermit,
+        x: Float,
+        y: Float,
+        durationMs: Long = 900L
+    ): Boolean {
+        if (!com.example.orchestrator.AiAuthorityGateway.isInFlightPermitValid(permit)) {
+            Log.w(TAG, "Rejected performAuthorizedLongPress: invalid or expired permit ${permit.permitId}")
+            return false
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val path = android.graphics.Path().apply { moveTo(x, y) }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0L, durationMs))
+            .build()
+        return dispatchGestureAndAwait(gesture)
+    }
+
+    suspend fun performAuthorizedSwipe(
+        permit: com.example.orchestrator.ActionAuthorizationPermit,
+        startX: Float,
+        startY: Float,
+        endX: Float,
+        endY: Float,
+        durationMs: Long = 320L
+    ): Boolean {
+        if (!com.example.orchestrator.AiAuthorityGateway.isInFlightPermitValid(permit)) {
+            Log.w(TAG, "Rejected performAuthorizedSwipe: invalid or expired permit ${permit.permitId}")
+            return false
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val path = android.graphics.Path().apply {
+            moveTo(startX, startY)
+            lineTo(endX, endY)
+        }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0L, durationMs))
+            .build()
+        return dispatchGestureAndAwait(gesture)
+    }
+
+    fun performAuthorizedType(
+        permit: com.example.orchestrator.ActionAuthorizationPermit,
+        textToType: String,
+        selectorHint: String = ""
+    ): Boolean {
+        if (!com.example.orchestrator.AiAuthorityGateway.isInFlightPermitValid(permit)) {
+            Log.w(TAG, "Rejected performAuthorizedType: invalid or expired permit ${permit.permitId}")
+            return false
+        }
+        val root = safeGetRootInActiveWindow() ?: return false
+        val targetNode = when {
+            selectorHint.isNotBlank() -> findNodeRecursively(root, selectorHint) ?: findFocusedEditableNode(root) ?: findSearchField(root)
+            else -> findFocusedEditableNode(root) ?: findSearchField(root)
+        }
+        return typeInNode(targetNode, textToType)
+    }
+
+    fun performAuthorizedGlobal(
+        permit: com.example.orchestrator.ActionAuthorizationPermit,
+        globalAction: Int
+    ): Boolean {
+        if (!com.example.orchestrator.AiAuthorityGateway.isInFlightPermitValid(permit)) {
+            Log.w(TAG, "Rejected performAuthorizedGlobal: invalid or expired permit ${permit.permitId}")
+            return false
+        }
+        return performGlobalAction(globalAction)
+    }
+
     /**
      * Dispatches a real Android accessibility gesture and waits for the system callback.
      * A true return means onCompleted was received, not merely that dispatchGesture accepted it.
@@ -531,6 +664,7 @@ class KavyaAccessibilityService : AccessibilityService() {
         gesture: android.accessibilityservice.GestureDescription,
         timeoutMs: Long = 5000L
     ): Boolean {
+        if (!requireAuthorizedDispatch("dispatchGestureAndAwait")) return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
             kotlinx.coroutines.withTimeoutOrNull(timeoutMs.coerceIn(250L, 10000L)) {
@@ -562,17 +696,22 @@ class KavyaAccessibilityService : AccessibilityService() {
      * Returns true when ACTION_CLICK is accepted or its fallback gesture completes.
      * This is dispatch acknowledgement, not proof that the app's visible state changed.
      */
-    suspend fun clickNodeAndAwait(node: AccessibilityNodeInfo?): Boolean =
-        performNodeActionAndAwait(node, AccessibilityNodeInfo.ACTION_CLICK, 80L)
+    suspend fun clickNodeAndAwait(node: AccessibilityNodeInfo?): Boolean {
+        if (!requireAuthorizedDispatch("clickNodeAndAwait")) return false
+        return performNodeActionAndAwait(node, AccessibilityNodeInfo.ACTION_CLICK, 80L)
+    }
 
-    suspend fun longClickNodeAndAwait(node: AccessibilityNodeInfo?): Boolean =
-        performNodeActionAndAwait(node, AccessibilityNodeInfo.ACTION_LONG_CLICK, 700L)
+    suspend fun longClickNodeAndAwait(node: AccessibilityNodeInfo?): Boolean {
+        if (!requireAuthorizedDispatch("longClickNodeAndAwait")) return false
+        return performNodeActionAndAwait(node, AccessibilityNodeInfo.ACTION_LONG_CLICK, 700L)
+    }
 
     private suspend fun performNodeActionAndAwait(
         node: AccessibilityNodeInfo?,
         action: Int,
         fallbackDurationMs: Long
     ): Boolean {
+        if (!requireAuthorizedDispatch("performNodeActionAndAwait")) return false
         if (node == null) return false
         var current: AccessibilityNodeInfo? = node
         var depth = 0
@@ -610,6 +749,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun clickByCoordinates(x: Float, y: Float): Boolean {
+        if (!requireAuthorizedDispatch("clickByCoordinates")) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val path = android.graphics.Path()
             path.moveTo(x, y)
@@ -622,6 +762,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun doubleClickByCoordinates(x: Float, y: Float): Boolean {
+        if (!requireAuthorizedDispatch("doubleClickByCoordinates")) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val path1 = android.graphics.Path().apply { moveTo(x, y) }
             val path2 = android.graphics.Path().apply { moveTo(x, y) }
@@ -635,6 +776,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun longClickByCoordinates(x: Float, y: Float, durationMs: Long = 1000L): Boolean {
+        if (!requireAuthorizedDispatch("longClickByCoordinates")) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val path = android.graphics.Path()
             path.moveTo(x, y)
@@ -647,6 +789,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun swipeGesture(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300L): Boolean {
+        if (!requireAuthorizedDispatch("swipeGesture")) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val path = android.graphics.Path().apply {
                 moveTo(startX, startY)
@@ -661,6 +804,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun clickNode(node: AccessibilityNodeInfo?): Boolean {
+        if (!requireAuthorizedDispatch("clickNode")) return false
         if (node == null) return false
         var current: AccessibilityNodeInfo? = node
         var depth = 0
@@ -694,6 +838,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun longClickNode(node: AccessibilityNodeInfo?): Boolean {
+        if (!requireAuthorizedDispatch("longClickNode")) return false
         if (node == null) return false
         var current: AccessibilityNodeInfo? = node
         var depth = 0
@@ -720,6 +865,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun typeInNode(node: AccessibilityNodeInfo?, textToType: String): Boolean {
+        if (!requireAuthorizedDispatch("typeInNode")) return false
         if (node == null) return false
         var current: AccessibilityNodeInfo? = node
         var typed = false
@@ -753,6 +899,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun clearNodeText(node: AccessibilityNodeInfo?): Boolean {
+        if (!requireAuthorizedDispatch("clearNodeText")) return false
         if (node == null) return false
         var current: AccessibilityNodeInfo? = node
         while (current != null) {
@@ -768,12 +915,14 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun clickNodeByText(text: String): Boolean {
+        if (!requireAuthorizedDispatch("clickNodeByText")) return false
         val root = safeGetRootInActiveWindow() ?: return false
         val targetNode = findNodeRecursively(root, text) ?: return false
         return clickNode(targetNode)
     }
 
     fun typeInNodeByText(textToFind: String, textToType: String): Boolean {
+        if (!requireAuthorizedDispatch("typeInNodeByText")) return false
         val root = safeGetRootInActiveWindow() ?: return false
         val targetNode = if (textToFind.isBlank() || textToFind.equals("search", true)) {
             findSearchField(root) ?: findNodeRecursively(root, "search")
@@ -784,6 +933,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun typeInFocusedNode(textToType: String): Boolean {
+        if (!requireAuthorizedDispatch("typeInFocusedNode")) return false
         val root = safeGetRootInActiveWindow() ?: return false
         val focused = findFocusedEditableNode(root)
         return typeInNode(focused, textToType)
@@ -833,6 +983,7 @@ class KavyaAccessibilityService : AccessibilityService() {
      * typing the query, and submitting.
      */
     suspend fun performAppSearch(query: String): Boolean {
+        if (!requireAuthorizedDispatch("performAppSearch")) return false
         var root = safeGetRootInActiveWindow()
         val currentPkg = getForegroundPackage().lowercase(Locale.ROOT)
         var targetField = findSearchField(root)
@@ -1195,6 +1346,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun scroll(direction: String): Boolean {
+        if (!requireAuthorizedDispatch("scroll")) return false
         val root = safeGetRootInActiveWindow() ?: return false
         val isForward = direction.equals("FORWARD", true) ||
                 direction.equals("DOWN", true) ||
@@ -1236,6 +1388,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun takeScreenshot(): Boolean {
+        if (!requireAuthorizedDispatch("takeScreenshot")) return false
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
         } else {
@@ -1244,6 +1397,7 @@ class KavyaAccessibilityService : AccessibilityService() {
     }
 
     fun performGlobal(action: Int): Boolean {
+        if (!requireAuthorizedDispatch("performGlobal")) return false
         return performGlobalAction(action)
     }
 }

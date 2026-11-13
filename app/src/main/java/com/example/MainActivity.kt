@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    com.example.orchestrator.AiAuthorityGateway.invalidateAllOnStartup()
     enableEdgeToEdge()
 
     requestAppPermissions()

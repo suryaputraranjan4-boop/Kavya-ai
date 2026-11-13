@@ -127,6 +127,12 @@ class CommandRouter(private val context: Context) {
         input: String,
         onBeforeExecute: (suspend (spokenAnnouncement: String) -> Unit)? = null
     ): CommandExecutionResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return CommandExecutionResult(
+                output = "Automation blocked: AI authorization permit is required before executing device commands.",
+                success = false
+            )
+        }
         val trimmed = input.trim()
         val lower = trimmed.lowercase(java.util.Locale.ROOT)
 
@@ -268,6 +274,12 @@ class CommandRouter(private val context: Context) {
         actionParam: String,
         onBeforeExecute: (suspend (spokenAnnouncement: String) -> Unit)? = null
     ): CommandExecutionResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return CommandExecutionResult(
+                output = "Automation blocked: AI authorization permit is required before executing '$actionType'.",
+                success = false
+            )
+        }
         com.example.state.KavyaStateManager.updateAction(tool = actionType, action = actionParam)
         return try {
             when (actionType) {
@@ -360,6 +372,12 @@ class CommandRouter(private val context: Context) {
     }
 
     suspend fun handleCompoundCommand(compound: AppResolver.CompoundCommand): CommandExecutionResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return CommandExecutionResult(
+                output = "Automation blocked: AI authorization permit is required before executing compound commands.",
+                success = false
+            )
+        }
         val appName = compound.appName.trim()
         val query = compound.searchQuery.trim()
         val lowerApp = appName.lowercase(Locale.ROOT)

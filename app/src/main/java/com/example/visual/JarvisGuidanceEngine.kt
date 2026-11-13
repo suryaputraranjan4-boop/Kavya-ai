@@ -169,18 +169,21 @@ object JarvisGuidanceEngine {
     }
 
     /**
-     * Universal synchronous entry point: executes a user's natural language request through JARVIS Intelligence.
+     * Synchronous entry point no longer fabricates local/offline plans without AI authorization.
      */
     fun executeJarvisQuery(query: String) {
-        val screenMap = SemanticScreenAnalyzer.analyzeScreen()
-        val plan = JarvisIntelligencePlanner.createPlan(query, screenMap)
-        applyPlanToState(plan)
+        publishExplanation(
+            title = "AI Screen Analysis",
+            summary = "Live screen analysis requires active AI provider authorization.",
+            bulletPoints = listOf("Use Screen Share or ask with an active online AI provider configured."),
+            confidence = 0.0f
+        )
     }
 
     /**
      * Asynchronous full-pipeline screen explanation triggered from the Floating Orb, Panel, or Voice.
-     * Combines Accessibility hierarchy with live MediaProjection or Accessibility screenshot fallback
-     * and Gemini Vision multimodal bounding-box analysis on Dispatchers.IO.
+     * Routes strictly through the user's selected online AI provider (Gemini, OpenRouter, HuggingFace, Custom).
+     * Never presents synthetic local plans when API authorization fails.
      */
     fun explainActiveScreenAsync(context: Context, query: String = "Explain this screen") {
         activeAnalysisJob?.cancel()
@@ -189,12 +192,9 @@ object JarvisGuidanceEngine {
 
         activeAnalysisJob = engineScope.launch {
             try {
-                // 1. Fast local pass using Accessibility hierarchy if available
                 val initialMap = withContext(Dispatchers.Default) {
                     SemanticScreenAnalyzer.analyzeScreen()
                 }
-
-                // 2. Ensure we have a live visual frame (MediaProjection or Accessibility takeScreenshot fallback)
                 var frameBitmap = VisionPipeline.getLatestFrame()
                 if (frameBitmap == null) {
                     frameBitmap = withContext(Dispatchers.IO) {
@@ -205,19 +205,6 @@ object JarvisGuidanceEngine {
                     }
                 }
 
-                // Present immediate local plan while Vision AI enriches (or as final if offline/no key)
-                val localPlan = withContext(Dispatchers.Default) {
-                    JarvisIntelligencePlanner.createPlan(
-                        userQuery = query,
-                        screenMap = initialMap,
-                        forcedMode = JarvisIntelligencePlanner.classifyMode(query).let {
-                            if (it == JarvisMode.IDLE) JarvisMode.EXPLAINS_ANYTHING else it
-                        }
-                    )
-                }
-                applyPlanToState(localPlan, autoAdvance = localPlan.instructions.size > 1)
-
-                // 3. If a visual frame is available, invoke GeminiVisionAnalyzer on background thread
                 val jpegBytes = VisionPipeline.getCompressedJpegFrame()
                     ?: frameBitmap?.let { bmp ->
                         withContext(Dispatchers.IO) {
@@ -230,72 +217,67 @@ object JarvisGuidanceEngine {
                         }
                     }
 
-                if (jpegBytes != null && jpegBytes.isNotEmpty()) {
-                    val base64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
-                    val hierarchySummary = initialMap.elements.take(20).joinToString("\n") {
-                        "- ${it.displayLabel} [${it.type.name}] bounds=${it.bounds}"
+                if (jpegBytes == null || jpegBytes.isEmpty()) {
+                    publishExplanation(
+                        title = "Fresh Screen Required",
+                        summary = "No live screen frame available. Start Screen Share and switch to the target app.",
+                        bulletPoints = listOf("Missing fresh screenshot for AI vision analysis"),
+                        confidence = 0.0f
+                    )
+                    JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+                    return@launch
+                }
+
+                val hierarchySummary = initialMap.elements.take(20).joinToString("\n") {
+                    "- ${it.displayLabel} [${it.type.name}] bounds=${it.bounds}"
+                }
+                val visionPrompt = """
+                    User question: $query
+                    Current app: ${initialMap.packageName.ifBlank { "Current App" }}
+                    UI hierarchy context:
+                    $hierarchySummary
+
+                    Analyze the live screenshot accurately and explain what is visible and helpful next steps.
+                """.trimIndent()
+
+                val aiRes = com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
+                    context = context,
+                    prompt = visionPrompt,
+                    systemInstruction = "You are Kavya, an expert AI visual screen analyst. Describe only what is truly observed on the screen clearly and concisely.",
+                    imageBytes = jpegBytes,
+                    requiresVision = true
+                )
+
+                when (aiRes) {
+                    is com.example.orchestrator.ProviderInvocationResult.Failure -> {
+                        publishExplanation(
+                            title = "AI Authorization Required",
+                            summary = aiRes.message,
+                            bulletPoints = listOf("Error code: ${aiRes.code}", "Configure an online vision-capable AI provider in API Hub."),
+                            confidence = 0.0f
+                        )
+                        JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
                     }
-                    val (visionSummary, visionSteps) = GeminiVisionAnalyzer(context)
-                        .analyzeScreenForVisualExplanation(
-                            base64Image = base64,
-                            userQuery = query,
-                            currentApp = initialMap.packageName.ifBlank { "Current App" },
-                            hierarchySummary = hierarchySummary
+                    is com.example.orchestrator.ProviderInvocationResult.Success -> {
+                        val summary = aiRes.text.trim()
+                        val bullets = summary.lines()
+                            .map { it.trim().trimStart('•', '-', '*') }
+                            .filter { it.length > 6 }
+                            .take(4)
+                            .ifEmpty { listOf("Analyzed by ${aiRes.providerId} (${aiRes.modelId})") }
+                        publishExplanation(
+                            title = "AI Screen Analysis",
+                            summary = summary.take(220),
+                            bulletPoints = bullets,
+                            details = summary,
+                            confidence = 0.95f
                         )
-
-                    if (visionSteps.isNotEmpty()) {
-                        // Snap vision bounding boxes to exact Accessibility node bounds when a matching element exists
-                        val refinedSteps = visionSteps.map { step ->
-                            val matchedNode = initialMap.findElementMatching(step.title)
-                                ?: initialMap.findElementNear(step.bounds.centerX(), step.bounds.centerY(), threshold = 140)
-                            if (matchedNode != null && matchedNode.bounds.width() > 0 && matchedNode.bounds.height() > 0) {
-                                step.copy(
-                                    bounds = matchedNode.bounds,
-                                    clickPoint = Pair(matchedNode.bounds.centerX(), matchedNode.bounds.centerY())
-                                )
-                            } else {
-                                step
-                            }
-                        }
-
-                        val refinedInstructions = refinedSteps.map { step ->
-                            VisualInstruction(
-                                type = VisualInstructionType.HIGHLIGHT_BOX,
-                                bounds = step.bounds,
-                                clickPoint = step.clickPoint,
-                                label = step.label,
-                                text = step.spokenExplanation,
-                                isPassThroughTouch = true
-                            )
-                        }
-
-                        val finalSummary = visionSummary.ifBlank { refinedSteps.first().spokenExplanation }
-                        val enrichedCard = VisualCardData(
-                            type = VisualCardType.SUMMARY,
-                            title = "Vision Screen Analysis",
-                            summary = finalSummary,
-                            bullets = refinedSteps.map { "Step ${it.stepNumber}: ${it.title} — ${it.label}" },
-                            detailText = visionSummary,
-                            targetAnchorBounds = refinedSteps.first().bounds,
-                            confidence = 0.96f
-                        )
-
-                        val enrichedPlan = localPlan.copy(
-                            instructions = refinedInstructions,
-                            cards = listOf(enrichedCard) + localPlan.cards.drop(1)
-                        )
-                        applyPlanToState(enrichedPlan, autoAdvance = refinedSteps.size > 1)
                         com.example.services.ScreenShareManager.saveSnapshotToVault(
                             title = "Screen Explanation",
-                            summary = finalSummary,
+                            summary = summary,
                             appPackage = initialMap.packageName
                         )
-                    } else if (visionSummary.isNotBlank()) {
-                        com.example.services.ScreenShareManager.saveSnapshotToVault(
-                            title = "Screen Summary",
-                            summary = visionSummary,
-                            appPackage = initialMap.packageName
-                        )
+                        JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -308,8 +290,8 @@ object JarvisGuidanceEngine {
     }
 
     /**
-     * Circle / Region Select to Explain (inspired by Circle-to-Share / CircleToSearch).
-     * Crops the user-selected region from the live screen frame and runs targeted Vision AI analysis.
+     * Circle / Region Select to Explain.
+     * Crops the user-selected region from the live screen frame and runs targeted Vision AI analysis via SelectedProviderClient.
      */
     fun explainRegionAsync(
         context: Context,
@@ -348,42 +330,53 @@ object JarvisGuidanceEngine {
                 }
 
                 val telemetry = com.example.services.ScreenShareManager.telemetry.value
-                val base64 = Base64.encodeToString(regionBytes, Base64.NO_WRAP)
                 val hierarchyHint = if (telemetry.activeBrowserUrl.isNotBlank()) {
                     "Active Browser URL: ${telemetry.activeBrowserUrl}"
                 } else {
                     "User selected normalized screen region (${(leftNorm * 100).toInt()}%..${(rightNorm * 100).toInt()}%)."
                 }
 
-                val (visionSummary, visionSteps) = GeminiVisionAnalyzer(context)
-                    .analyzeScreenForVisualExplanation(
-                        base64Image = base64,
-                        userQuery = query,
-                        currentApp = telemetry.foregroundPackage.ifBlank { "Selected Screen Region" },
-                        hierarchySummary = hierarchyHint
-                    )
-
-                val summaryText = visionSummary.ifBlank {
-                    visionSteps.firstOrNull()?.spokenExplanation ?: "Highlighted region analyzed."
-                }
-                val bullets = visionSteps.take(4).map { "${it.title}: ${it.label}" }.ifEmpty {
-                    listOf("Focused crop analyzed (${regionBytes.size / 1024} KB)")
-                }
-
-                publishExplanation(
-                    title = "Region Focus Analysis",
-                    summary = summaryText,
-                    bulletPoints = bullets,
-                    details = summaryText,
-                    citations = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }),
-                    confidence = 0.96f
+                val aiRes = com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
+                    context = context,
+                    prompt = "$query\nApp: ${telemetry.foregroundPackage}\n$hierarchyHint",
+                    systemInstruction = "Explain only the cropped screen region accurately in simple Hinglish/English.",
+                    imageBytes = regionBytes,
+                    requiresVision = true
                 )
-                com.example.services.ScreenShareManager.saveSnapshotToVault(
-                    title = "Region Focus",
-                    summary = summaryText,
-                    appPackage = telemetry.foregroundPackage,
-                    urlOrContext = telemetry.activeBrowserUrl
-                )
+
+                when (aiRes) {
+                    is com.example.orchestrator.ProviderInvocationResult.Failure -> {
+                        publishExplanation(
+                            title = "AI Authorization Required",
+                            summary = aiRes.message,
+                            bulletPoints = listOf("Error code: ${aiRes.code}")
+                        )
+                    }
+                    is com.example.orchestrator.ProviderInvocationResult.Success -> {
+                        val summaryText = aiRes.text.trim()
+                        val bullets = summaryText.lines()
+                            .map { it.trim().trimStart('•', '-', '*') }
+                            .filter { it.length > 6 }
+                            .take(4)
+                            .ifEmpty { listOf("Focused crop analyzed (${regionBytes.size / 1024} KB)") }
+
+                        publishExplanation(
+                            title = "Region Focus Analysis",
+                            summary = summaryText,
+                            bulletPoints = bullets,
+                            details = summaryText,
+                            citations = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }),
+                            confidence = 0.96f
+                        )
+                        com.example.services.ScreenShareManager.saveSnapshotToVault(
+                            title = "Region Focus",
+                            summary = summaryText,
+                            appPackage = telemetry.foregroundPackage,
+                            urlOrContext = telemetry.activeBrowserUrl
+                        )
+                    }
+                }
+                JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
@@ -425,46 +418,55 @@ object JarvisGuidanceEngine {
                         }
                 }
 
-                if (frameBytes != null && frameBytes.isNotEmpty()) {
-                    val base64 = Base64.encodeToString(frameBytes, Base64.NO_WRAP)
-                    val (visionSummary, visionSteps) = GeminiVisionAnalyzer(context)
-                        .analyzeScreenForVisualExplanation(
-                            base64Image = base64,
-                            userQuery = prompt,
-                            currentApp = telemetry.foregroundPackage.ifBlank { screenMap.packageName.ifBlank { "Chrome" } },
-                            hierarchySummary = "$urlLine$textContext"
-                        )
-                    val cleanSummary = visionSummary.ifBlank {
-                        visionSteps.firstOrNull()?.spokenExplanation ?: textContext.lines().take(3).joinToString(" • ")
-                    }.ifBlank { "No text or visual content found yet on this page." }
-
-                    val bullets = visionSteps.take(4).map { "${it.title}: ${it.label}" }
-                        .ifEmpty { cleanSummary.split(". ").filter { it.isNotBlank() }.take(3) }
-
+                if (frameBytes == null || frameBytes.isEmpty()) {
                     publishExplanation(
                         title = actionTitle,
-                        summary = cleanSummary,
-                        bulletPoints = bullets,
-                        details = cleanSummary,
-                        citations = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }),
-                        confidence = 0.95f
+                        summary = "Switch to Chrome with Screen Share active to capture a fresh frame for AI analysis.",
+                        bulletPoints = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() })
                     )
-                    com.example.services.ScreenShareManager.saveSnapshotToVault(
-                        title = actionTitle,
-                        summary = cleanSummary,
-                        appPackage = telemetry.foregroundPackage.ifBlank { screenMap.packageName },
-                        urlOrContext = telemetry.activeBrowserUrl
-                    )
-                } else {
-                    val fallbackText = textContext.lines().take(5).joinToString(" • ")
-                        .ifBlank { "Switch to Chrome with Screen Share active to analyze the live page." }
-                    publishExplanation(
-                        title = actionTitle,
-                        summary = fallbackText,
-                        bulletPoints = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }),
-                        details = fallbackText
-                    )
+                    JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
+                    return@launch
                 }
+
+                val aiRes = com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
+                    context = context,
+                    prompt = "$prompt\nApp: ${telemetry.foregroundPackage.ifBlank { screenMap.packageName }}\n$urlLine\nVisible text:\n$textContext",
+                    systemInstruction = "Analyze the active browser screenshot accurately and concisely.",
+                    imageBytes = frameBytes,
+                    requiresVision = true
+                )
+
+                when (aiRes) {
+                    is com.example.orchestrator.ProviderInvocationResult.Failure -> {
+                        publishExplanation(
+                            title = "AI Authorization Required",
+                            summary = aiRes.message,
+                            bulletPoints = listOf("Error code: ${aiRes.code}")
+                        )
+                    }
+                    is com.example.orchestrator.ProviderInvocationResult.Success -> {
+                        val cleanSummary = aiRes.text.trim()
+                        val bullets = cleanSummary.lines()
+                            .map { it.trim().trimStart('•', '-', '*') }
+                            .filter { it.length > 6 }
+                            .take(4)
+                        publishExplanation(
+                            title = actionTitle,
+                            summary = cleanSummary,
+                            bulletPoints = bullets,
+                            details = cleanSummary,
+                            citations = listOfNotNull(telemetry.activeBrowserUrl.takeIf { it.isNotBlank() }),
+                            confidence = 0.95f
+                        )
+                        com.example.services.ScreenShareManager.saveSnapshotToVault(
+                            title = actionTitle,
+                            summary = cleanSummary,
+                            appPackage = telemetry.foregroundPackage.ifBlank { screenMap.packageName },
+                            urlOrContext = telemetry.activeBrowserUrl
+                        )
+                    }
+                }
+                JarvisOverlayController.setOrbState(JarvisOrbState.IDLE)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {

@@ -24,6 +24,9 @@ class AppControlSkill : KavyaSkill {
     }
 
     override suspend fun execute(intent: IntentGateDecision, context: Context): SkillResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return SkillResult(false, "App launch denied: active AI Authority permit required.")
+        }
         val appResolver = AppResolver(context)
         val appName = intent.targetApp ?: return SkillResult(false, "No app name specified.")
         val resolution = appResolver.resolve(appName)
@@ -63,6 +66,9 @@ class MessagingSkill : KavyaSkill {
     }
 
     override suspend fun execute(intent: IntentGateDecision, context: Context): SkillResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return SkillResult(false, "Messaging action denied: requires AI authorization and user confirmation.")
+        }
         val step = intent.steps.firstOrNull {
             it.actionType in listOf(
                 UniversalActionType.SEND_MESSAGE,
@@ -113,6 +119,9 @@ class MediaSkill : KavyaSkill {
     }
 
     override suspend fun execute(intent: IntentGateDecision, context: Context): SkillResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return SkillResult(false, "Media playback automation denied: active AI Authority permit required.")
+        }
         val query = intent.query ?: intent.param ?: ""
         val isSpotify = intent.targetApp?.contains("Spotify", ignoreCase = true) == true
         return try {
@@ -153,6 +162,9 @@ class PhoneCallSkill : KavyaSkill {
     }
 
     override suspend fun execute(intent: IntentGateDecision, context: Context): SkillResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return SkillResult(false, "Phone call automation denied: requires AI authorization and user confirmation.")
+        }
         val step = intent.steps.firstOrNull {
             it.actionType in listOf(
                 UniversalActionType.CALL,
@@ -186,14 +198,17 @@ class SystemControlSkill : KavyaSkill {
     }
 
     override suspend fun execute(intent: IntentGateDecision, context: Context): SkillResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return SkillResult(false, "System control denied: active AI Authority permit required.")
+        }
         val service = KavyaAccessibilityService.instance
             ?: return SkillResult(false, "Accessibility Service is not active for system navigation.")
 
         val step = intent.steps.firstOrNull() ?: return SkillResult(false, "No action step found.")
         val success = when (step.actionType) {
-            UniversalActionType.HOME -> service.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
-            UniversalActionType.BACK -> service.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
-            UniversalActionType.SWITCH_APP -> service.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
+            UniversalActionType.HOME -> service.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
+            UniversalActionType.BACK -> service.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+            UniversalActionType.SWITCH_APP -> service.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
             else -> false
         }
         return SkillResult(success, if (success) "Action ${step.actionType.name} executed." else "Failed to dispatch action.")

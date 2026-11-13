@@ -23,6 +23,13 @@ class AndroidAccessibilityToolProvider(
     override val displayName: String = "Android Accessibility (Execution Layer / Hands)"
 
     override suspend fun execute(action: String, params: Map<String, String>): ToolExecutionResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return ToolExecutionResult(
+                success = false,
+                output = "Accessibility execution denied: valid AI Authority Gateway permit is required.",
+                error = "MISSING_AI_AUTHORIZATION_PERMIT"
+            )
+        }
         val actionType = try {
             UniversalActionType.valueOf(action.uppercase())
         } catch (_: Exception) {

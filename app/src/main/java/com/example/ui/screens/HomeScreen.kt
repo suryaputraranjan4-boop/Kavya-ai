@@ -97,6 +97,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
     val latestCaption by viewModel.latestKavyaCaption.collectAsState()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
     val agentActionStatus by viewModel.agentActionStatus.collectAsState()
+    val orchestrationState by viewModel.orchestrationState.collectAsState()
     val isOfflineMode by viewModel.isOfflineMode.collectAsState()
     val micEngineState by com.example.voice.KavyaMicrophoneEngine.engineState.collectAsState()
     val micAmplitude by com.example.voice.KavyaMicrophoneEngine.amplitude.collectAsState()
@@ -594,92 +595,27 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             )
         }
 
-        // Live Action Status Pill with Emergency Stop
-        AnimatedVisibility(
-            visible = agentActionStatus != null || globalState.taskState in listOf(
-                com.example.state.TaskState.OPENING_APP,
-                com.example.state.TaskState.LOOKING_AT_SCREEN,
-                com.example.state.TaskState.FINDING_TARGET,
-                com.example.state.TaskState.PERFORMING_ACTION,
-                com.example.state.TaskState.EXECUTING,
-                com.example.state.TaskState.VERIFYING
-            ),
+        // Live CEO Orchestration Status HUD (Auth, Reasoning, Screen Observation, Verification, Pause/Resume/Cancel/Stop)
+        CeoOrchestrationHud(
+            snapshot = orchestrationState,
+            fallbackStatus = agentActionStatus,
+            onPause = { viewModel.pauseAutomation("Paused from HUD") },
+            onResume = { viewModel.resumeAutomation() },
+            onCancel = { viewModel.cancelAutomation("Cancelled from HUD") },
+            onEmergencyStop = { viewModel.emergencyStop("User tapped STOP") },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 80.dp)
-        ) {
-            val statusDisplay = agentActionStatus ?: globalState.taskStateDetail ?: globalState.taskState.name
-            Surface(
-                color = SurfaceGlass.copy(alpha = 0.95f),
-                shape = RoundedCornerShape(24.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryLight.copy(alpha = 0.4f)),
-                tonalElevation = 8.dp
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp,
-                        color = AccentCyan
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = statusDisplay,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            color = Color.White,
-                            fontWeight = FontWeight.Medium
-                        ),
-                        maxLines = 1
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Button(
-                        onClick = { viewModel.emergencyStop("User tapped STOP") },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4444)),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(26.dp)
-                    ) {
-                        Text("STOP", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    }
-                }
-            }
-        }
-    }
-
-    // Security Confirmation Dialog for Sensitive Actions
-    if (pendingConfirmation != null) {
-        val conf = pendingConfirmation!!
-        AlertDialog(
-            onDismissRequest = { viewModel.cancelPendingAction() },
-            title = {
-                Text(
-                    text = conf.title,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                )
-            },
-            text = {
-                Text(
-                    text = conf.description,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = { viewModel.confirmPendingAction() },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text("Allow")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { viewModel.cancelPendingAction() }) {
-                    Text("Deny")
-                }
-            }
+                .padding(top = 74.dp, start = 16.dp, end = 16.dp)
+                .widthIn(max = 560.dp)
         )
     }
+
+    // Security & Medium-Confidence Confirmation Dialog
+    CeoConfirmationDialog(
+        pending = pendingConfirmation,
+        onAllow = { viewModel.confirmPendingAction() },
+        onDeny = { viewModel.cancelPendingAction() }
+    )
 
     // Floating White Liquid Glass Popup anchored near Plus button
     if (showAttachmentPopup) {

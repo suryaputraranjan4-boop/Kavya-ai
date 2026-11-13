@@ -139,6 +139,14 @@ object KavyaToolRegistry {
                 }
 
                 "search_web" -> {
+                    if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+                        return@withContext ToolExecutionResult(
+                            name,
+                            false,
+                            "",
+                            "Automation blocked: AI authorization permit required before executing search_web."
+                        )
+                    }
                     val query = parameters["query"] ?: parameters["target"] ?: ""
                     val searchUrl = "https://www.google.com/search?q=" + Uri.encode(query)
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(searchUrl)).apply {

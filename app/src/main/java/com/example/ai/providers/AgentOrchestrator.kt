@@ -141,40 +141,8 @@ class AgentOrchestrator(
             )
         }
 
-        // 2. Identify candidate fallback providers (online mode)
-        val fallbackProviders = mutableListOf<AIProvider>()
-        if (primaryProvider != geminiProvider && geminiProvider.isConfigured(context)) {
-            fallbackProviders.add(geminiProvider)
-        }
-        if (primaryProvider != openRouterProvider && openRouterProvider.isConfigured(context)) {
-            fallbackProviders.add(openRouterProvider)
-        }
-        if (primaryProvider != huggingFaceProvider && huggingFaceProvider.isConfigured(context)) {
-            fallbackProviders.add(huggingFaceProvider)
-        }
-        if (primaryProvider != gemmaOfflineProvider && gemmaOfflineProvider.isConfigured(context)) {
-            fallbackProviders.add(gemmaOfflineProvider)
-        }
-
-        for (fallback in fallbackProviders) {
-            onEventLog?.invoke("FALLBACK: Attempting fallback with ${fallback.displayName}...")
-            try {
-                val fallbackResult = fallback.generate(prompt, systemInstruction, context)
-                if (fallbackResult.success) {
-                    onEventLog?.invoke("FALLBACK SUCCESS: ${fallback.displayName} responded in ${fallbackResult.latencyMs}ms")
-                    return fallbackResult
-                } else {
-                    onEventLog?.invoke("FALLBACK FAILED: ${fallback.displayName} failed: ${fallbackResult.error}")
-                }
-            } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-                onEventLog?.invoke("FALLBACK EXCEPTION: ${fallback.displayName}: ${e.message}")
-            }
-        }
-
-        // If all fallbacks failed, return truthful error message
-        val failureSummary = primaryResult.error ?: "All configured providers failed to respond."
+        // NEVER silently switch providers or fall back to offline/local engines on failure.
+        val failureSummary = primaryResult.error ?: "Selected provider ${primaryProvider.displayName} failed to respond."
         return AIProviderResult(
             success = false,
             text = failureSummary,
@@ -261,6 +229,13 @@ class AgentOrchestrator(
         actionType: String,
         params: Map<String, String>
     ): ToolExecutionResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return ToolExecutionResult(
+                success = false,
+                output = "Blocked: Accessibility action requires active AI authorization permit.",
+                error = "NO_AI_PERMIT"
+            )
+        }
         val hands = accessibilityProvider
         if (hands == null) {
             return ToolExecutionResult(

@@ -67,6 +67,9 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
     val currentChatId by viewModel.currentChatId.collectAsState()
     val isScreenSharing by viewModel.isScreenSharing.collectAsState()
     val voiceState by viewModel.voiceState.collectAsState()
+    val orchestrationState by viewModel.orchestrationState.collectAsState()
+    val agentActionStatus by viewModel.agentActionStatus.collectAsState()
+    val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
 
     val context = LocalContext.current
     var showHistory by remember { mutableStateOf(false) }
@@ -421,6 +424,17 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
             }
 
+            // Live CEO Orchestration Status HUD
+            com.example.ui.components.CeoOrchestrationHud(
+                snapshot = orchestrationState,
+                fallbackStatus = agentActionStatus,
+                onPause = { viewModel.pauseAutomation("Paused from chat") },
+                onResume = { viewModel.resumeAutomation() },
+                onCancel = { viewModel.cancelAutomation("Cancelled from chat") },
+                onEmergencyStop = { viewModel.emergencyStop("User tapped STOP in chat") },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+
             // JARVIS Visual Explanation Card Banner
             val jarvisExplanation by com.example.visual.JarvisGuidanceEngine.activeExplanation.collectAsState()
             jarvisExplanation?.let { exp ->
@@ -634,6 +648,12 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
             }
         }
     }
+
+        com.example.ui.components.CeoConfirmationDialog(
+            pending = pendingConfirmation,
+            onAllow = { viewModel.confirmPendingAction() },
+            onDeny = { viewModel.cancelPendingAction() }
+        )
 
         if (showScreenShareSheet) {
             ScreenShareSheet(

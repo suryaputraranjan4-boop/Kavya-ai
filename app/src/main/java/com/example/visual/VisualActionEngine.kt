@@ -72,6 +72,19 @@ class VisualActionEngine(private val context: Context) {
         userGoal: String,
         onProgress: ((String) -> Unit)? = null
     ): VisualActionExecutionResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            val blocked = "Visual automation blocked: active AI authorization permit is required."
+            updateStatus(false, "Blocked", blocked, 0f)
+            return VisualActionExecutionResult(
+                success = false,
+                actionType = VisualActionType.STOP,
+                target = userGoal,
+                executionMethod = "AiAuthorityGateway",
+                message = blocked,
+                confidence = 0f,
+                error = "NO_AI_PERMIT"
+            )
+        }
         safetyController.resetEmergencyStop()
         val memory = actionPlanner.initializePlan(userGoal)
 

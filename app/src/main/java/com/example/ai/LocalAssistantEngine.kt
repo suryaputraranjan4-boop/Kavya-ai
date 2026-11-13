@@ -150,51 +150,20 @@ object LocalAssistantEngine {
     }
 
     fun getConnectionFallbackResponse(prompt: String): String {
-        val lower = prompt.lowercase(Locale.ROOT)
-        return when {
-            lower.contains("youtube") || lower.contains("video") || lower.contains("play") -> {
-                "YouTube खोल रही हूँ।\n```json\n[{\"action\":\"OPEN_APP\",\"target\":\"YouTube\"}]\n```"
-            }
-            lower.contains("camera") || lower.contains("photo") || lower.contains("picture") || lower.contains("फोटो") -> {
-                "कैमरा खोल रही हूँ।\n```json\n[{\"action\":\"OPEN_APP\",\"target\":\"Camera\"}]\n```"
-            }
-            lower.contains("setting") || lower.contains("सेटिंग") -> {
-                "Settings खोल रही हूँ।\n```json\n[{\"action\":\"OPEN_APP\",\"target\":\"Settings\"}]\n```"
-            }
-            lower.contains("flashlight") || lower.contains("torch") || lower.contains("टॉर्च") -> {
-                "Flashlight toggle कर रही हूँ।\n```json\n[{\"action\":\"GLOBAL_ACTION\",\"target\":\"FLASHLIGHT\"}]\n```"
-            }
-            lower.contains("screenshot") || lower.contains("स्क्रीनशॉट") -> {
-                "Screenshot ले रही हूँ।\n```json\n[{\"action\":\"GLOBAL_ACTION\",\"target\":\"SCREENSHOT\"}]\n```"
-            }
-            else -> {
-                "हाँ जी, मैं आपकी मदद के लिए तैयार हूँ। आप कोई भी काम या सवाल पूछ सकते हैं।"
-            }
-        }
+        return "Selected AI API is currently unavailable or rate-limited. No local/offline device automation can run without an active AI API connection."
     }
 
     fun getHighTrafficFallbackResponse(prompt: String): String = getConnectionFallbackResponse(prompt)
 
     /**
-     * Resolves user requests when API keys are optional or not configured.
-     * Kavya genuinely executes real actions:
-     * - Opening apps (YouTube, Camera, Settings, WhatsApp, Chrome, Instagram, Spotify, Maps, etc.)
-     * - In-app and web search
-     * - Hardware controls (Flashlight, Screenshot, Volume, Home, Back)
-     * - Phone calls and SMS
-     * - Math, time, date, common greetings
-     * - Real public API responses (Weather, Currency, Countries)
-     * - Graceful, honest guidance for advanced generative reasoning without faking responses.
+     * Non-automation fast query helper ONLY (time, date, simple math, greetings).
+     * Never plans or emits device-automation commands when the AI API is unavailable.
      */
     fun resolveLocalCommandOrFallback(prompt: String, memoryOrApiContext: String = ""): String {
         val clean = prompt.trim()
-        val lower = clean.lowercase(Locale.ROOT)
-
-        // 1. Check for instant fast query (math, time, date, greeting, identity, capabilities)
         val fastResult = handleFastQuery(clean)
         if (fastResult != null) return fastResult
 
-        // 2. Check if Public API data was already fetched
         if (memoryOrApiContext.contains("API_RESULT:") || memoryOrApiContext.contains("EXTERNAL API DATA:")) {
             val apiData = memoryOrApiContext.substringAfter("API_RESULT:").substringAfter("EXTERNAL API DATA:").trim()
             val formattedData = formatApiResult(apiData)
@@ -203,113 +172,7 @@ object LocalAssistantEngine {
             }
         }
 
-        // 3. Search on YouTube or Web
-        val ytSearchPattern = Regex("(?i)(?:search|chalao|play|bajao)\\s+(.+?)\\s+(?:on|pe|par|in)\\s+youtube|youtube\\s+(?:pe|par)?\\s*(.+?)\\s*(?:search karo|chalao|play karo)")
-        val ytMatch = ytSearchPattern.find(clean)
-        if (ytMatch != null) {
-            val query = (ytMatch.groupValues[1].ifBlank { ytMatch.groupValues[2] }).trim()
-            return "$query YouTube पर search कर रही हूँ।\n```json\n[{\"action\":\"OPEN_APP\",\"target\":\"YouTube\"},{\"action\":\"SEARCH\",\"target\":\"YouTube\",\"query\":\"$query\"}]\n```"
-        }
-
-        val webSearchPattern = Regex("(?i)(?:search|google|dhoondo)\\s+(.+?)\\s+(?:on google|on web|pe|par)?|(?:google|web)\\s+(?:pe|par)?\\s*(.+?)\\s*search karo")
-        if (lower.contains("google") || lower.startsWith("search ") || lower.contains("search karo")) {
-            val query = clean
-                .replace("(?i)google\\s*(?:pe|par)?\\s*search\\s*(?:karo)?".toRegex(), "")
-                .replace("(?i)search\\s*(?:on google|on web)?".toRegex(), "")
-                .replace("(?i)karo|dhoondo".toRegex(), "")
-                .trim()
-            if (query.isNotBlank()) {
-                return "$query search कर रही हूँ।\n```json\n[{\"action\":\"SEARCH_WEB\",\"query\":\"$query\"}]\n```"
-            }
-        }
-
-        // 4. Phone Calls
-        val callPattern = Regex("(?i)(?:call|phone karo|call karo)\\s*(?:to|ko)?\\s*([a-zA-Z0-9\\s]+)|([a-zA-Z0-9\\s]+)\\s*ko\\s*call\\s*karo")
-        val callMatch = callPattern.find(clean)
-        if (callMatch != null) {
-            val recipient = (callMatch.groupValues[1].ifBlank { callMatch.groupValues[2] }).trim()
-            if (recipient.isNotBlank() && !recipient.equals("me", ignoreCase = true)) {
-                return "$recipient को कॉल मिला रही हूँ।\n```json\n[{\"action\":\"MAKE_PHONE_CALL\",\"recipient\":\"$recipient\"}]\n```"
-            }
-        }
-
-        // 5. SMS / Messaging
-        val smsPattern = Regex("(?i)(?:send\\s+(?:sms|message)\\s+to|message\\s+bhejo)\\s+([a-zA-Z0-9]+)(?:\\s+(?:saying|message|ki)?\\s*(.+))?")
-        val smsMatch = smsPattern.find(clean)
-        if (smsMatch != null) {
-            val recipient = smsMatch.groupValues[1].trim()
-            val message = smsMatch.groupValues.getOrNull(2)?.trim() ?: "Hi"
-            return "$recipient को मैसेज भेज रही हूँ।\n```json\n[{\"action\":\"SEND_SMS\",\"recipient\":\"$recipient\",\"message\":\"$message\"}]\n```"
-        }
-
-        // 6. Device Hardware & System Controls
-        if (lower.contains("flashlight") || lower.contains("torch") || lower.contains("टॉर्च")) {
-            return "Flashlight toggle कर रही हूँ।\n```json\n[{\"action\":\"GLOBAL_ACTION\",\"target\":\"FLASHLIGHT\"}]\n```"
-        }
-        if (lower.contains("screenshot") || lower.contains("स्क्रीनशॉट")) {
-            return "Screenshot ले रही हूँ।\n```json\n[{\"action\":\"GLOBAL_ACTION\",\"target\":\"SCREENSHOT\"}]\n```"
-        }
-        if (lower in listOf("go home", "home", "home screen", "home jao")) {
-            return "Home screen पर जा रही हूँ।\n```json\n[{\"action\":\"GLOBAL_ACTION\",\"target\":\"HOME\"}]\n```"
-        }
-        if (lower in listOf("go back", "back", "piche jao", "wapas jao")) {
-            return "Back जा रही हूँ।\n```json\n[{\"action\":\"GLOBAL_ACTION\",\"target\":\"BACK\"}]\n```"
-        }
-
-        // 7. App Launching Detection
-        val knownApps = mapOf(
-            "youtube" to "YouTube",
-            "whatsapp" to "WhatsApp",
-            "camera" to "Camera",
-            "settings" to "Settings",
-            "chrome" to "Chrome",
-            "browser" to "Chrome",
-            "instagram" to "Instagram",
-            "spotify" to "Spotify",
-            "maps" to "Maps",
-            "google maps" to "Maps",
-            "gmail" to "Gmail",
-            "telegram" to "Telegram",
-            "phone" to "Phone",
-            "dialer" to "Phone",
-            "contacts" to "Contacts",
-            "calculator" to "Calculator",
-            "gallery" to "Gallery",
-            "photos" to "Photos",
-            "files" to "Files",
-            "play store" to "Play Store",
-            "clock" to "Clock",
-            "calendar" to "Calendar"
-        )
-
-        for ((key, appName) in knownApps) {
-            if (lower.contains("open $key") || lower.contains("launch $key") || 
-                lower.contains("$key kholo") || lower.contains("$key open karo") ||
-                lower == key || lower == "open $key" || lower == "$key open") {
-                return "$appName खोल रही हूँ।\n```json\n[{\"action\":\"OPEN_APP\",\"target\":\"$appName\"}]\n```"
-            }
-        }
-
-        // Generic "open [app]" pattern
-        val openPattern = Regex("(?i)(?:open|launch|kholo)\\s+([a-zA-Z0-9]+)|([a-zA-Z0-9]+)\\s*(?:kholo|open karo)")
-        val openMatch = openPattern.find(clean)
-        if (openMatch != null) {
-            val target = (openMatch.groupValues[1].ifBlank { openMatch.groupValues[2] }).trim()
-            if (target.isNotBlank() && target.length > 2 && target != "the" && target != "please") {
-                val capitalized = target.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-                return "$capitalized खोल रही हूँ।\n```json\n[{\"action\":\"OPEN_APP\",\"target\":\"$capitalized\"}]\n```"
-            }
-        }
-
-        // 8. Honest explanation when no key is configured and no local intent matched
-        return "मैं अभी Local Assistant Mode में काम कर रही हूँ (कोई Cloud AI API Key सेट नहीं है)।\n\n" +
-               "मैं बिना API Key के भी ये काम कर सकती हूँ:\n" +
-               "• ऐप्स खोलना (उदा. 'Open YouTube', 'WhatsApp kholo')\n" +
-               "• वीडियो व वेब सर्च ('Search songs on YouTube')\n" +
-               "• फोन कंट्रोल्स (Torch, Screenshot, Calls, SMS)\n" +
-               "• लाइव मौसम व पब्लिक डाटा ('Weather in Delhi')\n" +
-               "• गणित और समय-तारीख\n\n" +
-               "पूरी conversational AI और creative reasoning के लिए आप Settings > API Dashboard में अपनी मुफ़्त Gemini या OpenRouter API Key जोड़ सकते हैं।"
+        return "AI API authorization is required to process this request or perform device automation. Please verify your active API key and internet connection in API Dashboard."
     }
 
     private fun formatApiResult(raw: String): String {

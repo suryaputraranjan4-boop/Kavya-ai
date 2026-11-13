@@ -37,6 +37,10 @@ object ActionExecutor {
     }
     
     fun searchWeb(context: Context, query: String): Boolean {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            Log.w(TAG, "Blocked ActionExecutor.searchWeb without active AI authorization permit.")
+            return false
+        }
         val cleanQuery = query.trim()
         val searchUrl = "https://www.google.com/search?q=${android.net.Uri.encode(cleanQuery)}"
 

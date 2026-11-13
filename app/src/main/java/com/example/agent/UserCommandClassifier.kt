@@ -107,7 +107,7 @@ object UserCommandClassifier {
         val lower = trimmed.lowercase(Locale.ROOT)
 
         // 0. STOP and SLEEP Interruption Commands (Requirement 20)
-        if (lower in listOf("stop kavya", "kavya stop", "stop", "ruko", "ruk jao", "रुको", "रुक जाओ", "बस करो", "cancel")) {
+        if (lower in listOf("stop kavya", "kavya stop", "stop", "ruko", "ruk jao", "ab ruk jao", "रुको", "रुक जाओ", "अब रुक जाओ", "बस करो", "cancel", "abort")) {
             return ClassifiedCommand(
                 category = CommandCategory.STOP_AUTOMATION,
                 actionParam = "STOP",
@@ -118,6 +118,23 @@ object UserCommandClassifier {
             return ClassifiedCommand(
                 category = CommandCategory.SLEEP,
                 actionParam = "SLEEP",
+                rawPrompt = trimmed
+            )
+        }
+
+        // 0a. Conversational questions or statements about apps ("Instagram kya hai?", "Mujhe Instagram pasand hai")
+        val isQuestionOrOpinionAboutApp = (lower.endsWith("?") ||
+            lower.contains("kya hai") ||
+            lower.contains("what is") ||
+            lower.contains("pasand hai") ||
+            lower.contains("pasand nahi") ||
+            lower.startsWith("i like ") ||
+            lower.startsWith("i love ") ||
+            lower.startsWith("mujhe ")) &&
+            !APP_OPEN_KEYWORDS.any { lower.startsWith("$it ") || lower.endsWith(" $it") || lower.contains(" $it ") }
+        if (isQuestionOrOpinionAboutApp) {
+            return ClassifiedCommand(
+                category = CommandCategory.CONVERSATION,
                 rawPrompt = trimmed
             )
         }

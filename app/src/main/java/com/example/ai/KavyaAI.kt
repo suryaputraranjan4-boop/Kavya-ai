@@ -518,16 +518,14 @@ class KavyaAI(private val context: android.content.Context? = null) {
         val priority = if (isProactiveMode) com.example.api.RequestPriority.P3_PROACTIVE_CONVERSATION else com.example.api.RequestPriority.P0_ACTIVE_USER_REQUEST
         
         if (!com.example.api.QuotaManager.instance.acquireQuota(requestId, priority)) {
-            val localGreeting = LocalAssistantEngine.handleFastQuery(prompt)
-            if (localGreeting != null) return@withContext localGreeting
-            return@withContext LocalAssistantEngine.getHighTrafficFallbackResponse(prompt)
+            return@withContext "Error: [QUOTA] Rate limit reached for selected AI provider. Please wait before retrying."
         }
         
         var lastError: Exception? = null
         var lastClassifiedError: AiClassifiedError? = null
         try {
             if (context != null) {
-                val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
+                val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context).trim().uppercase(java.util.Locale.ROOT)
                 val isExplicitOffline = isStrictOfflineMode()
                 val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
 
@@ -538,30 +536,36 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         if (gemmaResult.success && gemmaResult.text.isNotBlank()) {
                             return@withContext gemmaResult.text
                         }
-                        return@withContext gemmaResult.error ?: "Offline local model failed to generate response."
+                        return@withContext "Error: ${gemmaResult.error ?: "Offline local model failed to generate response."}"
                     } else {
-                        val localFast = LocalAssistantEngine.handleFastQuery(prompt)
-                        if (localFast != null) return@withContext localFast
-                        return@withContext "Offline Mode is active (zero network calls), but no local GGUF/LiteRT-LM model is installed. Please import a local model in AI API Hub or disable Offline Mode."
+                        return@withContext "Error: Offline Mode is active (zero network calls), and no local model is installed. Switch to an online AI provider for AI chat and automation."
                     }
                 }
 
-                if (selectedProvider == "CUSTOM_API") {
+                if (selectedProvider == "CUSTOM_API" || selectedProvider == "CUSTOM") {
                     val customReply = consultCustomApis(prompt)
                     if (!customReply.isNullOrBlank()) return@withContext customReply
-                    return@withContext "Custom API provider is selected, but no enabled Custom API returned a valid response. Check your endpoint and key in AI API Hub."
+                    return@withContext "Error: Custom API provider is selected, but no enabled Custom API returned a valid response. Check your endpoint and key in AI API Hub."
                 }
 
                 if (selectedProvider == "OPENROUTER") {
                     val openRouterReply = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
                     if (!openRouterReply.isNullOrBlank()) return@withContext openRouterReply
+                    return@withContext "Error: OpenRouter provider is selected, but failed to respond. Check your OpenRouter API key, credits, and internet connection."
                 }
 
-                if (!isApiKeyConfigured() && gemmaProvider.isConfigured(context)) {
+                if (selectedProvider == "HUGGINGFACE") {
                     val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
-                    val gemmaResult = gemmaProvider.generate(prompt, sysPrompt, context)
-                    if (gemmaResult.success && gemmaResult.text.isNotBlank()) {
-                        return@withContext gemmaResult.text
+                    val hfResult = com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
+                        context = context,
+                        prompt = prompt,
+                        systemInstruction = sysPrompt,
+                        imageBytes = imageBytes,
+                        requiresVision = imageBytes != null
+                    )
+                    return@withContext when (hfResult) {
+                        is com.example.orchestrator.ProviderInvocationResult.Success -> hfResult.text
+                        is com.example.orchestrator.ProviderInvocationResult.Failure -> "Error: ${hfResult.message}"
                     }
                 }
             }
@@ -572,14 +576,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 BuildConfig.GEMINI_API_KEY
             }
 
-            // If Gemini API key is missing, check if OpenRouter or Custom API is configured as fallback
+            // Fail closed when selected provider's API key is missing; NEVER silently switch providers
             if (apiKey.isBlank()) {
-                val openRouterBackup = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
-                if (openRouterBackup != null) return@withContext openRouterBackup
-
-                val customBackup = consultCustomApis(prompt)
-                if (!customBackup.isNullOrBlank()) return@withContext customBackup
-
                 val missingKeyError = AiErrorClassifier.recordError(
                     AiClassifiedError(category = AiErrorCategory.MISSING_API_KEY)
                 )
@@ -925,12 +923,12 @@ class KavyaAI(private val context: android.content.Context? = null) {
         val priority = if (isProactiveMode) com.example.api.RequestPriority.P3_PROACTIVE_CONVERSATION else com.example.api.RequestPriority.P0_ACTIVE_USER_REQUEST
         
         if (!com.example.api.QuotaManager.instance.acquireQuota(requestId, priority)) {
-            emit("I am a bit busy right now. Please try again in a moment.")
+            emit("Error: [QUOTA] Rate limit reached for selected AI provider. Please wait before retrying.")
             return@flow
         }
         
         if (context != null) {
-            val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context)
+            val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context).trim().uppercase(java.util.Locale.ROOT)
             val isExplicitOffline = isStrictOfflineMode()
             val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
 
@@ -941,23 +939,14 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         emit(chunk)
                     }
                 } else {
-                    val localFast = LocalAssistantEngine.handleFastQuery(prompt)
-                    emit(localFast ?: "Offline Mode is active (zero network calls), but no local GGUF/LiteRT-LM model is installed. Please import a local model in AI API Hub or disable Offline Mode.")
+                    emit("Error: Offline Mode is active (zero network calls), but no local model is installed.")
                 }
                 return@flow
             }
 
-            if (selectedProvider == "CUSTOM_API" || selectedProvider == "OPENROUTER") {
+            if (selectedProvider == "CUSTOM_API" || selectedProvider == "CUSTOM" || selectedProvider == "OPENROUTER" || selectedProvider == "HUGGINGFACE") {
                 val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode, imageBytes)
                 emit(responseText)
-                return@flow
-            }
-
-            if (!isApiKeyConfigured() && gemmaProvider.isConfigured(context)) {
-                val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
-                gemmaProvider.streamGenerate(prompt, sysPrompt, context).collect { chunk ->
-                    emit(chunk)
-                }
                 return@flow
             }
         }
@@ -992,11 +981,6 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
         val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
         if (apiKey.isBlank()) {
-            val openRouterBackup = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
-            if (openRouterBackup != null) {
-                emit(openRouterBackup)
-                return@flow
-            }
             val missingKey = AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.MISSING_API_KEY))
             emit(missingKey.toErrorPrefixString())
             return@flow

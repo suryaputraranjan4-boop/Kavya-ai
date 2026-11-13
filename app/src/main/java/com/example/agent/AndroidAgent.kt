@@ -67,6 +67,18 @@ class AndroidAgent(
         goal: String,
         onProgress: ((String) -> Unit)? = null
     ): com.example.visual.VisualActionExecutionResult = withContext(Dispatchers.IO) {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            val blocked = "Automation blocked: AI authorization permit required before executing visual goals."
+            return@withContext com.example.visual.VisualActionExecutionResult(
+                success = false,
+                actionType = com.example.visual.VisualActionType.STOP,
+                target = goal,
+                executionMethod = "AiAuthorityGateway",
+                message = blocked,
+                confidence = 0f,
+                error = "NO_AI_PERMIT"
+            )
+        }
         visualActionEngine.executeGoal(goal, onProgress)
     }
 
@@ -89,6 +101,16 @@ class AndroidAgent(
         goal: String,
         onProgress: ((String) -> Unit)? = null
     ): WorkflowResult = withContext(Dispatchers.IO) {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return@withContext WorkflowResult(
+                success = false,
+                goal = goal,
+                completedSteps = 0,
+                totalSteps = 0,
+                finalMessage = "Automation blocked: AI authorization permit required before executing workflows.",
+                error = "NO_AI_PERMIT"
+            )
+        }
         workflowEngine.runWorkflow(goal, context, onProgress)
     }
 
@@ -99,6 +121,16 @@ class AndroidAgent(
         plan: TaskPlan,
         onSpeakProgress: (suspend (String) -> Unit)? = null
     ): TaskExecutionOutcome = withContext(Dispatchers.IO) {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            val blocked = "Automation blocked: TaskPlan execution requires an active AI authorization permit."
+            return@withContext TaskExecutionOutcome(
+                success = false,
+                finalSpokenMessage = blocked,
+                completedStepsCount = 0,
+                totalStepsCount = plan.steps.size,
+                failureReason = "NO_AI_PERMIT"
+            )
+        }
         isCancelled = false
         DiagnosticEngine.updateLiveState(AgentLiveState.PLANNING, plan.originalPrompt, plan.targetAppName)
         KavyaStateManager.updateTaskState(TaskState.PLANNING, "Plan created with ${plan.steps.size} steps")
@@ -271,64 +303,8 @@ class AndroidAgent(
             var stepResult = executeAtomicStep(step)
             step.status = StepStatus.VERIFYING
 
-            // 2. CONTEXT-AWARE ADVANCED RECOVERY LOOP (Requirements 1, 3, 4, 25, 26, 27)
-            if (!stepResult.success && !stepResult.isAmbiguous && step.actionType != UniversalActionType.OPEN_APP && step.actionType != UniversalActionType.VERIFY) {
-                Log.w(TAG, "Step ${step.id} (${step.actionType}) unverified. Initiating Context-Aware Recovery...")
-
-                val resolvedTarget = appResolver.resolve(plan.targetAppName).matchedApp
-                val targetPkg = resolvedTarget?.packageName ?: plan.targetAppName
-
-                while (!stepResult.success && recoveryBudget.currentTotalAttempts < recoveryBudget.maxTotalAttempts) {
-                    val preRecoveryScreen = freshRecognizer.acquireFreshScreen(waitForStability = true)
-                    val preRecoveryFingerprint = ScreenFingerprint.createFrom(preRecoveryScreen)
-
-                    val strategy = recoveryManager.planRecovery(
-                        currentScreen = preRecoveryScreen,
-                        step = step,
-                        targetApp = plan.targetAppName,
-                        targetPackage = targetPkg,
-                        budget = recoveryBudget,
-                        history = recoveryHistory,
-                        checkpointManager = checkpointManager
-                    )
-
-                    if (strategy.level == RecoveryLevel.LEVEL_5_SAFE_STOP) {
-                        Log.w(TAG, "Recovery ended safely at ${strategy.level}.")
-                        break
-                    }
-
-                    recoveryBudget.recordAttempt(strategy.level)
-                    DiagnosticEngine.recordVerification("RECOVERY [${strategy.level}]: ${strategy.description}")
-
-                    val recoveryDispatched = recoveryManager.executeRecovery(strategy, context, step, checkpointManager)
-                    delay(350)
-
-                    val postRecoveryScreen = freshRecognizer.acquireFreshScreen(waitForStability = true)
-                    val postRecoveryFingerprint = ScreenFingerprint.createFrom(postRecoveryScreen)
-                    val screenChanged = postRecoveryFingerprint.isMeaningfullyDifferentFrom(preRecoveryFingerprint)
-
-                    val attemptRecord = RecoveryAttempt(
-                        attemptNumber = recoveryBudget.currentTotalAttempts,
-                        screenFingerprint = postRecoveryFingerprint,
-                        actionAttempted = "${step.actionType} [${step.param}]",
-                        failureReason = stepResult.output,
-                        strategyApplied = strategy,
-                        resultSuccessful = screenChanged
-                    )
-                    recoveryHistory.add(attemptRecord)
-
-                    // Re-attempt the step now that recovery action was applied
-                    val retryResult = executeAtomicStep(step)
-                    if (retryResult.success) {
-                        Log.i(TAG, "Step ${step.id} (${step.actionType}) successfully recovered via ${strategy.actionType}")
-                        stepResult = retryResult
-                        freshScreenBefore = postRecoveryScreen
-                        break
-                    } else {
-                        stepResult = retryResult
-                    }
-                }
-            }
+            // 2. AI = THE ONLY BRAIN: No local/offline recovery loop is allowed to tap/scroll/dismiss independently.
+            // Any step failure must be returned to the AI orchestrator for screenshot-based replanning.
 
             // 3. TASK CHECKPOINT CREATION (Requirement 6)
             if (stepResult.success) {
@@ -535,6 +511,15 @@ class AndroidAgent(
     private val fileAgent = FileAgent(context)
 
     suspend fun executeAtomicStep(step: TaskStep): StepExecutionResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return StepExecutionResult(
+                stepId = step.id,
+                success = false,
+                actionType = step.actionType,
+                output = "Automation blocked: AI authorization permit required before executing step ${step.actionType}.",
+                stepStatus = StepStatus.FAILED
+            )
+        }
         return when (step.actionType) {
             UniversalActionType.OPEN_APP -> handleOpenApp(step.targetAppOrUrl)
             UniversalActionType.OPEN_URL -> handleOpenUrl(step.targetAppOrUrl)

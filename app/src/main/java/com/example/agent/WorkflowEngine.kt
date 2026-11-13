@@ -133,6 +133,13 @@ class WorkflowEngine(
      * 3. EXECUTE: Dispatches physical accessibility interaction.
      */
     suspend fun execute(step: WorkflowStep, context: Context): WorkflowStepExecutionResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return WorkflowStepExecutionResult(
+                success = false,
+                message = "Blocked: Workflow step execution requires an active AI authorization permit.",
+                perceptionAfterStep = null
+            )
+        }
         KavyaStateManager.updateTaskState(TaskState.EXECUTING, "Executing: ${step.description}")
         val service = KavyaAccessibilityService.instance
 
@@ -297,6 +304,9 @@ class WorkflowEngine(
      * 5. RECOVER: Executes fallback or retry recovery action using RecoveryManager.
      */
     suspend fun recover(step: WorkflowStep, failureReason: String, context: Context): Boolean {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return false
+        }
         KavyaStateManager.updateTaskState(TaskState.RETRYING, "Recovering step ${step.stepNumber}: $failureReason")
         Log.w(TAG, "RECOVER: Attempting recovery for step '${step.description}'. Reason: $failureReason")
         val service = KavyaAccessibilityService.instance ?: return false
@@ -363,6 +373,16 @@ class WorkflowEngine(
         context: Context,
         onProgress: ((String) -> Unit)? = null
     ): WorkflowResult {
+        if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
+            return WorkflowResult(
+                success = false,
+                goal = userGoal,
+                completedSteps = 0,
+                totalSteps = 0,
+                finalMessage = "Blocked: Workflow execution requires an active AI authorization permit.",
+                error = "NO_AI_PERMIT"
+            )
+        }
         val plan = plan(userGoal, context)
         MemoryManager.startWorkflow(plan.workflowId, userGoal, plan.targetApp, plan.steps.size)
         onProgress?.invoke("Created plan with ${plan.steps.size} steps for '${plan.userGoal}'")
