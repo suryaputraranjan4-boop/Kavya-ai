@@ -136,3 +136,5 @@ The repository includes GitHub Actions workflows configured with strict security
 - `android.permission.SYSTEM_ALERT_WINDOW`: Floating assistant overlay UI.
 - `android.permission.BIND_ACCESSIBILITY_SERVICE`: System-wide touch automation and screen reading.
 - `android.permission.POST_NOTIFICATIONS`: System notifications.
+
+<!-- CI: trigger fresh debug APK build -->
