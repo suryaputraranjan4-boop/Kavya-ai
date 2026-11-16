@@ -118,20 +118,30 @@ object AiAuthorityGateway {
         capabilities: AiProviderCapabilities
     ): GatewayDecision {
         val normalizedProvider = providerId.trim().uppercase()
+        val smolVlm2Ready = com.example.ai.offline.Gemma4E4BEngine.getInstance(context).isSmolVlm2Ready()
 
-        if (!capabilities.isOnlineProvider || normalizedProvider == "GEMMA_OFFLINE" || normalizedProvider == "LOCAL") {
-            val msg = "Device automation requires an active online AI provider (Gemini, OpenRouter, HuggingFace, or Custom API). Local/offline models cannot authorize Android automation."
+        if (!capabilities.isOnlineProvider || normalizedProvider == "GEMMA_OFFLINE" || normalizedProvider == "LOCAL" || normalizedProvider == "LOCAL_MULTIMODAL") {
+            if (smolVlm2Ready) {
+                return GatewayDecision.Authorized(normalizedProvider, modelId)
+            }
+            val msg = "Device automation requires an active online AI provider (Gemini, OpenRouter, HuggingFace, or Custom API) or a verified local SmolVLM2 + mmproj model."
             lastDenialReason = msg
             return GatewayDecision.Denied("OFFLINE_PROVIDER_FORBIDDEN", msg)
         }
 
         if (AppPreferences.isOfflineFallbackEnabled(context)) {
-            val msg = "Offline mode is enabled. Disable offline mode and connect an online AI API key before running device automation."
+            if (smolVlm2Ready) {
+                return GatewayDecision.Authorized(normalizedProvider, modelId)
+            }
+            val msg = "Offline mode is enabled. Disable offline mode and connect an online AI API key or install SmolVLM2 + mmproj before running device automation."
             lastDenialReason = msg
             return GatewayDecision.Denied("OFFLINE_MODE_ACTIVE", msg)
         }
 
         if (!isNetworkConnected) {
+            if (smolVlm2Ready) {
+                return GatewayDecision.Authorized(normalizedProvider, modelId)
+            }
             val msg = "No internet connection. Online AI authorization is required before any automation can run."
             lastDenialReason = msg
             return GatewayDecision.Denied("NETWORK_UNAVAILABLE", msg)
@@ -247,12 +257,16 @@ object AiAuthorityGateway {
                 return deny("STALE_SCREENSHOT", "Screenshot observation '${obs.screenshotId}' is stale. Capture a fresh screenshot first.")
             }
 
+            val hasSemanticTapTarget = envelope.action == OrchestratorActionType.TAP &&
+                envelope.target.coordinates == null &&
+                (envelope.target.selector.isNotBlank() || envelope.target.description.isNotBlank())
+
             if (envelope.action in setOf(
                     OrchestratorActionType.TAP,
                     OrchestratorActionType.DOUBLE_TAP,
                     OrchestratorActionType.LONG_PRESS,
                     OrchestratorActionType.SWIPE
-                )
+                ) && !hasSemanticTapTarget
             ) {
                 when (val cal = PrecisionController.calibrateTargetCoordinates(context, envelope, obs)) {
                     is PrecisionCalibrationResult.Rejected -> {
@@ -261,10 +275,13 @@ object AiAuthorityGateway {
                     is PrecisionCalibrationResult.Valid -> Unit
                 }
             } else {
-                // Even for TYPE / SCROLL, verify geometry hasn't rotated/resized since screenshot
+                // Even for semantic TAP / TYPE / SCROLL, verify geometry hasn't rotated/resized since screenshot
                 val geom = ScreenObservationCoordinator.readCurrentDisplayGeometry(context)
                 if (!obs.matchesGeometry(geom.widthPx, geom.heightPx, geom.orientation)) {
-                    return deny("STALE_GEOMETRY", "Display geometry or orientation changed since observation '${obs.screenshotId}'.")
+                    return deny(
+                        if (hasSemanticTapTarget) "COORDINATE_VALIDATION_FAILED" else "STALE_GEOMETRY",
+                        "Display geometry or orientation changed since observation '${obs.screenshotId}'."
+                    )
                 }
             }
         }

@@ -13,6 +13,10 @@ import com.example.ai.GenerationConfig
 import com.example.ai.InlineData
 import com.example.ai.Part
 import com.example.ai.RetrofitClient
+import com.example.ai.StructuredRoutingStatus
+import com.example.ai.TaskRouter
+import com.example.ai.offline.Gemma4E4BEngine
+import com.example.ai.offline.GemmaModelManager
 import com.example.utils.AppPreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -56,8 +60,10 @@ interface ProviderTransport {
 }
 
 /**
- * Strict AI provider client that routes ONLY to the user's selected online provider.
- * NEVER silently switches providers and NEVER falls back to local/offline engines on error.
+ * Unified AI provider client that routes to the user's selected online provider when online,
+ * enforces a hard zero-network boundary in strict privacy/offline mode, and automatically
+ * falls back to the verified local `SmolVLM2` (`Q4_K_M` + `mmproj-f16`) planning adapter ONLY
+ * when temporary network loss occurs and the local multimodal package is installed and `READY`.
  */
 object SelectedProviderClient {
     private const val TAG = "SelectedProviderClient"
@@ -90,6 +96,13 @@ object SelectedProviderClient {
             "HUGGINGFACE" -> AppPreferences.getHuggingFaceModel(context)
             "CUSTOM" -> AppPreferences.getCustomApis(context).firstOrNull { it.isEnabled }?.model.orEmpty()
                 .ifBlank { "custom-model" }
+            "LOCAL_MULTIMODAL", "GEMMA_OFFLINE" -> {
+                if (Gemma4E4BEngine.getInstance(context).isSmolVlm2Ready()) {
+                    GemmaModelManager.SMOLVLM2_MAIN_GGUF_FILENAME
+                } else {
+                    providerId
+                }
+            }
             else -> providerId
         }
         return Pair(providerId, modelId)
@@ -112,10 +125,12 @@ object SelectedProviderClient {
         val p = providerId.trim().uppercase(Locale.ROOT)
         val m = modelId.trim().lowercase(Locale.ROOT)
         val isOnline = p in setOf("GEMINI", "OPENROUTER", "HUGGINGFACE", "CUSTOM", "OPENAI")
+        val isLocalMultimodal = p == "LOCAL_MULTIMODAL" || m.contains("smolvlm2")
 
-        val supportsVision = when (p) {
-            "GEMINI" -> true
-            "OPENROUTER", "OPENAI" -> {
+        val supportsVision = when {
+            p == "GEMINI" -> true
+            isLocalMultimodal -> true
+            p == "OPENROUTER" || p == "OPENAI" -> {
                 m.contains("vision") || m.contains("-vl") || m.contains("vl-") ||
                     m.contains("gpt-4o") || m.contains("gpt-4.1") || m.contains("gpt-5") ||
                     m.contains("gemini") || m.contains("claude-3") || m.contains("claude-sonnet-4") ||
@@ -123,8 +138,8 @@ object SelectedProviderClient {
                     m.contains("llava") || m.contains("llama-3.2-11b") || m.contains("llama-3.2-90b") ||
                     m == "openrouter/free"
             }
-            "HUGGINGFACE" -> m.contains("vision") || m.contains("-vl") || m.contains("llava") || m.contains("qwen2.5-vl")
-            "CUSTOM" -> m.contains("vision") || m.contains("-vl") || m.contains("gpt-4o") || m.contains("gemini") || m.contains("claude-3")
+            p == "HUGGINGFACE" -> m.contains("vision") || m.contains("-vl") || m.contains("llava") || m.contains("qwen2.5-vl")
+            p == "CUSTOM" -> m.contains("vision") || m.contains("-vl") || m.contains("gpt-4o") || m.contains("gemini") || m.contains("claude-3")
             else -> false
         }
 
@@ -133,7 +148,7 @@ object SelectedProviderClient {
             modelId = modelId,
             isOnlineProvider = isOnline,
             supportsVision = supportsVision,
-            supportsStructuredJson = isOnline
+            supportsStructuredJson = isOnline || isLocalMultimodal
         )
     }
 
@@ -148,14 +163,37 @@ object SelectedProviderClient {
         val capabilities = resolveCapabilities(providerId, modelId)
         val apiKey = resolveApiKey(context, providerId)
         val online = isNetworkConnected(context)
+        val strictOffline = AppPreferences.isOfflineFallbackEnabled(context)
+        val engine = Gemma4E4BEngine.getInstance(context)
 
-        if (!capabilities.isOnlineProvider) {
+        // 1. Strict Privacy / Offline Mode: NEVER touch the network (Section 3.3)
+        if (strictOffline || !capabilities.isOnlineProvider) {
+            if (engine.isSmolVlm2Ready()) {
+                val localReq = ProviderInvocationRequest(
+                    providerId = providerId,
+                    modelId = modelId,
+                    apiKey = "",
+                    prompt = prompt,
+                    systemInstruction = systemInstruction,
+                    imageBytes = imageBytes
+                )
+                return@withContext LocalGuiPlanningAdapter.invokeLocalPlanningOrVerification(context, localReq)
+            }
+            if (strictOffline && providerId != "GEMMA_OFFLINE") {
+                val (localStatus, _) = TaskRouter.inspectLocalMultimodalHealth(context)
+                val failCode = if (localStatus == StructuredRoutingStatus.READY) "MODEL_NOT_INSTALLED" else localStatus.name
+                return@withContext ProviderInvocationResult.Failure(
+                    code = failCode,
+                    message = "Strict offline mode is enabled and local multimodal model status is $failCode. Zero network requests made."
+                )
+            }
             ApiStateManager.recordFailure(providerId, modelId, apiKey, "OFFLINE_PROVIDER_FORBIDDEN", "Selected provider is offline/local.")
             return@withContext ProviderInvocationResult.Failure(
                 code = "OFFLINE_PROVIDER_FORBIDDEN",
-                message = "Selected provider '$providerId' is offline/local and cannot run AI-authorized automation."
+                message = "Selected provider '$providerId' is offline/local and no verified SmolVLM2 + mmproj model is loaded."
             )
         }
+
         if (apiKey.isBlank() && providerId != "CUSTOM") {
             ApiStateManager.recordFailure(providerId, modelId, "", "MISSING_API_KEY", "No API key configured for '$providerId'.")
             return@withContext ProviderInvocationResult.Failure(
@@ -164,7 +202,21 @@ object SelectedProviderClient {
                 isAuthFailure = true
             )
         }
+
+        // 2. Temporary Network Loss while Cloud Use is Allowed -> Fall back to verified local SmolVLM2 if READY
         if (!online) {
+            if (engine.isSmolVlm2Ready()) {
+                Log.i(TAG, "Network unavailable; falling back automatically to verified local SmolVLM2 GUI grounding adapter.")
+                val localReq = ProviderInvocationRequest(
+                    providerId = providerId,
+                    modelId = modelId,
+                    apiKey = "",
+                    prompt = prompt,
+                    systemInstruction = systemInstruction,
+                    imageBytes = imageBytes
+                )
+                return@withContext LocalGuiPlanningAdapter.invokeLocalPlanningOrVerification(context, localReq)
+            }
             val snap = ApiStateManager.recordFailure(providerId, modelId, apiKey, "NETWORK_UNAVAILABLE", "No active internet connection.")
             return@withContext ProviderInvocationResult.Failure(
                 code = "NETWORK_UNAVAILABLE",
@@ -172,6 +224,7 @@ object SelectedProviderClient {
                 isNetworkError = true
             )
         }
+
         if (requiresVision && !capabilities.supportsVision) {
             ApiStateManager.recordFailure(providerId, modelId, apiKey, "CAPABILITY_MISMATCH_NO_VISION", "Model does not support vision.")
             return@withContext ProviderInvocationResult.Failure(
@@ -207,6 +260,12 @@ object SelectedProviderClient {
             )
         }
 
+        // If online transport failed due to transient network error and local SmolVLM2 is READY, fall back locally
+        if (outcome is ProviderInvocationResult.Failure && outcome.isNetworkError && engine.isSmolVlm2Ready()) {
+            Log.i(TAG, "Online request failed with network error (${outcome.code}); falling back to local SmolVLM2 adapter.")
+            return@withContext LocalGuiPlanningAdapter.invokeLocalPlanningOrVerification(context, request)
+        }
+
         when (outcome) {
             is ProviderInvocationResult.Success -> ApiStateManager.recordSuccess(providerId, modelId, apiKey)
             is ProviderInvocationResult.Failure -> ApiStateManager.recordFailure(providerId, modelId, apiKey, outcome.code, outcome.message)
@@ -219,64 +278,83 @@ object SelectedProviderClient {
         context: Context,
         request: ProviderInvocationRequest
     ): ProviderInvocationResult {
-        return try {
-            val parts = mutableListOf<Part>()
-            val img = request.imageBytes
-            if (img != null && img.isNotEmpty()) {
-                parts.add(
-                    Part(
-                        inlineData = InlineData(
-                            mimeType = "image/jpeg",
-                            data = Base64.encodeToString(img, Base64.NO_WRAP)
-                        )
+        val parts = mutableListOf<Part>()
+        val img = request.imageBytes
+        if (img != null && img.isNotEmpty()) {
+            parts.add(
+                Part(
+                    inlineData = InlineData(
+                        mimeType = "image/jpeg",
+                        data = Base64.encodeToString(img, Base64.NO_WRAP)
                     )
-                )
-            }
-            parts.add(Part(text = request.prompt))
-
-            val apiReq = GenerateContentRequest(
-                systemInstruction = Content(role = "user", parts = listOf(Part(text = request.systemInstruction))),
-                contents = listOf(Content(role = "user", parts = parts)),
-                generationConfig = GenerationConfig(temperature = 0.15f)
-            )
-            val modelName = request.modelId.ifBlank { GeminiModelRegistry.DEFAULT_AGENT_MODEL }
-            val response = RetrofitClient.service.generateContent(
-                model = modelName,
-                apiKey = request.apiKey,
-                request = apiReq
-            )
-            val text = response.candidates?.firstOrNull()?.content?.parts
-                ?.mapNotNull { part -> part.text }
-                ?.joinToString("\n")
-                ?.trim()
-                .orEmpty()
-            if (text.isBlank()) {
-                ProviderInvocationResult.Failure("EMPTY_RESPONSE", "Gemini returned an empty response.")
-            } else {
-                ProviderInvocationResult.Success(text, "GEMINI", modelName)
-            }
-        } catch (c: CancellationException) {
-            throw c
-        } catch (t: Throwable) {
-            val classified = AiErrorClassifier.classifyThrowable(t)
-            ProviderInvocationResult.Failure(
-                code = classified.category.name,
-                message = classified.userFacingText,
-                isRateLimitOrQuota = classified.category == com.example.ai.AiErrorCategory.QUOTA_EXHAUSTED ||
-                    classified.category == com.example.ai.AiErrorCategory.RATE_LIMIT,
-                isAuthFailure = classified.category in setOf(
-                    com.example.ai.AiErrorCategory.INVALID_API_KEY,
-                    com.example.ai.AiErrorCategory.AUTHENTICATION_FAILURE,
-                    com.example.ai.AiErrorCategory.MISSING_API_KEY,
-                    com.example.ai.AiErrorCategory.PERMISSION_DENIED
-                ),
-                isNetworkError = classified.category in setOf(
-                    com.example.ai.AiErrorCategory.NETWORK_UNAVAILABLE,
-                    com.example.ai.AiErrorCategory.DNS_FAILURE,
-                    com.example.ai.AiErrorCategory.CONNECTION_TIMEOUT
                 )
             )
         }
+        parts.add(Part(text = request.prompt))
+
+        val apiReq = GenerateContentRequest(
+            systemInstruction = Content(role = "user", parts = listOf(Part(text = request.systemInstruction))),
+            contents = listOf(Content(role = "user", parts = parts)),
+            generationConfig = GenerationConfig(temperature = 0.15f, maxOutputTokens = 2048)
+        )
+
+        val candidateModels = GeminiModelRegistry.resolveApiModelFallbackChain(
+            request.modelId.ifBlank { GeminiModelRegistry.DEFAULT_AGENT_MODEL }
+        )
+
+        var lastThrowable: Throwable? = null
+        for (candidateModel in candidateModels) {
+            try {
+                val response = RetrofitClient.service.generateContent(
+                    model = candidateModel,
+                    apiKey = request.apiKey,
+                    request = apiReq
+                )
+                val text = response.candidates?.firstOrNull()?.content?.parts
+                    ?.mapNotNull { part -> part.text }
+                    ?.joinToString("\n")
+                    ?.trim()
+                    .orEmpty()
+                return if (text.isBlank()) {
+                    ProviderInvocationResult.Failure("EMPTY_RESPONSE", "Gemini returned an empty response.")
+                } else {
+                    ProviderInvocationResult.Success(text, "GEMINI", request.modelId.ifBlank { candidateModel })
+                }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (http: retrofit2.HttpException) {
+                lastThrowable = http
+                if (http.code() == 404) {
+                    Log.w(TAG, "Gemini model '$candidateModel' returned HTTP 404; trying next official fallback model.")
+                    continue
+                }
+                break
+            } catch (t: Throwable) {
+                lastThrowable = t
+                break
+            }
+        }
+
+        val classified = AiErrorClassifier.classifyThrowable(
+            lastThrowable ?: IllegalStateException("Gemini invocation failed")
+        )
+        return ProviderInvocationResult.Failure(
+            code = classified.category.name,
+            message = classified.userFacingText,
+            isRateLimitOrQuota = classified.category == com.example.ai.AiErrorCategory.QUOTA_EXHAUSTED ||
+                classified.category == com.example.ai.AiErrorCategory.RATE_LIMIT,
+            isAuthFailure = classified.category in setOf(
+                com.example.ai.AiErrorCategory.INVALID_API_KEY,
+                com.example.ai.AiErrorCategory.AUTHENTICATION_FAILURE,
+                com.example.ai.AiErrorCategory.MISSING_API_KEY,
+                com.example.ai.AiErrorCategory.PERMISSION_DENIED
+            ),
+            isNetworkError = classified.category in setOf(
+                com.example.ai.AiErrorCategory.NETWORK_UNAVAILABLE,
+                com.example.ai.AiErrorCategory.DNS_FAILURE,
+                com.example.ai.AiErrorCategory.CONNECTION_TIMEOUT
+            )
+        )
     }
 
     private suspend fun invokeOpenRouter(request: ProviderInvocationRequest): ProviderInvocationResult {

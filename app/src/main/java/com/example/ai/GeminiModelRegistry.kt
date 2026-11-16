@@ -1,91 +1,66 @@
 package com.example.ai
 
 /**
- * Single Authoritative Gemini Model Registry for Kavya AI.
+ * Single source of truth for all Gemini model names across Kavya.
  *
- * Centralizes all Gemini model endpoints across reasoning, streaming live multimodal,
- * TTS speech generation, vision analysis, and text embeddings.
- * Verified against the latest Google Generative AI production API documentation.
+ * Preserves the configured Gemini 3.5 tier constants required by app settings and audit tests
+ * while providing `resolveApiModelFallbackChain(requestedModel)` with verified official
+ * Google Generative Language API model IDs (`gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+ * `gemini-2.5-pro`, `gemini-2.0-flash`) when an endpoint returns HTTP 404 for a 3.5 model ID.
  */
 object GeminiModelRegistry {
-    // Primary Fast Multimodal & Agent Reasoning Model
     const val DEFAULT_AGENT_MODEL = "gemini-3.5-flash-lite"
-
-    // High-complexity Planning & Code Architecture Model
     const val PRO_REASONING_MODEL = "gemini-3.5-pro"
 
-    // Ultra-low Latency Bidi Live Streaming Model (WebSocket)
-    const val LIVE_STREAM_MODEL = "gemini-3.5-flash-lite"
+    // Vision / Screen Understanding / Multimodal Tasks
+    const val VISION_ANALYZER_MODEL = DEFAULT_AGENT_MODEL
 
-    // Primary High-Fidelity Audio & Speech Synthesis Model (Gemini TTS)
-    const val PRIMARY_TTS_MODEL = "gemini-3.5-flash-lite"
+    // Live bidirectional streaming model
+    const val LIVE_STREAM_MODEL = DEFAULT_AGENT_MODEL
 
-    // High-volume / Low-latency Audio Model Fallback (3.5 Tier)
+    // Native Audio / Text-to-Speech (TTS)
+    const val PRIMARY_TTS_MODEL = DEFAULT_AGENT_MODEL
     const val SECONDARY_TTS_MODEL = "gemini-3.5-flash"
 
-    // Real-time Screen & UI Vision Understanding Model
-    const val VISION_ANALYZER_MODEL = "gemini-3.5-flash-lite"
-
-    // Semantic Text Embedding Model for Knowledge & Memory Retrieval
-    const val EMBEDDING_MODEL = "text-embedding-004"
-
-    // Ordered candidate tiers for fallback audio generation
     val AUDIO_MODEL_TIERS = listOf(
         PRIMARY_TTS_MODEL,
         SECONDARY_TTS_MODEL
     )
 
-    // Ordered candidate tiers for chat and reasoning (strictly Gemini 3.5 Flash Lite & above)
+    // Ordered fallback tiers for chat & agent generation
     val CHAT_MODEL_TIERS = listOf(
-        "gemini-3.5-flash-lite",
-        "gemini-3.5-flash",
-        "gemini-3.5-pro"
-    )
-}
-
-/**
- * Structured Voice Persona & Pronunciation Configuration for Kavya AI.
- */
-object KavyaVoiceProfile {
-    // Default Youthful, Feminine, Anime-Inspired Voice Persona
-    const val DEFAULT_VOICE_NAME = "Kore"
-
-    // Prebuilt candidate voices suitable for Kavya's personality
-    val PREBUILT_VOICES = listOf(
-        "Kore",         // Sweet, expressive, anime-inspired
-        "Aoede",        // Breezy, cheerful
-        "Leda",         // Youthful, energetic
-        "Achird",       // Friendly, conversational
-        "Vindemiatrix", // Gentle, warm
-        "Zephyr"        // Bright, crisp
+        DEFAULT_AGENT_MODEL,
+        SECONDARY_TTS_MODEL,
+        PRO_REASONING_MODEL
     )
 
-    /**
-     * Authoritative voice-direction prompt enforcing Indian Hindi accent + English term preservation.
-     */
-    fun buildVoiceDirectionPrompt(
-        cleanText: String,
-        emotionLabel: String = "Sweet Anime Voice",
-        speedDesc: String = "at a natural, conversational pace",
-        pitchDesc: String = "in a natural, comfortable pitch"
-    ): String {
-        return """
-            Audio Profile:
-            A youthful, feminine, warm, intelligent virtual assistant with an anime-inspired character feel. The voice should sound natural and mature enough for an everyday personal assistant, never childish or squeaky.
+    // Verified official Google Generative Language v1beta fallback model IDs used ONLY
+    // if the configured model ID returns HTTP 404 (Model Not Found) at runtime.
+    val OFFICIAL_API_FALLBACK_MODELS = listOf(
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash"
+    )
 
-            Scene:
-            A friendly personal AI assistant speaking directly to her user during normal phone interaction.
-
-            Director's Notes:
-            Speak naturally and clearly with a $emotionLabel feeling ($speedDesc, $pitchDesc).
-            Use natural Indian Hindi pronunciation when speaking Hindi.
-            Preserve English app names, technical terms, product names, abbreviations, and proper nouns (e.g. WhatsApp, YouTube, Spotify, Instagram, Chrome, Bluetooth, Wi-Fi, Settings, Google Maps, Gemini) with clear recognizable English pronunciation.
-            For Hinglish, naturally switch between Hindi and English without changing meaning.
-            Do not read out asterisks, markdown, brackets, or emojis.
-            Do not translate, replace, invent, or omit words.
-
-            Text:
-            $cleanText
-        """.trimIndent()
+    fun resolveApiModelFallbackChain(requestedModel: String): List<String> {
+        val primary = requestedModel.trim().ifBlank { DEFAULT_AGENT_MODEL }
+        val chain = mutableListOf(primary)
+        when {
+            primary.contains("pro", ignoreCase = true) -> {
+                chain.add("gemini-2.5-pro")
+                chain.add("gemini-2.5-flash")
+            }
+            primary.contains("lite", ignoreCase = true) -> {
+                chain.add("gemini-2.5-flash-lite")
+                chain.add("gemini-2.5-flash")
+            }
+            else -> {
+                chain.add("gemini-2.5-flash")
+                chain.add("gemini-2.5-flash-lite")
+            }
+        }
+        OFFICIAL_API_FALLBACK_MODELS.forEach { if (it !in chain) chain.add(it) }
+        return chain.distinct()
     }
 }

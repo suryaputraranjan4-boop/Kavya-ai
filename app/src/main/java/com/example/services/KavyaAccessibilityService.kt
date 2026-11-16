@@ -631,18 +631,66 @@ class KavyaAccessibilityService : AccessibilityService() {
     fun performAuthorizedType(
         permit: com.example.orchestrator.ActionAuthorizationPermit,
         textToType: String,
-        selectorHint: String = ""
+        selectorHint: String = "",
+        descriptionHint: String = "",
+        fallbackPoint: com.example.orchestrator.CalibratedPoint? = null
     ): Boolean {
         if (!com.example.orchestrator.AiAuthorityGateway.isInFlightPermitValid(permit)) {
             Log.w(TAG, "Rejected performAuthorizedType: invalid or expired permit ${permit.permitId}")
             return false
         }
-        val root = safeGetRootInActiveWindow() ?: return false
-        val targetNode = when {
-            selectorHint.isNotBlank() -> findNodeRecursively(root, selectorHint) ?: findFocusedEditableNode(root) ?: findSearchField(root)
-            else -> findFocusedEditableNode(root) ?: findSearchField(root)
+        val root = safeGetRootInActiveWindow()
+        if (root != null) {
+            // 1. Prefer an already-focused editable node
+            val focusedEditable = findFocusedEditableNode(root)
+            if (focusedEditable != null && typeInNode(focusedEditable, textToType)) {
+                return true
+            }
+
+            // 2. Locate target node by selectorHint, descriptionHint, or search field heuristics
+            val candidateNode = when {
+                selectorHint.isNotBlank() -> findNodeRecursively(root, selectorHint)
+                else -> null
+            } ?: when {
+                descriptionHint.isNotBlank() -> findNodeRecursively(root, descriptionHint)
+                else -> null
+            } ?: findSearchField(root)
+
+            if (candidateNode != null) {
+                if (typeInNode(candidateNode, textToType)) {
+                    return true
+                }
+                // If candidateNode is a non-editable search bar trigger (e.g. YouTube search icon or Chrome search box),
+                // click it to open the editable search input field, then set text on the newly focused editable node.
+                if (clickNode(candidateNode)) {
+                    try {
+                        Thread.sleep(260L)
+                    } catch (_: InterruptedException) {}
+                    val refreshedRoot = safeGetRootInActiveWindow()
+                    if (refreshedRoot != null) {
+                        val editableAfterClick = findFocusedEditableNode(refreshedRoot) ?: findSearchField(refreshedRoot)
+                        if (editableAfterClick != null && typeInNode(editableAfterClick, textToType)) {
+                            return true
+                        }
+                    }
+                }
+            }
         }
-        return typeInNode(targetNode, textToType)
+
+        // 3. Fallback: tap calibrated coordinates to focus the input field, then type into the focused editable node
+        if (fallbackPoint != null && clickByCoordinates(fallbackPoint.xPx, fallbackPoint.yPx)) {
+            try {
+                Thread.sleep(280L)
+            } catch (_: InterruptedException) {}
+            val refreshedRoot = safeGetRootInActiveWindow()
+            if (refreshedRoot != null) {
+                val editableAfterTap = findFocusedEditableNode(refreshedRoot) ?: findSearchField(refreshedRoot)
+                if (editableAfterTap != null && typeInNode(editableAfterTap, textToType)) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     fun performAuthorizedGlobal(
@@ -1399,6 +1447,60 @@ class KavyaAccessibilityService : AccessibilityService() {
     fun performGlobal(action: Int): Boolean {
         if (!requireAuthorizedDispatch("performGlobal")) return false
         return performGlobalAction(action)
+    }
+
+    data class InteractiveElement(
+        val text: String,
+        val contentDescription: String,
+        val viewIdResourceName: String,
+        val className: String,
+        val bounds: Rect,
+        val isClickable: Boolean,
+        val isEditable: Boolean,
+        val isScrollable: Boolean,
+        val isEnabled: Boolean = true,
+        val isVisibleToUser: Boolean = true
+    )
+
+    fun extractInteractiveElements(): List<InteractiveElement> {
+        val root = safeGetRootInActiveWindow() ?: return emptyList()
+        val result = mutableListOf<InteractiveElement>()
+        fun traverse(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || result.size >= 220 || depth > 18) return
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            val txt = node.text?.toString()?.trim().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+            val viewId = node.viewIdResourceName?.trim().orEmpty()
+            val cls = node.className?.toString()?.trim().orEmpty()
+            val clickable = node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+            val editable = node.isEditable
+            val scrollable = node.isScrollable
+            val visible = node.isVisibleToUser
+            val enabled = node.isEnabled
+            if (rect.width() > 0 && rect.height() > 0 && (txt.isNotEmpty() || desc.isNotEmpty() || viewId.isNotEmpty() || clickable || editable || scrollable)) {
+                result.add(
+                    InteractiveElement(
+                        text = txt,
+                        contentDescription = desc,
+                        viewIdResourceName = viewId,
+                        className = cls,
+                        bounds = rect,
+                        isClickable = clickable,
+                        isEditable = editable,
+                        isScrollable = scrollable,
+                        isEnabled = enabled,
+                        isVisibleToUser = visible
+                    )
+                )
+            }
+            for (i in 0 until node.childCount) {
+                if (result.size >= 220) break
+                traverse(node.getChild(i), depth + 1)
+            }
+        }
+        traverse(root, 0)
+        return result
     }
 }
 

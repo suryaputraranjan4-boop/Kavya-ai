@@ -240,14 +240,54 @@ object DefaultRestrictedActionExecutor : RestrictedActionExecutor {
                     )
                 }
                 OrchestratorActionType.TAP -> {
-                    if (a11y == null) return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")
-                    val (ok, detail) = a11y.performAuthorizedMultiSignalTap(
-                        permit = permit,
-                        selectorHint = envelope.target.selector,
-                        descriptionHint = envelope.target.description,
-                        fallbackPoint = calibratedPoint
+                    // If AI emits CLICK/TAP targeting an installed app name (e.g. {"TYPE":"CLICK","TARGET_NAME":"CHROME"})
+                    // while Kavya itself is in the foreground (or Accessibility is not active on the home screen),
+                    // check if the target description/appName resolves to an exact installed application when node tap fails.
+                    if (a11y != null) {
+                        val (ok, detail) = a11y.performAuthorizedMultiSignalTap(
+                            permit = permit,
+                            selectorHint = envelope.target.selector,
+                            descriptionHint = envelope.target.description,
+                            fallbackPoint = calibratedPoint
+                        )
+                        if (ok) {
+                            return@withContext ActionExecutionFeedback(true, detail, null)
+                        }
+                    }
+                    val appCandidate = envelope.appName.ifBlank { envelope.target.description }.trim()
+                    val fgPkg = ScreenObservationCoordinator.latestObservation?.foregroundPackage.orEmpty()
+                    if (appCandidate.isNotBlank() && (fgPkg.isBlank() || fgPkg.equals(context.packageName, ignoreCase = true))) {
+                        val resolved = AppResolver(context).resolve(appCandidate)
+                        val matchedApp = resolved.matchedApp
+                        if (matchedApp != null && resolved.confidence == com.example.utils.MatchConfidence.EXACT) {
+                            val launchIntent = context.packageManager.getLaunchIntentForPackage(matchedApp.packageName)?.apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            }
+                            if (launchIntent != null) {
+                                val launched = try {
+                                    context.startActivity(launchIntent)
+                                    true
+                                } catch (_: Exception) {
+                                    false
+                                }
+                                if (launched) {
+                                    return@withContext ActionExecutionFeedback(
+                                        dispatched = true,
+                                        detail = "Launched installed app ${matchedApp.appName} (${matchedApp.packageName}) for tap target '$appCandidate'",
+                                        expectedForegroundPackage = matchedApp.packageName
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (a11y == null) {
+                        return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")
+                    }
+                    ActionExecutionFeedback(
+                        dispatched = false,
+                        detail = "Target '${envelope.target.description}' could not be tapped",
+                        errorCode = if (calibratedPoint == null) "NO_COORDS" else "TAP_FAILED"
                     )
-                    ActionExecutionFeedback(ok, detail, if (ok) null else if (calibratedPoint == null) "NO_COORDS" else "TAP_FAILED")
                 }
                 OrchestratorActionType.DOUBLE_TAP -> {
                     if (a11y == null) return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")
@@ -265,8 +305,14 @@ object DefaultRestrictedActionExecutor : RestrictedActionExecutor {
                 }
                 OrchestratorActionType.TYPE -> {
                     if (a11y == null) return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")
-                    val ok = a11y.performAuthorizedType(permit, envelope.text, envelope.target.selector)
-                    ActionExecutionFeedback(ok, if (ok) "Typed '${envelope.text.take(30)}'" else "Failed typing into target field")
+                    val ok = a11y.performAuthorizedType(
+                        permit = permit,
+                        textToType = envelope.text,
+                        selectorHint = envelope.target.selector,
+                        descriptionHint = envelope.target.description,
+                        fallbackPoint = calibratedPoint
+                    )
+                    ActionExecutionFeedback(ok, if (ok) "Typed '${envelope.text.take(30)}'" else "Failed typing into target field", if (ok) null else "TYPE_FAILED")
                 }
                 OrchestratorActionType.SWIPE, OrchestratorActionType.SCROLL -> {
                     if (a11y == null) return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")
@@ -521,11 +567,23 @@ class CeoAiOrchestrator(
         val parsedPlan = when (val res = AiProtocolParser.parseCeoPlan(planText, session.taskId, session.sessionId)) {
             is ProtocolParseResult.Valid -> res.value
             is ProtocolParseResult.Malformed -> {
-                val err = "Rejected malformed AI plan: ${res.reason}"
-                AiAuthorityGateway.invalidateSession(session.sessionId, err)
-                ConversationTaskContextManager.onTaskFinished(false, err)
-                TaskOrchestrationStateMachine.transitionTo(OrchestrationLifecycleState.TASK_FAILED, detail = err, lastError = err)
-                return CeoOrchestrationOutcome(false, err, session.taskId, session.sessionId, failureCode = "MALFORMED_AI_RESPONSE")
+                val repairedPlan = attemptPlanSchemaRepair(
+                    session = session,
+                    originalPrompt = planPrompt,
+                    malformedOutput = planText,
+                    parseErrorReason = res.reason,
+                    observation = currentObservation,
+                    requiresVision = requiresScreenVision
+                )
+                if (repairedPlan != null) {
+                    repairedPlan
+                } else {
+                    val err = "Rejected malformed AI plan: ${res.reason}"
+                    AiAuthorityGateway.invalidateSession(session.sessionId, err)
+                    ConversationTaskContextManager.onTaskFinished(false, err)
+                    TaskOrchestrationStateMachine.transitionTo(OrchestrationLifecycleState.TASK_FAILED, detail = err, lastError = err)
+                    return CeoOrchestrationOutcome(false, err, session.taskId, session.sessionId, failureCode = "MALFORMED_AI_RESPONSE")
+                }
             }
         }
 
@@ -778,6 +836,12 @@ class CeoAiOrchestrator(
 
             if (!execFeedback.dispatched) {
                 val err = "Action execution failed (${execFeedback.errorCode ?: "EXEC_FAIL"}): ${execFeedback.detail}"
+                AiActionDiagnostics.record(
+                    category = if (execFeedback.errorCode == "APP_NOT_FOUND") ActionDiagnosticCategory.APP_RESOLUTION_ERROR else ActionDiagnosticCategory.EXECUTOR_ERROR,
+                    stage = "executePermittedAction",
+                    reason = err,
+                    normalizedActionSummary = "${env.action.name}(${env.target.description})"
+                )
                 AiAuthorityGateway.invalidateSession(session.sessionId, err)
                 ConversationTaskContextManager.onTaskFinished(false, err)
                 TaskOrchestrationStateMachine.transitionTo(OrchestrationLifecycleState.TASK_FAILED, detail = err, lastError = err)
@@ -830,21 +894,36 @@ class CeoAiOrchestrator(
                 return CeoOrchestrationOutcome(false, "Cannot verify result: ${verifyResult.message}", session.taskId, session.sessionId, stepsExecuted, verifiedSteps, failureCode = verifyResult.code)
             }
 
+            val rawVerifyText = (verifyResult as ProviderInvocationResult.Success).text
             val parsedDecision = when (
                 val vr = AiProtocolParser.parseVerificationDecision(
-                    (verifyResult as ProviderInvocationResult.Success).text,
+                    rawVerifyText,
                     session.taskId,
                     session.sessionId,
-                    afterObservation.screenshotId
+                    afterObservation.screenshotId,
+                    expectedNextSequence = env.sequence + 1
                 )
             ) {
                 is ProtocolParseResult.Valid -> vr.value
                 is ProtocolParseResult.Malformed -> {
-                    val err = "Rejected malformed AI verification JSON: ${vr.reason}"
-                    AiAuthorityGateway.invalidateSession(session.sessionId, err)
-                    ConversationTaskContextManager.onTaskFinished(false, err)
-                    TaskOrchestrationStateMachine.transitionTo(OrchestrationLifecycleState.TASK_FAILED, detail = err, lastError = err)
-                    return CeoOrchestrationOutcome(false, err, session.taskId, session.sessionId, stepsExecuted, verifiedSteps, failureCode = "MALFORMED_AI_VERIFICATION")
+                    val repairedDecision = attemptVerificationSchemaRepair(
+                        session = session,
+                        originalVerifyPrompt = verifyPrompt,
+                        malformedOutput = rawVerifyText,
+                        parseErrorReason = vr.reason,
+                        afterObservation = afterObservation,
+                        expectedNextSequence = env.sequence + 1,
+                        requiresVision = requiresScreenVision
+                    )
+                    if (repairedDecision != null) {
+                        repairedDecision
+                    } else {
+                        val err = "Rejected malformed AI verification JSON: ${vr.reason}"
+                        AiAuthorityGateway.invalidateSession(session.sessionId, err)
+                        ConversationTaskContextManager.onTaskFinished(false, err)
+                        TaskOrchestrationStateMachine.transitionTo(OrchestrationLifecycleState.TASK_FAILED, detail = err, lastError = err)
+                        return CeoOrchestrationOutcome(false, err, session.taskId, session.sessionId, stepsExecuted, verifiedSteps, failureCode = "MALFORMED_AI_VERIFICATION")
+                    }
                 }
             }
 
@@ -904,6 +983,12 @@ class CeoAiOrchestrator(
                     val failMsg = parsedDecision.mismatchReason.ifBlank {
                         parsedDecision.assistantMessage.ifBlank { "Verification failed: expected '${env.expectedResult}', observed '${parsedDecision.observedScreenSummary}'." }
                     }
+                    AiActionDiagnostics.record(
+                        category = ActionDiagnosticCategory.VERIFICATION_FAILED,
+                        stage = "verifyPostAction",
+                        reason = failMsg,
+                        normalizedActionSummary = "${env.action.name}(${env.target.description})"
+                    )
                     AiAuthorityGateway.invalidateSession(session.sessionId, failMsg)
                     TaskOrchestrationStateMachine.transitionTo(OrchestrationLifecycleState.TASK_FAILED, detail = failMsg, lastError = failMsg)
                     return CeoOrchestrationOutcome(false, failMsg, session.taskId, session.sessionId, stepsExecuted, verifiedSteps, failureCode = "VERIFICATION_FAILED")
@@ -947,6 +1032,77 @@ class CeoAiOrchestrator(
         return CeoOrchestrationOutcome(false, limitMsg, session.taskId, session.sessionId, stepsExecuted, verifiedSteps, failureCode = "STEP_LIMIT_REACHED")
     }
 
+    private suspend fun attemptPlanSchemaRepair(
+        session: TaskSessionToken,
+        originalPrompt: String,
+        malformedOutput: String,
+        parseErrorReason: String,
+        observation: ScreenObservationRecord?,
+        requiresVision: Boolean
+    ): CeoTaskPlan? {
+        val repairPrompt = buildString {
+            appendLine(originalPrompt)
+            appendLine()
+            appendLine("SCHEMA CORRECTION REQUIRED:")
+            appendLine("Your previous response was rejected by the protocol validator: $parseErrorReason")
+            appendLine("Previous invalid output: ${malformedOutput.take(300)}")
+            append("Return ONLY valid protocol_version \"1.0\" JSON matching the exact schema above. Use supported actions (OPEN_APP, TAP, DOUBLE_TAP, LONG_PRESS, TYPE, SWIPE, SCROLL, BACK, HOME, RECENTS, WAIT, SEARCH_WEB, SPLIT_SCREEN, ASK_USER, DONE, ABORT) and supported coordinate spaces (NORMALIZED_0_1, NORMALIZED_1000, CURRENT_SCREENSHOT_PIXELS, DISPLAY_PIXELS).")
+        }
+        val retryRes = SelectedProviderClient.invokeSelectedProvider(
+            context = context,
+            prompt = repairPrompt,
+            systemInstruction = CEO_SYSTEM_PROMPT,
+            imageBytes = observation?.imageBytes,
+            requiresVision = requiresVision
+        )
+        if (retryRes is ProviderInvocationResult.Success && retryRes.text != malformedOutput) {
+            val parsed = AiProtocolParser.parseCeoPlan(retryRes.text, session.taskId, session.sessionId)
+            if (parsed is ProtocolParseResult.Valid) {
+                return parsed.value
+            }
+        }
+        return null
+    }
+
+    private suspend fun attemptVerificationSchemaRepair(
+        session: TaskSessionToken,
+        originalVerifyPrompt: String,
+        malformedOutput: String,
+        parseErrorReason: String,
+        afterObservation: ScreenObservationRecord,
+        expectedNextSequence: Int,
+        requiresVision: Boolean
+    ): AiVerificationDecision? {
+        val repairPrompt = buildString {
+            appendLine(originalVerifyPrompt)
+            appendLine()
+            appendLine("SCHEMA CORRECTION REQUIRED:")
+            appendLine("Your previous verification JSON was rejected: $parseErrorReason")
+            appendLine("Previous invalid output: ${malformedOutput.take(300)}")
+            append("Return ONLY valid protocol_version \"1.0\" verification JSON. If is_task_completed is true, set \"next_action\": null. If is_task_completed is false, provide a valid \"next_action\" object with \"action\", \"sequence\": $expectedNextSequence, \"target\", and \"screenshot_reference\": \"${afterObservation.screenshotId}\".")
+        }
+        val retryRes = SelectedProviderClient.invokeSelectedProvider(
+            context = context,
+            prompt = repairPrompt,
+            systemInstruction = CEO_SYSTEM_PROMPT,
+            imageBytes = afterObservation.imageBytes,
+            requiresVision = requiresVision
+        )
+        if (retryRes is ProviderInvocationResult.Success && retryRes.text != malformedOutput) {
+            val parsed = AiProtocolParser.parseVerificationDecision(
+                retryRes.text,
+                session.taskId,
+                session.sessionId,
+                afterObservation.screenshotId,
+                expectedNextSequence = expectedNextSequence
+            )
+            if (parsed is ProtocolParseResult.Valid) {
+                return parsed.value
+            }
+        }
+        return null
+    }
+
     private sealed class ReplanResult {
         data class Action(val envelope: AiActionEnvelope) : ReplanResult()
         data class Done(val message: String) : ReplanResult()
@@ -977,7 +1133,32 @@ class CeoAiOrchestrator(
             appendLine("ui_tree_summary:")
             appendLine(observation.uiTreeSummary.take(2000))
             appendLine()
-            append("Respond with ONE valid JSON Action Envelope matching protocol_version \"1.0\" with next action (or action=\"DONE\" / \"ABORT\").")
+            appendLine("Respond with ONE valid JSON Action Envelope matching protocol_version \"1.0\" with next action (or action=\"DONE\" / \"ABORT\"):")
+            append(
+                """
+                {
+                  "protocol_version":"1.0",
+                  "task_id":"${session.taskId}",
+                  "session_id":"${session.sessionId}",
+                  "action_id":"act_$nextSequence",
+                  "sequence":$nextSequence,
+                  "action":"OPEN_APP|TAP|DOUBLE_TAP|LONG_PRESS|TYPE|SWIPE|SCROLL|BACK|HOME|RECENTS|WAIT|SEARCH_WEB|SPLIT_SCREEN|ASK_USER|DONE|ABORT",
+                  "app_name":"",
+                  "target":{"description":"...","selector":"...","coordinates":{"x":0.5,"y":0.5,"space":"NORMALIZED_0_1"}},
+                  "text":"",
+                  "direction":"UP|DOWN|LEFT|RIGHT",
+                  "screenshot_reference":"${observation.screenshotId}",
+                  "screen_width":${observation.displayWidthPx},
+                  "screen_height":${observation.displayHeightPx},
+                  "orientation":${observation.orientation},
+                  "confidence":0.95,
+                  "expected_result":"...",
+                  "verification_required":true,
+                  "requires_confirmation":false,
+                  "reason":"..."
+                }
+                """.trimIndent()
+            )
         }
 
         val result = SelectedProviderClient.invokeSelectedProvider(
@@ -1024,8 +1205,10 @@ class CeoAiOrchestrator(
             if (!resumed || !session.isActive) return false
         }
 
-        // Wait if network dropped mid-task
-        if (!SelectedProviderClient.isNetworkConnected(context)) {
+        // Wait if network dropped mid-task and local SmolVLM2 multimodal engine is not ready
+        if (!SelectedProviderClient.isNetworkConnected(context) &&
+            !com.example.ai.offline.Gemma4E4BEngine.getInstance(context).isSmolVlm2Ready()
+        ) {
             TaskOrchestrationStateMachine.transitionTo(
                 OrchestrationLifecycleState.TASK_PAUSED,
                 detail = "Network disconnected mid-task; waiting for reconnect to reassess screen.",
@@ -1078,6 +1261,7 @@ class CeoAiOrchestrator(
         observation: ScreenObservationRecord?
     ): String {
         val obsSection = if (observation != null) {
+            val sanitizedUiSummary = ScreenTextSanitizer.sanitizeUntrustedScreenText(observation.uiTreeSummary, maxLength = 2200)
             buildString {
                 appendLine("screenshot_reference: ${observation.screenshotId}")
                 appendLine("screen_width: ${observation.displayWidthPx}")
@@ -1086,7 +1270,7 @@ class CeoAiOrchestrator(
                 appendLine("foreground_package: ${observation.foregroundPackage}")
                 appendLine("browser_url: ${observation.browserUrl}")
                 appendLine("ui_tree_summary:")
-                append(observation.uiTreeSummary.take(2200))
+                append(sanitizedUiSummary)
             }
         } else {
             "screenshot_reference: NONE"
@@ -1097,7 +1281,7 @@ class CeoAiOrchestrator(
             If this is purely a general question / chat requiring NO device interaction, respond ONLY with JSON:
             {"protocol_version":"1.0","mode":"CONVERSATION","task_id":"${session.taskId}","session_id":"${session.sessionId}","assistant_message":"..."}
 
-            Otherwise respond ONLY with JSON containing a CEO step plan and `first_action`:
+            Otherwise respond ONLY with JSON containing a CEO step plan and `first_action` (use `action`="OPEN_APP" with `app_name` when launching an installed app like YouTube, Chrome, or Google):
             {
               "protocol_version":"1.0",
               "task_id":"${session.taskId}",
@@ -1146,9 +1330,13 @@ class CeoAiOrchestrator(
         feedback: ActionExecutionFeedback,
         afterObservation: ScreenObservationRecord
     ): String {
+        val nextSeq = executedAction.sequence + 1
+        val sanitizedAfterSummary = ScreenTextSanitizer.sanitizeUntrustedScreenText(afterObservation.uiTreeSummary, maxLength = 2200)
         val responseTemplate = """
             Verify whether expected_result ACTUALLY occurred on the new screen.
             Never assume success without evidence on the new screenshot/UI tree.
+            If `is_task_completed` is true, set `"next_action": null`.
+            If `is_task_completed` is false and another step is required, set `"next_action"` to a full canonical protocol_version "1.0" Action Envelope object using `"action"` (one of: OPEN_APP, TAP, DOUBLE_TAP, LONG_PRESS, TYPE, SWIPE, SCROLL, BACK, HOME, RECENTS, WAIT, SEARCH_WEB, SPLIT_SCREEN, ASK_USER, DONE, ABORT), `"sequence": $nextSeq`, `"screenshot_reference": "${afterObservation.screenshotId}"`, and `"target": {"description":"...","selector":"...","coordinates":{"x":0.5,"y":0.5,"space":"NORMALIZED_0_1"}}`.
             Respond ONLY with JSON:
             {
               "protocol_version":"1.0",
@@ -1181,8 +1369,8 @@ class CeoAiOrchestrator(
             appendLine("foreground_package: ${afterObservation.foregroundPackage}")
             appendLine("browser_url: ${afterObservation.browserUrl}")
             appendLine("ui_tree_summary:")
-            appendLine(afterObservation.uiTreeSummary.take(2200))
-            appendLine("next_sequence_if_continuing: ${executedAction.sequence + 1}")
+            appendLine(sanitizedAfterSummary)
+            appendLine("next_sequence_if_continuing: $nextSeq")
             appendLine()
             append(responseTemplate)
         }
@@ -1191,6 +1379,9 @@ class CeoAiOrchestrator(
     private val CEO_SYSTEM_PROMPT = """
         You are the CEO-level Android AI Orchestrator. You are the ONLY brain and decision-maker.
         You inspect screenshots carefully, plan step-by-step, issue ONE atomic verified action at a time in strict protocol v1.0 JSON, and verify every post-action screenshot before claiming success.
+        Supported actions: OPEN_APP, SPLIT_SCREEN, TAP, DOUBLE_TAP, LONG_PRESS, TYPE, SWIPE, SCROLL, BACK, HOME, RECENTS, WAIT, SEARCH_WEB, ASK_USER, DONE, ABORT.
+        Supported coordinate spaces: NORMALIZED_0_1 (0.0 to 1.0), NORMALIZED_1000 (0 to 1000), CURRENT_SCREENSHOT_PIXELS, DISPLAY_PIXELS.
+        When launching an application (e.g. YouTube, Chrome, Google), always use action="OPEN_APP" with app_name="<App Name>". When typing into a search bar, use action="TYPE" with text="<query>" and target.description="Search".
         Never guess hidden buttons or invent UI coordinates without high confidence. Always include exact task_id, session_id, action_id, monotonically increasing sequence, screenshot_reference, confidence in [0,1], and expected_result.
     """.trimIndent()
 }

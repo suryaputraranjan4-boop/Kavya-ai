@@ -481,6 +481,20 @@ class AppResolver(private val context: Context) {
 
         Log.d(TAG, "Resolving app: raw='$rawInput' -> cleaned='$cleanedTarget' -> normalized='$normalizedQuery'")
 
+        // 0. Direct package-name match (e.g. "com.android.chrome", "com.google.android.youtube")
+        val directPackageMatch = apps.find {
+            it.packageName.equals(cleanedTarget, ignoreCase = true) ||
+                it.packageName.equals(trimmed, ignoreCase = true)
+        }
+        if (directPackageMatch != null) {
+            return AppResolutionResult(
+                requestedName = cleanedTarget,
+                matchedApp = directPackageMatch,
+                confidence = MatchConfidence.EXACT,
+                reason = "Direct package name match: '${directPackageMatch.packageName}'"
+            )
+        }
+
         // 1. Exact case-sensitive match on App Label
         val exactMatches = apps.filter { it.appName == cleanedTarget }
         if (exactMatches.size == 1) {
@@ -525,31 +539,25 @@ class AppResolver(private val context: Context) {
             }
         }
 
-        // 4. Official Multilingual / Short Alias Match
+        // 4. Official Multilingual / Short Alias Match (priority-ordered fallback list)
         val officialTargets = OFFICIAL_ALIASES[normalizedQuery]
         if (officialTargets != null) {
             val aliasMatches = mutableListOf<InstalledApp>()
             for (target in officialTargets) {
-                val matched = apps.find { it.packageName == target || it.normalizedName == target }
+                val matched = apps.find { it.packageName.equals(target, ignoreCase = true) || it.normalizedName == target }
                 if (matched != null && !aliasMatches.contains(matched)) {
                     aliasMatches.add(matched)
                 }
             }
 
-            if (aliasMatches.size == 1) {
+            if (aliasMatches.isNotEmpty()) {
+                val preferred = aliasMatches.find { it.normalizedName == normalizedQuery } ?: aliasMatches.first()
                 return AppResolutionResult(
                     requestedName = cleanedTarget,
-                    matchedApp = aliasMatches.first(),
-                    confidence = MatchConfidence.EXACT,
-                    reason = "Official alias '$normalizedQuery' matched installed '${aliasMatches.first().appName}'"
-                )
-            } else if (aliasMatches.size > 1) {
-                return AppResolutionResult(
-                    requestedName = cleanedTarget,
-                    matchedApp = null,
+                    matchedApp = preferred,
                     candidateApps = aliasMatches,
-                    confidence = MatchConfidence.AMBIGUOUS,
-                    reason = "Official alias '$normalizedQuery' matches multiple installed apps."
+                    confidence = MatchConfidence.EXACT,
+                    reason = "Official alias '$normalizedQuery' matched installed '${preferred.appName}' (${preferred.packageName})"
                 )
             }
         }

@@ -6,6 +6,8 @@ import android.os.Build
 import android.util.DisplayMetrics
 import android.view.Surface
 import android.view.WindowManager
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -16,7 +18,8 @@ import kotlin.math.roundToInt
  *    screenshot space (resized/compressed bitmaps), and physical device display pixels.
  * 2. Accounts for display density, orientation/rotation, display cutouts,
  *    and system insets (status bar, navigation bar).
- * 3. Never assumes a fixed device resolution (e.g. 1080x1920 or 1080x2400).
+ * 3. Never assumes a fixed device resolution (e.g. 1080x1920 or 1080x2400) and never
+ *    falls back to screen center (540, 1200).
  * 4. Ensures all touch points are strictly clamped to valid on-screen interactive bounds.
  */
 class PrecisionCoordinateMapper(private val context: Context) {
@@ -28,6 +31,16 @@ class PrecisionCoordinateMapper(private val context: Context) {
         val densityScale: Float,
         val rotation: Int
     )
+
+    data class NormalizedRect(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float
+    ) {
+        val centerX: Float get() = (left + right) / 2f
+        val centerY: Float get() = (top + bottom) / 2f
+    }
 
     /**
      * Retrieves the exact physical display dimensions and orientation of the active device.
@@ -89,8 +102,7 @@ class PrecisionCoordinateMapper(private val context: Context) {
     }
 
     /**
-     * Converts coordinates from a resized screenshot or MediaProjection frame back to physical device coordinates,
-     * accounting for letterboxing/pillarboxing when captured content aspect ratio differs from display aspect ratio.
+     * Converts coordinates from a resized screenshot or MediaProjection frame back to physical device coordinates.
      */
     fun fromScreenshotCoordinates(
         screenshotX: Float,
@@ -134,6 +146,69 @@ class PrecisionCoordinateMapper(private val context: Context) {
             val y = screenshotY.coerceIn(0f, sourceMaxY.toFloat()) *
                 targetMaxY.toFloat() / sourceMaxY.toFloat()
             return DeviceCoordinates(x, y)
+        }
+
+        fun mapScreenshotRectToDevice(
+            screenshotRect: Rect,
+            screenshotWidth: Int,
+            screenshotHeight: Int,
+            screenWidth: Int,
+            screenHeight: Int
+        ): Rect {
+            val tl = mapScreenshotPoint(
+                screenshotX = screenshotRect.left.toFloat(),
+                screenshotY = screenshotRect.top.toFloat(),
+                screenshotWidth = screenshotWidth,
+                screenshotHeight = screenshotHeight,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight
+            )
+            val br = mapScreenshotPoint(
+                screenshotX = screenshotRect.right.toFloat(),
+                screenshotY = screenshotRect.bottom.toFloat(),
+                screenshotWidth = screenshotWidth,
+                screenshotHeight = screenshotHeight,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight
+            )
+            val left = min(tl.x, br.x).roundToInt().coerceIn(0, (screenWidth - 1).coerceAtLeast(0))
+            val top = min(tl.y, br.y).roundToInt().coerceIn(0, (screenHeight - 1).coerceAtLeast(0))
+            val right = max(tl.x, br.x).roundToInt().coerceIn(left, (screenWidth - 1).coerceAtLeast(0))
+            val bottom = max(tl.y, br.y).roundToInt().coerceIn(top, (screenHeight - 1).coerceAtLeast(0))
+            return Rect(left, top, right, bottom)
+        }
+
+        fun mapNormalizedBoxToDevice(
+            normLeft: Float,
+            normTop: Float,
+            normRight: Float,
+            normBottom: Float,
+            screenWidth: Int,
+            screenHeight: Int
+        ): Rect {
+            if (screenWidth <= 0 || screenHeight <= 0) return Rect(0, 0, 0, 0)
+            val maxW = (screenWidth - 1).coerceAtLeast(1)
+            val maxH = (screenHeight - 1).coerceAtLeast(1)
+            val l = (normLeft.coerceIn(0f, 1f) * maxW).roundToInt()
+            val t = (normTop.coerceIn(0f, 1f) * maxH).roundToInt()
+            val r = (normRight.coerceIn(0f, 1f) * maxW).roundToInt().coerceAtLeast(l)
+            val b = (normBottom.coerceIn(0f, 1f) * maxH).roundToInt().coerceAtLeast(t)
+            return Rect(l, t, r, b)
+        }
+
+        fun toNormalizedBounds(
+            deviceRect: Rect,
+            screenWidth: Int,
+            screenHeight: Int
+        ): NormalizedRect {
+            val maxW = (screenWidth - 1).coerceAtLeast(1).toFloat()
+            val maxH = (screenHeight - 1).coerceAtLeast(1).toFloat()
+            return NormalizedRect(
+                left = (deviceRect.left / maxW).coerceIn(0f, 1f),
+                top = (deviceRect.top / maxH).coerceIn(0f, 1f),
+                right = (deviceRect.right / maxW).coerceIn(0f, 1f),
+                bottom = (deviceRect.bottom / maxH).coerceIn(0f, 1f)
+            )
         }
     }
 

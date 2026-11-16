@@ -1373,6 +1373,401 @@ class AiAuthorityAndOrchestratorRegressionTest {
         assertTrue(com.example.services.ScreenShareManager.state.value is com.example.services.ScreenShareManager.ScreenShareState.Stopped)
         assertFalse(com.example.services.ScreenShareManager.isScreenSharingActive)
     }
+
+    // 39. Section 11.A — Protocol Normalization: legacy CLICK, TARGET_NAME, array COORDINATES, null TEXT_INPUT, uppercase fields, multi-actions, and invalid action rejection
+    @Test
+    fun test39_protocolNormalization_handlesLegacyClickTargetNameArrayCoordinatesNullTextAndUppercaseFields() {
+        AiActionDiagnostics.clear()
+
+        // 1. Exact Error A payload from real device failure:
+        // {"TYPE":"CLICK","TARGET_NAME":"CHROME","COORDINATES":[614,825],"TEXT_INPUT":null}
+        val errorAPayload = """{"TYPE":"CLICK","TARGET_NAME":"CHROME","COORDINATES":[614,825],"TEXT_INPUT":null}"""
+        val parsedClick = AiProtocolParser.parseActionEnvelope(
+            rawJsonOrText = errorAPayload,
+            expectedTaskId = "task_err_a",
+            expectedSessionId = "sess_err_a",
+            defaultSequence = 2,
+            defaultScreenshotRef = "scr_live_1"
+        )
+        assertTrue("Legacy CLICK payload must parse validly", parsedClick is ProtocolParseResult.Valid)
+        val clickEnv = (parsedClick as ProtocolParseResult.Valid).value
+        assertEquals(OrchestratorActionType.TAP, clickEnv.action)
+        assertEquals("CHROME", clickEnv.target.description)
+        assertEquals("", clickEnv.text) // null must NEVER become "null"
+        assertNotNull(clickEnv.target.coordinates)
+        assertEquals(614.0, clickEnv.target.coordinates!!.x, 0.01)
+        assertEquals(825.0, clickEnv.target.coordinates!!.y, 0.01)
+        assertEquals(CoordinateSpace.DISPLAY_PIXELS, clickEnv.target.coordinates!!.space)
+        assertEquals(2, clickEnv.sequence)
+
+        // 2. Verification JSON containing nested stringified legacy action in next_action on Step 2
+        val verifyWithLegacyNext = """
+            {
+              "protocol_version": "1.0",
+              "task_id": "task_err_a",
+              "session_id": "sess_err_a",
+              "screenshot_reference": "scr_live_2",
+              "verified": true,
+              "observed_screen_summary": "Home screen visible",
+              "is_task_completed": false,
+              "needs_replan": false,
+              "next_action": "{\"TYPE\":\"CLICK\",\"TARGET_NAME\":\"CHROME\",\"COORDINATES\":[614,825],\"TEXT_INPUT\":null}"
+            }
+        """.trimIndent()
+        val parsedVerify = AiProtocolParser.parseVerificationDecision(
+            rawJsonOrText = verifyWithLegacyNext,
+            expectedTaskId = "task_err_a",
+            expectedSessionId = "sess_err_a",
+            expectedScreenshotRef = "scr_live_2",
+            expectedNextSequence = 2
+        )
+        assertTrue("Verification with nested legacy next_action must parse validly", parsedVerify is ProtocolParseResult.Valid)
+        val nextAct = (parsedVerify as ProtocolParseResult.Valid).value.nextAction
+        assertNotNull(nextAct)
+        assertEquals(OrchestratorActionType.TAP, nextAct!!.action)
+        assertEquals(2, nextAct.sequence)
+        assertEquals("CHROME", nextAct.target.description)
+
+        // 3. Valid OPEN_APP via legacy LAUNCH_APP & uppercase APP_NAME
+        val openAppPayload = """{"ACTION":"LAUNCH_APP","APP_NAME":"YouTube","TEXT_INPUT":null}"""
+        val parsedOpen = AiProtocolParser.parseActionEnvelope(openAppPayload, "t1", "s1", 1, "scr_1")
+        assertTrue(parsedOpen is ProtocolParseResult.Valid)
+        assertEquals(OrchestratorActionType.OPEN_APP, (parsedOpen as ProtocolParseResult.Valid).value.action)
+        assertEquals("YouTube", parsedOpen.value.appName)
+
+        // 4. Multiple actions array in a plan
+        val multiActionPlanJson = """
+            {
+              "protocol_version": "1.0",
+              "task_id": "t_multi",
+              "session_id": "s_multi",
+              "overall_goal": "Open YouTube and search hero",
+              "actions": [
+                {"TYPE": "OPEN_APP", "APP_NAME": "YouTube", "screenshot_reference": "scr_1"},
+                {"TYPE": "INPUT_TEXT", "TARGET_NAME": "Search", "TEXT_INPUT": "hero", "COORDINATES": [540, 180], "screenshot_reference": "scr_1"}
+              ]
+            }
+        """.trimIndent()
+        val parsedMulti = AiProtocolParser.parseCeoPlan(multiActionPlanJson, "t_multi", "s_multi", "scr_1")
+        assertTrue(parsedMulti is ProtocolParseResult.Valid)
+        val planVal = (parsedMulti as ProtocolParseResult.Valid).value
+        assertNotNull(planVal.firstAction)
+        assertEquals(OrchestratorActionType.OPEN_APP, planVal.firstAction!!.action)
+        assertEquals(2, planVal.plannedActions.size)
+        assertEquals(OrchestratorActionType.TYPE, planVal.plannedActions[1].action)
+        assertEquals("hero", planVal.plannedActions[1].text)
+
+        // 5. Invalid CLICK action (missing both target and coordinates)
+        val invalidClick = AiProtocolParser.parseActionEnvelope("""{"TYPE":"CLICK","TARGET_NAME":null,"COORDINATES":null}""", "t1", "s1", 1, "scr_1")
+        assertTrue(invalidClick is ProtocolParseResult.Malformed)
+
+        // 6. Missing required fields for TYPE and OPEN_APP
+        val invalidType = AiProtocolParser.parseActionEnvelope("""{"action":"TYPE","target":{"description":"Search"},"text":null}""", "t1", "s1", 1, "scr_1")
+        assertTrue(invalidType is ProtocolParseResult.Malformed)
+        val invalidOpen = AiProtocolParser.parseActionEnvelope("""{"action":"OPEN_APP","app_name":null}""", "t1", "s1", 1, "scr_1")
+        assertTrue(invalidOpen is ProtocolParseResult.Malformed)
+
+        // 7. Unsupported action type rejected and logged in AiActionDiagnostics
+        val unsupported = AiProtocolParser.parseActionEnvelope("""{"action":"TELEPORT_DEVICE","target":"Mars"}""", "t1", "s1", 1, "scr_1")
+        assertTrue(unsupported is ProtocolParseResult.Malformed)
+        assertTrue(AiActionDiagnostics.recentRecords().any { it.category == ActionDiagnosticCategory.UNSUPPORTED_ACTION })
+    }
+
+    // 40. Section 11.B — Coordinate Spaces: ABSOLUTE, DISPLAY_PIXELS, CURRENT_SCREENSHOT_PIXELS, NORMALIZED_0_1, NORMALIZED_1000, invalid space, OOB, and rotation
+    @Test
+    fun test40_coordinateSpaces_supportsAbsoluteDisplayScreenshotNormalized01And1000AndRejectsInvalid() = runBlocking {
+        setGeometryAndObservation(width = 1080, height = 2400, orientation = Configuration.ORIENTATION_PORTRAIT)
+        val obs = ScreenObservationCoordinator.captureFreshObservation(app)!!.copy(
+            displayWidthPx = 1080,
+            displayHeightPx = 2400,
+            bitmapWidth = 540,
+            bitmapHeight = 1200
+        )
+
+        // 1. Error B fix: "ABSOLUTE", "PIXELS", "SCREEN" map to CoordinateSpace.DISPLAY_PIXELS
+        assertEquals(CoordinateSpace.DISPLAY_PIXELS, CoordinateSpace.parse("ABSOLUTE"))
+        assertEquals(CoordinateSpace.DISPLAY_PIXELS, CoordinateSpace.parse("ABSOLUTE_PIXELS"))
+        assertEquals(CoordinateSpace.DISPLAY_PIXELS, CoordinateSpace.parse("PIXELS"))
+        assertEquals(CoordinateSpace.DISPLAY_PIXELS, CoordinateSpace.parse("SCREEN"))
+        assertEquals(CoordinateSpace.NORMALIZED_1000, CoordinateSpace.parse("NORMALIZED_1000"))
+        assertEquals(CoordinateSpace.NORMALIZED_1000, CoordinateSpace.parse("0_1000"))
+        assertNull(CoordinateSpace.parse("INVALID_COORDINATE_SPACE"))
+
+        // Plan with coordinate_space = "ABSOLUTE" must parse and calibrate cleanly
+        val absPlanJson = """
+            {
+              "protocol_version":"1.0",
+              "task_id":"t_abs",
+              "session_id":"s_abs",
+              "overall_goal":"Tap Chrome",
+              "first_action":{
+                "action_id":"a_abs",
+                "sequence":1,
+                "action":"CLICK",
+                "target":{"description":"Chrome","coordinates":{"x":614,"y":825,"coordinate_space":"ABSOLUTE"}},
+                "screenshot_reference":"${obs.screenshotId}",
+                "confidence":0.95,
+                "expected_result":"Chrome opens"
+              }
+            }
+        """.trimIndent()
+        val parsedAbsPlan = AiProtocolParser.parseCeoPlan(absPlanJson, "t_abs", "s_abs", obs.screenshotId)
+        assertTrue("Plan with coordinate_space ABSOLUTE must succeed", parsedAbsPlan is ProtocolParseResult.Valid)
+        val absEnv = (parsedAbsPlan as ProtocolParseResult.Valid).value.firstAction!!
+        val absCal = PrecisionController.calibrateTargetCoordinates(app, absEnv, obs)
+        assertTrue(absCal is PrecisionCalibrationResult.Valid)
+        assertEquals(614f, (absCal as PrecisionCalibrationResult.Valid).point.xPx, 0.5f)
+        assertEquals(825f, absCal.point.yPx, 0.5f)
+
+        // 2. CURRENT_SCREENSHOT_PIXELS (540x1200 scaled to 1080x2400)
+        val shotEnv = absEnv.copy(
+            target = AiActionTarget("Btn", coordinates = AiCoordinates(270.0, 600.0, CoordinateSpace.CURRENT_SCREENSHOT_PIXELS))
+        )
+        val shotCal = PrecisionController.calibrateTargetCoordinates(app, shotEnv, obs)
+        assertTrue(shotCal is PrecisionCalibrationResult.Valid)
+        assertEquals(540f, (shotCal as PrecisionCalibrationResult.Valid).point.xPx, 0.5f)
+        assertEquals(1200f, shotCal.point.yPx, 0.5f)
+
+        // 3. NORMALIZED_0_1
+        val norm01Env = absEnv.copy(
+            target = AiActionTarget("Btn", coordinates = AiCoordinates(0.25, 0.5, CoordinateSpace.NORMALIZED_0_1))
+        )
+        val norm01Cal = PrecisionController.calibrateTargetCoordinates(app, norm01Env, obs)
+        assertTrue(norm01Cal is PrecisionCalibrationResult.Valid)
+        assertEquals(270f, (norm01Cal as PrecisionCalibrationResult.Valid).point.xPx, 0.5f)
+        assertEquals(1200f, norm01Cal.point.yPx, 0.5f)
+
+        // 4. NORMALIZED_1000 (including Gemini [ymin, xmin, ymax, xmax] 4-element box)
+        val boxEnvParsed = AiProtocolParser.parseActionEnvelope(
+            """{"action":"CLICK","target":"Search","box_2d":[200,400,300,600],"screenshot_reference":"${obs.screenshotId}"}""",
+            "t_abs", "s_abs", 1, obs.screenshotId
+        )
+        assertTrue(boxEnvParsed is ProtocolParseResult.Valid)
+        val boxCal = PrecisionController.calibrateTargetCoordinates(app, (boxEnvParsed as ProtocolParseResult.Valid).value, obs)
+        assertTrue(boxCal is PrecisionCalibrationResult.Valid)
+        assertEquals(540f, (boxCal as PrecisionCalibrationResult.Valid).point.xPx, 0.5f) // x = 500/1000 * 1080 = 540
+        assertEquals(600f, boxCal.point.yPx, 0.5f) // y = 250/1000 * 2400 = 600
+
+        // 5. Invalid coordinate_space rejected
+        val badSpaceRes = AiProtocolParser.parseActionEnvelope(
+            """{"action":"TAP","target":{"description":"Btn","coordinates":{"x":10,"y":20,"space":"UNKNOWN_SPACE"}}}""",
+            "t_abs", "s_abs", 1, obs.screenshotId
+        )
+        assertTrue(badSpaceRes is ProtocolParseResult.Malformed)
+
+        // 6. Out-of-bounds NORMALIZED_1000 rejected
+        val oob1000 = absEnv.copy(
+            target = AiActionTarget("OOB", coordinates = AiCoordinates(1200.0, 500.0, CoordinateSpace.NORMALIZED_1000))
+        )
+        assertTrue(PrecisionController.calibrateTargetCoordinates(app, oob1000, obs) is PrecisionCalibrationResult.Rejected)
+
+        // 7. Screen rotation mismatch rejected
+        setGeometryAndObservation(width = 2400, height = 1080, orientation = Configuration.ORIENTATION_LANDSCAPE)
+        assertTrue(PrecisionController.calibrateTargetCoordinates(app, absEnv, obs) is PrecisionCalibrationResult.Rejected)
+    }
+
+    // 41. Section 11.C — App Resolution: Chrome, Google Chrome, YouTube, Google (when both Google & Chrome installed), package names, and unknown app
+    @Test
+    fun test41_appResolver_resolvesChromeYouTubeGoogleByLabelAliasAndPackageAndRejectsUnknown() {
+        val resolver = AppResolver(app)
+        resolver.setInstalledAppsForTesting(
+            listOf(
+                com.example.utils.InstalledApp(
+                    appName = "YouTube",
+                    packageName = "com.google.android.youtube",
+                    launcherActivity = "com.google.android.youtube.HomeActivity",
+                    normalizedName = "youtube",
+                    aliases = listOf("yt", "यूट्यूब")
+                ),
+                com.example.utils.InstalledApp(
+                    appName = "Google Chrome",
+                    packageName = "com.android.chrome",
+                    launcherActivity = "com.google.android.apps.chrome.Main",
+                    normalizedName = "google chrome",
+                    aliases = listOf("chrome", "क्रोम")
+                ),
+                com.example.utils.InstalledApp(
+                    appName = "Google",
+                    packageName = "com.google.android.googlequicksearchbox",
+                    launcherActivity = "com.google.android.googlequicksearchbox.SearchActivity",
+                    normalizedName = "google",
+                    aliases = listOf("गूगल")
+                )
+            )
+        )
+
+        // Chrome & Google Chrome & package name
+        assertEquals("com.android.chrome", resolver.resolve("Chrome").matchedApp?.packageName)
+        assertEquals("com.android.chrome", resolver.resolve("Google Chrome").matchedApp?.packageName)
+        assertEquals("com.android.chrome", resolver.resolve("com.android.chrome").matchedApp?.packageName)
+
+        // YouTube & package name
+        assertEquals("com.google.android.youtube", resolver.resolve("YouTube").matchedApp?.packageName)
+        assertEquals("com.google.android.youtube", resolver.resolve("com.google.android.youtube").matchedApp?.packageName)
+
+        // Google when BOTH Google app and Google Chrome are installed -> must NOT fail with AMBIGUOUS
+        val googleRes = resolver.resolve("Google")
+        assertNotNull("Google must resolve unambiguously when both Google and Chrome are installed", googleRes.matchedApp)
+        assertEquals("com.google.android.googlequicksearchbox", googleRes.matchedApp?.packageName)
+        assertEquals(com.example.utils.MatchConfidence.EXACT, googleRes.confidence)
+
+        // Unknown / missing app
+        val unknownRes = resolver.resolve("NonExistentApp999")
+        assertNull(unknownRes.matchedApp)
+        assertEquals(com.example.utils.MatchConfidence.NONE, unknownRes.confidence)
+    }
+
+    // 42. Section 11.D — End-to-End Execution: "Open YouTube and search hero", legacy next_action format, and 1-attempt schema repair recovery
+    @Test
+    fun test42_endToEndMultiStepExecution_openYouTubeAndSearchHero_andSchemaRepairRecovery() = runBlocking {
+        // Part A: "Open YouTube and search hero" where Step 2 uses legacy upper-case next_action format
+        val stepCalls = AtomicInteger(0)
+        SelectedProviderClient.testTransport = object : ProviderTransport {
+            override suspend fun invoke(context: android.content.Context, request: ProviderInvocationRequest): ProviderInvocationResult {
+                val callNum = stepCalls.incrementAndGet()
+                val taskId = extractField(request.prompt, "task_id")
+                val sessionId = extractField(request.prompt, "session_id")
+                val scr = extractField(request.prompt, if (callNum == 1) "screenshot_reference" else "new_screenshot_reference")
+
+                return when (callNum) {
+                    1 -> ProviderInvocationResult.Success(
+                        """
+                        {
+                          "protocol_version":"1.0",
+                          "task_id":"$taskId",
+                          "session_id":"$sessionId",
+                          "overall_goal":"Open YouTube and search hero",
+                          "steps":[
+                            {"step_number":1,"goal":"Open YouTube","expected_outcome":"YouTube home screen"},
+                            {"step_number":2,"goal":"Search hero","expected_outcome":"Search results for hero"}
+                          ],
+                          "first_action":{
+                            "ACTION":"OPEN_APP",
+                            "APP_NAME":"YouTube",
+                            "screenshot_reference":"$scr",
+                            "confidence":0.97,
+                            "expected_result":"YouTube app opened"
+                          }
+                        }
+                        """.trimIndent(),
+                        request.providerId,
+                        request.modelId
+                    )
+                    2 -> ProviderInvocationResult.Success(
+                        """
+                        {
+                          "protocol_version":"1.0",
+                          "task_id":"$taskId",
+                          "session_id":"$sessionId",
+                          "screenshot_reference":"$scr",
+                          "verified":true,
+                          "observed_screen_summary":"YouTube home screen is open",
+                          "is_task_completed":false,
+                          "needs_replan":false,
+                          "next_action":{
+                            "TYPE":"TYPE",
+                            "TARGET_NAME":"Search YouTube",
+                            "COORDINATES":[614,185],
+                            "COORDINATE_SPACE":"ABSOLUTE",
+                            "TEXT_INPUT":"hero",
+                            "screenshot_reference":"$scr",
+                            "confidence":0.95,
+                            "expected_result":"Search results for hero visible"
+                          }
+                        }
+                        """.trimIndent(),
+                        request.providerId,
+                        request.modelId
+                    )
+                    else -> ProviderInvocationResult.Success(
+                        """
+                        {
+                          "protocol_version":"1.0",
+                          "task_id":"$taskId",
+                          "session_id":"$sessionId",
+                          "screenshot_reference":"$scr",
+                          "verified":true,
+                          "observed_screen_summary":"YouTube search results for hero are displayed",
+                          "is_task_completed":true,
+                          "needs_replan":false,
+                          "assistant_message":"Opened YouTube and searched for hero.",
+                          "next_action":null
+                        }
+                        """.trimIndent(),
+                        request.providerId,
+                        request.modelId
+                    )
+                }
+            }
+        }
+
+        val ytOutcome = buildOrchestrator().runTask("Open YouTube and search hero")
+        assertTrue("Multi-step Open YouTube and search hero must succeed", ytOutcome.success)
+        assertEquals(2, ytOutcome.stepsExecuted)
+        assertEquals(2, ytOutcome.verifiedSteps)
+        assertEquals(OrchestratorActionType.OPEN_APP, trackingExecutor.executedEnvelopes[0].action)
+        assertEquals("YouTube", trackingExecutor.executedEnvelopes[0].appName)
+        assertEquals(OrchestratorActionType.TYPE, trackingExecutor.executedEnvelopes[1].action)
+        assertEquals("hero", trackingExecutor.executedEnvelopes[1].text)
+        assertEquals(614f, trackingExecutor.executedPoints[1]!!.xPx, 0.5f)
+        assertEquals(185f, trackingExecutor.executedPoints[1]!!.yPx, 0.5f)
+
+        // Part B: Recovery from initial malformed AI output via 1-attempt controlled schema repair
+        trackingExecutor.executedEnvelopes.clear()
+        val repairCalls = AtomicInteger(0)
+        SelectedProviderClient.testTransport = object : ProviderTransport {
+            override suspend fun invoke(context: android.content.Context, request: ProviderInvocationRequest): ProviderInvocationResult {
+                val n = repairCalls.incrementAndGet()
+                val taskId = extractField(request.prompt, "task_id")
+                val sessionId = extractField(request.prompt, "session_id")
+                val scr = extractField(request.prompt, if (n <= 2) "screenshot_reference" else "new_screenshot_reference")
+                return when (n) {
+                    1 -> ProviderInvocationResult.Success(
+                        // First response has an unsupported action that triggers 1-attempt schema repair
+                        """{"protocol_version":"1.0","task_id":"$taskId","session_id":"$sessionId","first_action":{"action":"INVALID_BROKEN_ACTION"}}""",
+                        request.providerId,
+                        request.modelId
+                    )
+                    2 -> {
+                        assertTrue("Repair prompt must include SCHEMA CORRECTION REQUIRED", request.prompt.contains("SCHEMA CORRECTION REQUIRED"))
+                        ProviderInvocationResult.Success(
+                            """
+                            {
+                              "protocol_version":"1.0",
+                              "task_id":"$taskId",
+                              "session_id":"$sessionId",
+                              "overall_goal":"Open Chrome",
+                              "first_action":{
+                                "action_id":"act_chrome_1",
+                                "sequence":1,
+                                "action":"OPEN_APP",
+                                "app_name":"Chrome",
+                                "screenshot_reference":"$scr",
+                                "confidence":0.98,
+                                "expected_result":"Chrome is open"
+                              }
+                            }
+                            """.trimIndent(),
+                            request.providerId,
+                            request.modelId
+                        )
+                    }
+                    else -> ProviderInvocationResult.Success(
+                        """{"protocol_version":"1.0","task_id":"$taskId","session_id":"$sessionId","screenshot_reference":"$scr","verified":true,"observed_screen_summary":"Chrome open","is_task_completed":true,"needs_replan":false,"assistant_message":"Opened Chrome."}""",
+                        request.providerId,
+                        request.modelId
+                    )
+                }
+            }
+        }
+
+        val repairOutcome = buildOrchestrator().runTask("Open Chrome")
+        assertTrue("Orchestrator must recover when AI repairs malformed plan on 1st retry", repairOutcome.success)
+        assertEquals(1, repairOutcome.stepsExecuted)
+        assertEquals(1, repairOutcome.verifiedSteps)
+        assertEquals(3, repairCalls.get())
+    }
 }
+
 
 

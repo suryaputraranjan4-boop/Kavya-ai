@@ -3,22 +3,29 @@ package com.example.visual
 import android.graphics.Rect
 import com.example.agent.AnalyzedNode
 import com.example.agent.FreshScreenState
+import com.example.orchestrator.CoordinateSpace
+import com.example.orchestrator.ScreenTextSanitizer
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Multi-Signal Screen Understanding System (Upgrade 2).
- * Combines Accessibility Hierarchy, OCR Text Blocks, and Vision Grounding into
- * a deduplicated Unified UI Representation with InputFieldRole & IconRole disambiguation,
+ * Multi-Signal Screen Understanding System (Upgrade 2 + Multi-Model GUI Intelligence).
+ * Combines Accessibility Hierarchy, OCR Text Blocks, Florence-2 Auxiliary Vision proposals,
+ * SmolVLM2 Local GUI VLM Grounding, and Online Gemini Vision into a deduplicated
+ * Unified UI Representation with InputFieldRole & IconRole disambiguation,
  * V-Droid-style Pre-Action / Post-Action Verification, Short-Term Navigation Memory,
  * and Untrusted Screen Content Protection.
  */
 enum class SignalSource {
     ACCESSIBILITY,
     OCR,
-    VISION
+    VISION,
+    AUX_VISION_MODEL,
+    LOCAL_GUI_VLM,
+    ONLINE_GEMINI_VISION
 }
 
 enum class InputFieldRole {
@@ -69,7 +76,19 @@ data class VisionElementSignal(
     val label: String,
     val roleHint: String = "",
     val bounds: Rect,
-    val confidence: Float = 0.88f
+    val confidence: Float = 0.88f,
+    val sourceSignal: SignalSource = SignalSource.VISION,
+    val sourceModelId: String = "",
+    val sourceModelRevision: String = "",
+    val isConfidenceCalibrated: Boolean = true
+)
+
+data class SignalDisagreementRecord(
+    val primarySource: SignalSource,
+    val secondarySource: SignalSource,
+    val centerDistancePx: Float,
+    val iou: Float,
+    val description: String
 )
 
 data class UnifiedUIElement(
@@ -92,10 +111,41 @@ data class UnifiedUIElement(
     val isFocused: Boolean = false,
     val isSelected: Boolean = false,
     val confidence: Float = 0.90f,
-    val analyzedNode: AnalyzedNode? = null
+    val analyzedNode: AnalyzedNode? = null,
+    val semanticRole: String = "",
+    val elementType: String = className.substringAfterLast('.').ifBlank { "View" },
+    val coordinateSpace: CoordinateSpace = CoordinateSpace.DISPLAY_PIXELS,
+    val screenshotWidth: Int = 1080,
+    val screenshotHeight: Int = 2400,
+    val normalizedBounds: PrecisionCoordinateMapper.NormalizedRect =
+        PrecisionCoordinateMapper.toNormalizedBounds(bounds, screenshotWidth, screenshotHeight),
+    val normalizedCenter: Pair<Float, Float> =
+        Pair(normalizedBounds.centerX, normalizedBounds.centerY),
+    val sourceModelId: String = "",
+    val sourceModelRevision: String = "",
+    val isConfidenceCalibrated: Boolean = true,
+    val disagreements: List<SignalDisagreementRecord> = emptyList(),
+    val frameId: String = "",
+    val observationTimestampMs: Long = System.currentTimeMillis(),
+    val isFresh: Boolean = true,
+    val screenFingerprint: String = ""
 ) {
     val primaryLabel: String
         get() = visibleText.ifBlank { contentDescription.ifBlank { hintText.ifBlank { viewIdResourceName.substringAfterLast("/") } } }
+
+    val normalizedCenterX: Float
+        get() = normalizedCenter.first
+
+    val normalizedCenterY: Float
+        get() = normalizedCenter.second
+
+    /**
+     * Returns true when this candidate comes exclusively from `AUX_VISION_MODEL` (Florence-2)
+     * without corroboration from Accessibility, OCR, SmolVLM2 (`LOCAL_GUI_VLM`), or Gemini (`ONLINE_GEMINI_VISION`).
+     * Per Section 2.3 and 6.2, Florence-2 alone is NEVER authoritative for direct tap/type actions.
+     */
+    val isAuxVisionOnly: Boolean
+        get() = sourceSignals.isNotEmpty() && sourceSignals.all { it == SignalSource.AUX_VISION_MODEL }
 }
 
 data class PreActionVerificationResult(
@@ -111,7 +161,10 @@ data class PostActionVerificationResult(
     val transitionVerified: Boolean,
     val summary: String,
     val detectedScreenType: ScreenSemanticType,
-    val shouldRetryWithAlternate: Boolean = false
+    val shouldRetryWithAlternate: Boolean = false,
+    val beforeFingerprint: String = "",
+    val afterFingerprint: String = "",
+    val cacheInvalidated: Boolean = false
 )
 
 /**
@@ -186,24 +239,20 @@ object InputFieldClassifier {
             return InputFieldRole.NOT_INPUT
         }
 
-        // 1. Check explicit Browser Address Bar
         if (addressBarKeywords.any { combined.contains(it) } ||
             (pkgLower in browserPackages && (idLower.contains("url") || idLower.contains("search_box") || node.bounds.top < screenHeight * 0.25))
         ) {
             return InputFieldRole.BROWSER_ADDRESS_BAR
         }
 
-        // 2. Check explicit Comment Box
         if (commentKeywords.any { combined.contains(it) }) {
             return InputFieldRole.COMMENT_BOX
         }
 
-        // 3. Check explicit Login Field
         if (loginKeywords.any { combined.contains(it) }) {
             return InputFieldRole.LOGIN_FIELD
         }
 
-        // 4. Check explicit Chat Composer signals (keywords, WhatsApp `entry` id, bottom position with adjacent Send/Attach/Emoji)
         val isWhatsAppEntry = pkgLower.startsWith("com.whatsapp") &&
             (idLower == "entry" || idLower.endsWith(":id/entry") || idLower.contains("chat_input") || idLower.contains("composer"))
         val isExplicitComposerId = idLower == "entry" || idLower.endsWith("/entry") ||
@@ -227,14 +276,12 @@ object InputFieldClassifier {
             }
         }
 
-        // 5. Check explicit Search Field signals
         val hasExplicitSearchKeyword = searchKeywords.any { combined.contains(it) } &&
             !combined.contains("search in chat")
         if (hasExplicitSearchKeyword) {
             return InputFieldRole.SEARCH_FIELD
         }
 
-        // 6. Positional & contextual disambiguation for unlabeled EditTexts
         if (isInBottomComposerZone && (pkgLower in messagingPackages || hasNearbySendOrAttach)) {
             return InputFieldRole.CHAT_COMPOSER
         }
@@ -310,7 +357,6 @@ object IconRoleClassifier {
             return IconRole.FAB_ACTION
         }
 
-        // Unlabeled icon button heuristics
         val isIconLike = (clsLower.contains("imagebutton") || clsLower.contains("imageview") || (node.isClickable && node.text.isBlank()))
         if (isIconLike && node.bounds.width() in 24..220 && node.bounds.height() in 24..220) {
             if (node.bounds.centerY() > screenHeight * 0.72 && node.bounds.centerX() > screenWidth * 0.78) {
@@ -327,14 +373,55 @@ object IconRoleClassifier {
  */
 object MultiSignalFusionEngine {
 
+    @Volatile
+    var cachedScreenFingerprint: String = ""
+        private set
+
+    @Volatile
+    private var cachedElements: List<UnifiedUIElement> = emptyList()
+
+    fun computeScreenFingerprint(
+        foregroundPackage: String,
+        accessibilityNodes: List<AnalyzedNode>,
+        ocrSignals: List<OcrTextSignal> = emptyList()
+    ): String {
+        val nodeSig = accessibilityNodes.take(30).joinToString("|") {
+            "${it.resourceId}:${it.text}:${it.contentDescription}:${it.bounds.flattenToString()}"
+        }
+        val ocrSig = ocrSignals.take(15).joinToString("|") { "${it.text}:${it.bounds.flattenToString()}" }
+        return "$foregroundPackage#${nodeSig.hashCode()}#${ocrSig.hashCode()}"
+    }
+
+    @Synchronized
+    fun invalidateCacheIfFingerprintChanged(newFingerprint: String): Boolean {
+        if (cachedScreenFingerprint.isNotEmpty() && cachedScreenFingerprint != newFingerprint) {
+            cachedScreenFingerprint = newFingerprint
+            cachedElements = emptyList()
+            return true
+        }
+        cachedScreenFingerprint = newFingerprint
+        return false
+    }
+
+    @Synchronized
+    fun clearCache() {
+        cachedScreenFingerprint = ""
+        cachedElements = emptyList()
+    }
+
     fun buildUnifiedElements(
         accessibilityNodes: List<AnalyzedNode>,
         foregroundPackage: String = "",
         ocrSignals: List<OcrTextSignal> = emptyList(),
         visionSignals: List<VisionElementSignal> = emptyList(),
         screenWidth: Int = 1080,
-        screenHeight: Int = 2400
+        screenHeight: Int = 2400,
+        frameId: String = "frame_${System.currentTimeMillis()}",
+        observationTimestampMs: Long = System.currentTimeMillis()
     ): List<UnifiedUIElement> {
+        val fingerprint = computeScreenFingerprint(foregroundPackage, accessibilityNodes, ocrSignals)
+        invalidateCacheIfFingerprintChanged(fingerprint)
+
         val unified = mutableListOf<UnifiedUIElement>()
 
         // 1. Convert Accessibility nodes first (highest structural fidelity)
@@ -344,6 +431,7 @@ object MultiSignalFusionEngine {
             val isFocusedSafe = try { node.node.isFocused } catch (_: Exception) { false }
             val isEnabledSafe = try { node.node.isEnabled } catch (_: Exception) { true }
             val isSelectedSafe = try { node.node.isSelected } catch (_: Exception) { false }
+            val rect = Rect(node.bounds)
 
             unified.add(
                 UnifiedUIElement(
@@ -356,8 +444,8 @@ object MultiSignalFusionEngine {
                     contentDescription = PromptInjectionGuard.sanitizeScreenText(node.contentDescription),
                     inferredInputRole = inputRole,
                     iconRole = iconRole,
-                    bounds = Rect(node.bounds),
-                    centerPoint = Pair(node.bounds.centerX(), node.bounds.centerY()),
+                    bounds = rect,
+                    centerPoint = Pair(rect.centerX(), rect.centerY()),
                     isClickable = node.isClickable,
                     isEditable = node.isEditable,
                     isScrollable = node.isScrollable,
@@ -365,7 +453,19 @@ object MultiSignalFusionEngine {
                     isFocused = isFocusedSafe,
                     isSelected = isSelectedSafe,
                     confidence = 0.92f,
-                    analyzedNode = node
+                    analyzedNode = node,
+                    semanticRole = when {
+                        inputRole != InputFieldRole.NOT_INPUT -> inputRole.name
+                        iconRole != IconRole.NONE -> iconRole.name
+                        node.isClickable -> "BUTTON"
+                        else -> "TEXT"
+                    },
+                    screenshotWidth = screenWidth,
+                    screenshotHeight = screenHeight,
+                    frameId = frameId,
+                    observationTimestampMs = observationTimestampMs,
+                    isFresh = true,
+                    screenFingerprint = fingerprint
                 )
             )
         }
@@ -388,6 +488,7 @@ object MultiSignalFusionEngine {
                     confidence = min(0.99f, existing.confidence + 0.04f)
                 )
             } else {
+                val rect = Rect(ocr.bounds)
                 unified.add(
                     UnifiedUIElement(
                         elementId = "ocr_$idx",
@@ -397,25 +498,33 @@ object MultiSignalFusionEngine {
                         viewIdResourceName = "",
                         visibleText = sanitizedOcr,
                         contentDescription = "",
-                        bounds = Rect(ocr.bounds),
-                        centerPoint = Pair(ocr.bounds.centerX(), ocr.bounds.centerY()),
+                        bounds = rect,
+                        centerPoint = Pair(rect.centerX(), rect.centerY()),
                         isClickable = true,
                         isEditable = false,
                         isScrollable = false,
-                        confidence = ocr.confidence
+                        confidence = ocr.confidence,
+                        semanticRole = "OCR_TEXT",
+                        screenshotWidth = screenWidth,
+                        screenshotHeight = screenHeight,
+                        frameId = frameId,
+                        observationTimestampMs = observationTimestampMs,
+                        isFresh = true,
+                        screenFingerprint = fingerprint
                     )
                 )
             }
         }
 
-        // 3. Fuse Vision signals: enrich matching elements or add vision-detected controls (custom/icon/WebView/game UI)
+        // 3. Fuse Vision signals (Florence-2 AUX_VISION_MODEL, SmolVLM2 LOCAL_GUI_VLM, or Gemini ONLINE_GEMINI_VISION)
         visionSignals.forEachIndexed { idx, vis ->
             val sanitizedLabel = PromptInjectionGuard.sanitizeScreenText(vis.label)
             if (sanitizedLabel.isBlank()) return@forEachIndexed
 
             val matchIndex = unified.indexOfFirst { existing ->
                 computeIoU(existing.bounds, vis.bounds) >= 0.35f ||
-                    existing.bounds.contains(vis.bounds.centerX(), vis.bounds.centerY())
+                    existing.bounds.contains(vis.bounds.centerX(), vis.bounds.centerY()) ||
+                    (existing.primaryLabel.isNotBlank() && existing.primaryLabel.equals(sanitizedLabel, ignoreCase = true))
             }
             val inferredVisionIcon = when {
                 vis.roleHint.contains("search", ignoreCase = true) || sanitizedLabel.contains("search", ignoreCase = true) -> IconRole.SEARCH_ICON
@@ -431,18 +540,46 @@ object MultiSignalFusionEngine {
 
             if (matchIndex >= 0) {
                 val existing = unified[matchIndex]
+                val iou = computeIoU(existing.bounds, vis.bounds)
+                val dist = hypot(
+                    (existing.bounds.centerX() - vis.bounds.centerX()).toDouble(),
+                    (existing.bounds.centerY() - vis.bounds.centerY()).toDouble()
+                ).toFloat()
+                val updatedDisagreements = if (dist > 48f || iou < 0.50f) {
+                    existing.disagreements + SignalDisagreementRecord(
+                        primarySource = existing.sourceSignals.first(),
+                        secondarySource = vis.sourceSignal,
+                        centerDistancePx = dist,
+                        iou = iou,
+                        description = "Spatial disagreement between ${existing.sourceSignals.first()} and ${vis.sourceSignal} (dist=${dist.toInt()}px, iou=${"%.2f".format(Locale.ROOT, iou)})"
+                    )
+                } else {
+                    existing.disagreements
+                }
+
+                // Keep SignalSource.VISION as well as specific vision source for full backward compatibility
+                val mergedSignals = existing.sourceSignals + setOf(SignalSource.VISION, vis.sourceSignal)
                 unified[matchIndex] = existing.copy(
-                    sourceSignals = existing.sourceSignals + SignalSource.VISION,
+                    sourceSignals = mergedSignals,
                     contentDescription = existing.contentDescription.ifBlank { sanitizedLabel },
                     iconRole = if (existing.iconRole == IconRole.NONE || existing.iconRole == IconRole.UNKNOWN_ICON) inferredVisionIcon else existing.iconRole,
                     inferredInputRole = if (existing.inferredInputRole == InputFieldRole.NOT_INPUT) inferredVisionInput else existing.inferredInputRole,
-                    confidence = min(0.99f, existing.confidence + 0.05f)
+                    confidence = min(0.99f, existing.confidence + 0.05f),
+                    sourceModelId = vis.sourceModelId.ifBlank { existing.sourceModelId },
+                    sourceModelRevision = vis.sourceModelRevision.ifBlank { existing.sourceModelRevision },
+                    disagreements = updatedDisagreements
                 )
             } else {
+                val rect = Rect(vis.bounds)
+                val sigSet = if (vis.sourceSignal == SignalSource.AUX_VISION_MODEL) {
+                    setOf(SignalSource.AUX_VISION_MODEL)
+                } else {
+                    setOf(SignalSource.VISION, vis.sourceSignal)
+                }
                 unified.add(
                     UnifiedUIElement(
                         elementId = "vision_$idx",
-                        sourceSignals = setOf(SignalSource.VISION),
+                        sourceSignals = sigSet,
                         packageName = foregroundPackage,
                         className = "android.view.View",
                         viewIdResourceName = "",
@@ -450,18 +587,105 @@ object MultiSignalFusionEngine {
                         contentDescription = sanitizedLabel,
                         inferredInputRole = inferredVisionInput,
                         iconRole = inferredVisionIcon,
-                        bounds = Rect(vis.bounds),
-                        centerPoint = Pair(vis.bounds.centerX(), vis.bounds.centerY()),
+                        bounds = rect,
+                        centerPoint = Pair(rect.centerX(), rect.centerY()),
                         isClickable = true,
                         isEditable = inferredVisionInput != InputFieldRole.NOT_INPUT,
                         isScrollable = false,
-                        confidence = vis.confidence
+                        confidence = vis.confidence,
+                        semanticRole = vis.roleHint.ifBlank { "VISION_CONTROL" },
+                        screenshotWidth = screenWidth,
+                        screenshotHeight = screenHeight,
+                        sourceModelId = vis.sourceModelId,
+                        sourceModelRevision = vis.sourceModelRevision,
+                        isConfidenceCalibrated = vis.isConfidenceCalibrated,
+                        frameId = frameId,
+                        observationTimestampMs = observationTimestampMs,
+                        isFresh = true,
+                        screenFingerprint = fingerprint
                     )
                 )
             }
         }
 
+        cachedElements = unified
         return unified
+    }
+
+    fun fuseSignals(
+        accessibilityElements: List<com.example.services.KavyaAccessibilityService.InteractiveElement>,
+        ocrSignals: List<OcrTextSignal> = emptyList(),
+        visionAction: Any? = null,
+        screenWidth: Int = 1080,
+        screenHeight: Int = 2400,
+        localGuiVlmCandidates: List<VisionElementSignal> = emptyList(),
+        auxVisionCandidates: List<VisionElementSignal> = emptyList(),
+        screenshotWidth: Int = screenWidth,
+        screenshotHeight: Int = screenHeight,
+        frameId: String = "frame_${System.currentTimeMillis()}",
+        observationTimestampMs: Long = System.currentTimeMillis(),
+        isObservationFresh: Boolean = true
+    ): List<UnifiedUIElement> {
+        val convertedA11y = accessibilityElements.mapIndexed { idx, el ->
+            UnifiedUIElement(
+                elementId = "a11y_${idx}_${el.viewIdResourceName.substringAfterLast("/")}",
+                sourceSignals = setOf(SignalSource.ACCESSIBILITY),
+                packageName = "",
+                className = el.className,
+                viewIdResourceName = el.viewIdResourceName,
+                visibleText = PromptInjectionGuard.sanitizeScreenText(el.text),
+                contentDescription = PromptInjectionGuard.sanitizeScreenText(el.contentDescription),
+                bounds = Rect(el.bounds),
+                centerPoint = Pair(el.bounds.centerX(), el.bounds.centerY()),
+                isClickable = el.isClickable,
+                isEditable = el.isEditable,
+                isScrollable = el.isScrollable,
+                isEnabled = el.isEnabled,
+                confidence = 0.92f,
+                screenshotWidth = screenshotWidth.coerceAtLeast(1),
+                screenshotHeight = screenshotHeight.coerceAtLeast(1),
+                frameId = frameId,
+                observationTimestampMs = observationTimestampMs,
+                isFresh = isObservationFresh
+            )
+        }
+        val visionCombined = buildUnifiedElements(
+            accessibilityNodes = emptyList(),
+            foregroundPackage = "",
+            ocrSignals = ocrSignals,
+            visionSignals = auxVisionCandidates + localGuiVlmCandidates,
+            screenWidth = screenWidth,
+            screenHeight = screenHeight,
+            frameId = frameId,
+            observationTimestampMs = observationTimestampMs
+        )
+        return convertedA11y + visionCombined
+    }
+
+    fun resolveBestTarget(
+        elements: List<UnifiedUIElement>,
+        targetQuery: String
+    ): UnifiedUIElement? {
+        return resolveTargetWithoutFabrication(targetQuery, elements)
+    }
+
+    /**
+     * Resolves a target UI element by query without ever inventing coordinates or falling back
+     * to screen center (540, 1200). Returns null (`TARGET_NOT_FOUND`) if no verified candidate matches.
+     */
+    fun resolveTargetWithoutFabrication(
+        targetQuery: String,
+        elements: List<UnifiedUIElement>
+    ): UnifiedUIElement? {
+        val q = targetQuery.trim().lowercase(Locale.ROOT)
+        if (q.isEmpty() || elements.isEmpty()) return null
+        return elements
+            .filter { it.isEnabled && !it.isAuxVisionOnly && it.confidence >= 0.55f }
+            .firstOrNull { el ->
+                el.visibleText.equals(q, ignoreCase = true) ||
+                    el.contentDescription.equals(q, ignoreCase = true) ||
+                    el.primaryLabel.lowercase(Locale.ROOT).contains(q)
+            }
     }
 
     fun inferScreenType(elements: List<UnifiedUIElement>): ScreenSemanticType {
@@ -524,19 +748,32 @@ object PreActionVerifier {
                 approved = false,
                 selectedCandidate = null,
                 confidence = 0f,
-                rejectionReason = "No candidate UI elements available on screen.",
+                rejectionReason = "TARGET_NOT_FOUND: No candidate UI elements available on screen.",
+                requiresReperception = true
+            )
+        }
+
+        if (candidates.all { it.isAuxVisionOnly }) {
+            return PreActionVerificationResult(
+                approved = false,
+                selectedCandidate = null,
+                confidence = 0f,
+                rejectionReason = "UNVERIFIED_AUX_VISION_TARGET: Florence-2 AUX_VISION_MODEL proposals alone are never authoritative for direct tap/type execution.",
                 requiresReperception = true
             )
         }
 
         val scored = candidates.mapNotNull { candidate ->
-            if (!candidate.isEnabled || candidate.bounds.width() <= 0 || candidate.bounds.height() <= 0) {
+            if (!candidate.isEnabled ||
+                candidate.bounds.width() <= 0 ||
+                candidate.bounds.height() <= 0 ||
+                candidate.isAuxVisionOnly
+            ) {
                 return@mapNotNull null
             }
 
             when (intentKind) {
                 IntendedActionKind.SEARCH_INPUT -> {
-                    // Strictly reject Chat Composers, Comment Boxes, and Login Fields when searching!
                     if (candidate.inferredInputRole in setOf(
                             InputFieldRole.CHAT_COMPOSER,
                             InputFieldRole.COMMENT_BOX,
@@ -554,7 +791,6 @@ object PreActionVerifier {
                 }
 
                 IntendedActionKind.CHAT_MESSAGE_INPUT -> {
-                    // Strictly reject Search Fields and Browser Address Bars when typing a chat message!
                     if (candidate.inferredInputRole in setOf(
                             InputFieldRole.SEARCH_FIELD,
                             InputFieldRole.BROWSER_ADDRESS_BAR
@@ -580,12 +816,20 @@ object PreActionVerifier {
                 IntendedActionKind.TAP_TARGET, IntendedActionKind.CONSEQUENTIAL_ACTION -> {
                     val q = targetQuery.lowercase(Locale.ROOT).trim()
                     val label = "${candidate.visibleText} ${candidate.contentDescription} ${candidate.viewIdResourceName}".lowercase(Locale.ROOT)
+                    if (q.isNotBlank() && !label.contains(q) && candidate.iconRole == IconRole.NONE) {
+                        return@mapNotNull null
+                    }
                     val textScore = when {
                         q.isNotBlank() && (candidate.visibleText.equals(q, ignoreCase = true) || candidate.contentDescription.equals(q, ignoreCase = true)) -> 0.97f
                         q.isNotBlank() && label.contains(q) -> 0.86f
                         else -> 0.60f
                     }
-                    Pair(candidate, min(0.99f, (textScore + candidate.confidence) / 2f))
+                    val rawCombined = if (candidate.confidence < 0.55f) {
+                        candidate.confidence
+                    } else {
+                        min(0.99f, (textScore + candidate.confidence) / 2f)
+                    }
+                    Pair(candidate, rawCombined)
                 }
             }
         }.sortedByDescending { it.second }
@@ -595,17 +839,17 @@ object PreActionVerifier {
                 approved = false,
                 selectedCandidate = null,
                 confidence = 0f,
-                rejectionReason = "All candidates failed role verification for $intentKind (prevented wrong-field interaction).",
+                rejectionReason = "TARGET_NOT_FOUND: All candidates failed role or label verification for $intentKind.",
                 requiresReperception = true
             )
 
         val (bestElement, bestScore) = best
-        if (bestScore < 0.55f) {
+        if (bestScore < 0.55f || bestElement.confidence < 0.55f) {
             return PreActionVerificationResult(
                 approved = false,
                 selectedCandidate = bestElement,
                 confidence = bestScore,
-                rejectionReason = "Candidate confidence ($bestScore) is below threshold 0.55.",
+                rejectionReason = "LOW_CONFIDENCE: Candidate confidence ($bestScore) is below threshold 0.55.",
                 requiresReperception = true
             )
         }
@@ -626,6 +870,13 @@ object PostActionVerifier {
         afterScreen: FreshScreenState,
         expectedKind: PreActionVerifier.IntendedActionKind
     ): PostActionVerificationResult {
+        val beforeFp = MultiSignalFusionEngine.computeScreenFingerprint(beforeScreen.foregroundPackage, beforeScreen.nodes)
+        val afterFp = MultiSignalFusionEngine.computeScreenFingerprint(afterScreen.foregroundPackage, afterScreen.nodes)
+        val cacheInvalidated = beforeFp != afterFp
+        if (cacheInvalidated) {
+            MultiSignalFusionEngine.invalidateCacheIfFingerprintChanged(afterFp)
+        }
+
         val afterUnified = MultiSignalFusionEngine.buildUnifiedElements(afterScreen.nodes, afterScreen.foregroundPackage)
         val afterType = MultiSignalFusionEngine.inferScreenType(afterUnified)
 
@@ -655,7 +906,10 @@ object PostActionVerifier {
                 "Screen did not transition as expected after $expectedKind"
             },
             detectedScreenType = afterType,
-            shouldRetryWithAlternate = !verified
+            shouldRetryWithAlternate = !verified,
+            beforeFingerprint = beforeFp,
+            afterFingerprint = afterFp,
+            cacheInvalidated = cacheInvalidated
         )
     }
 }
@@ -708,7 +962,7 @@ object ShortTermNavigationMemory {
     ): UnifiedUIElement? {
         if (currentElements.isEmpty()) return null
         val q = referenceQuery.lowercase(Locale.ROOT).trim()
-        val interactive = currentElements.filter { it.isClickable || it.isEditable }
+        val interactive = currentElements.filter { (it.isClickable || it.isEditable) && !it.isAuxVisionOnly }
         if (interactive.isEmpty()) return null
 
         return when {
@@ -734,25 +988,29 @@ object ShortTermNavigationMemory {
  * Protects the agent from Prompt Injection contained in untrusted on-screen text (Upgrade 2.8).
  */
 object PromptInjectionGuard {
-    private val injectionPatterns = listOf(
-        Regex("""(?i)ignore\s+(all\s+)?(previous|prior|above)(\s+\w+)?\s+instructions"""),
-        Regex("""(?i)system\s*prompt\s*:"""),
-        Regex("""(?i)you\s+are\s+now\s+in\s+developer\s+mode"""),
-        Regex("""(?i)\[ACTION\s*:[^\]]*\]"""),
-        Regex("""(?i)"action"\s*:\s*"(DELETE_FILE|SEND_SMS|MAKE_PHONE_CALL|SEND_WHATSAPP_MESSAGE)""""")
-    )
 
     fun isSuspiciousScreenInstruction(text: String): Boolean {
-        if (text.isBlank()) return false
-        return injectionPatterns.any { it.containsMatchIn(text) }
+        return ScreenTextSanitizer.containsPromptInjectionAttempt(text)
     }
 
     fun sanitizeScreenText(text: String): String {
-        if (text.isBlank()) return ""
-        var sanitized = text
-        for (pattern in injectionPatterns) {
-            sanitized = sanitized.replace(pattern, "[UNTRUSTED_SCREEN_TEXT]")
+        return ScreenTextSanitizer.sanitizeForPrompt(text)
+    }
+}
+
+object OnDeviceOcrExtractor {
+    fun extractSignals(
+        bitmap: android.graphics.Bitmap?,
+        a11yElements: List<com.example.services.KavyaAccessibilityService.InteractiveElement> = emptyList()
+    ): List<OcrTextSignal> {
+        return a11yElements.mapNotNull { el ->
+            val label = el.text.ifBlank { el.contentDescription }.trim()
+            if (label.isBlank()) null
+            else OcrTextSignal(
+                text = PromptInjectionGuard.sanitizeScreenText(label),
+                bounds = Rect(el.bounds),
+                confidence = 0.88f
+            )
         }
-        return sanitized.trim()
     }
 }

@@ -71,19 +71,53 @@ object PrecisionController {
             )
         }
 
-        val coords = envelope.target.coordinates
-            ?: return PrecisionCalibrationResult.Rejected(
-                "Missing coordinates for screen action '${envelope.action}' targeting '${envelope.target.description}'."
-            )
-
-        if (coords.x.isNaN() || coords.y.isNaN() || coords.x < 0.0 || coords.y < 0.0) {
-            return PrecisionCalibrationResult.Rejected("Coordinates contain invalid or negative values: (${coords.x}, ${coords.y}).")
-        }
-
         val dispW = currentGeom.widthPx.toDouble()
         val dispH = currentGeom.heightPx.toDouble()
         val shotW = observation.bitmapWidth.coerceAtLeast(1).toDouble()
         val shotH = observation.bitmapHeight.coerceAtLeast(1).toDouble()
+
+        val coords = envelope.target.coordinates ?: run {
+            if (envelope.action == OrchestratorActionType.SWIPE || envelope.action == OrchestratorActionType.SCROLL) {
+                return PrecisionCalibrationResult.Valid(
+                    CalibratedPoint(
+                        xPx = (dispW * 0.5).toFloat().coerceIn(1f, (currentGeom.widthPx - 1).coerceAtLeast(1).toFloat()),
+                        yPx = (dispH * 0.5).toFloat().coerceIn(1f, (currentGeom.heightPx - 1).coerceAtLeast(1).toFloat()),
+                        sourceSpace = CoordinateSpace.DISPLAY_PIXELS,
+                        observationId = observation.screenshotId
+                    )
+                )
+            }
+            val inferred = inferPointFromUiTreeSummary(envelope.target, observation.uiTreeSummary, currentGeom.widthPx, currentGeom.heightPx)
+            if (inferred != null) {
+                return PrecisionCalibrationResult.Valid(
+                    CalibratedPoint(
+                        xPx = inferred.first,
+                        yPx = inferred.second,
+                        sourceSpace = CoordinateSpace.DISPLAY_PIXELS,
+                        observationId = observation.screenshotId
+                    )
+                )
+            }
+            val reason = "Missing coordinates for screen action '${envelope.action}' targeting '${envelope.target.description}'."
+            AiActionDiagnostics.record(
+                category = ActionDiagnosticCategory.COORDINATE_NORMALIZATION_ERROR,
+                stage = "calibrateTargetCoordinates",
+                reason = reason,
+                normalizedActionSummary = "${envelope.action.name}(${envelope.target.description})"
+            )
+            return PrecisionCalibrationResult.Rejected(reason)
+        }
+
+        if (coords.x.isNaN() || coords.y.isNaN() || coords.x < 0.0 || coords.y < 0.0) {
+            val reason = "Coordinates contain invalid or negative values: (${coords.x}, ${coords.y})."
+            AiActionDiagnostics.record(
+                category = ActionDiagnosticCategory.COORDINATE_NORMALIZATION_ERROR,
+                stage = "calibrateTargetCoordinates",
+                reason = reason,
+                normalizedActionSummary = "${envelope.action.name}(${coords.x},${coords.y},${coords.space})"
+            )
+            return PrecisionCalibrationResult.Rejected(reason)
+        }
 
         val rawDisplayX: Double
         val rawDisplayY: Double
@@ -91,27 +125,56 @@ object PrecisionController {
         when (coords.space) {
             CoordinateSpace.NORMALIZED_0_1 -> {
                 if (coords.x > 1.0 || coords.y > 1.0) {
-                    return PrecisionCalibrationResult.Rejected(
-                        "Normalized coordinates (${coords.x}, ${coords.y}) out of range [0.0, 1.0]."
+                    val reason = "Normalized coordinates (${coords.x}, ${coords.y}) out of range [0.0, 1.0]."
+                    AiActionDiagnostics.record(
+                        category = ActionDiagnosticCategory.COORDINATE_NORMALIZATION_ERROR,
+                        stage = "calibrateTargetCoordinates",
+                        reason = reason,
+                        normalizedActionSummary = "${envelope.action.name}(${coords.x},${coords.y},${coords.space})"
                     )
+                    return PrecisionCalibrationResult.Rejected(reason)
                 }
                 rawDisplayX = coords.x * dispW
                 rawDisplayY = coords.y * dispH
             }
+            CoordinateSpace.NORMALIZED_1000 -> {
+                if (coords.x > 1000.0 || coords.y > 1000.0) {
+                    val reason = "Normalized [0..1000] coordinates (${coords.x}, ${coords.y}) out of range [0.0, 1000.0]."
+                    AiActionDiagnostics.record(
+                        category = ActionDiagnosticCategory.COORDINATE_NORMALIZATION_ERROR,
+                        stage = "calibrateTargetCoordinates",
+                        reason = reason,
+                        normalizedActionSummary = "${envelope.action.name}(${coords.x},${coords.y},${coords.space})"
+                    )
+                    return PrecisionCalibrationResult.Rejected(reason)
+                }
+                rawDisplayX = (coords.x / 1000.0) * dispW
+                rawDisplayY = (coords.y / 1000.0) * dispH
+            }
             CoordinateSpace.CURRENT_SCREENSHOT_PIXELS -> {
                 if (coords.x > shotW || coords.y > shotH) {
-                    return PrecisionCalibrationResult.Rejected(
-                        "Screenshot pixel coordinates (${coords.x}, ${coords.y}) exceed screenshot bounds (${shotW.toInt()}x${shotH.toInt()})."
+                    val reason = "Screenshot pixel coordinates (${coords.x}, ${coords.y}) exceed screenshot bounds (${shotW.toInt()}x${shotH.toInt()})."
+                    AiActionDiagnostics.record(
+                        category = ActionDiagnosticCategory.COORDINATE_NORMALIZATION_ERROR,
+                        stage = "calibrateTargetCoordinates",
+                        reason = reason,
+                        normalizedActionSummary = "${envelope.action.name}(${coords.x},${coords.y},${coords.space})"
                     )
+                    return PrecisionCalibrationResult.Rejected(reason)
                 }
                 rawDisplayX = (coords.x / shotW) * dispW
                 rawDisplayY = (coords.y / shotH) * dispH
             }
             CoordinateSpace.DISPLAY_PIXELS -> {
                 if (coords.x > dispW || coords.y > dispH) {
-                    return PrecisionCalibrationResult.Rejected(
-                        "Display pixel coordinates (${coords.x}, ${coords.y}) exceed display bounds (${dispW.toInt()}x${dispH.toInt()})."
+                    val reason = "Display pixel coordinates (${coords.x}, ${coords.y}) exceed display bounds (${dispW.toInt()}x${dispH.toInt()})."
+                    AiActionDiagnostics.record(
+                        category = ActionDiagnosticCategory.COORDINATE_NORMALIZATION_ERROR,
+                        stage = "calibrateTargetCoordinates",
+                        reason = reason,
+                        normalizedActionSummary = "${envelope.action.name}(${coords.x},${coords.y},${coords.space})"
                     )
+                    return PrecisionCalibrationResult.Rejected(reason)
                 }
                 rawDisplayX = coords.x
                 rawDisplayY = coords.y
@@ -120,9 +183,13 @@ object PrecisionController {
 
         // Strict bounds check against valid display area (avoid extreme off-screen edges)
         if (rawDisplayX < 0.0 || rawDisplayX > dispW || rawDisplayY < 0.0 || rawDisplayY > dispH) {
-            return PrecisionCalibrationResult.Rejected(
-                "Calibrated coordinate (${rawDisplayX.toInt()}, ${rawDisplayY.toInt()}) outside display bounds (${dispW.toInt()}x${dispH.toInt()})."
+            val reason = "Calibrated coordinate (${rawDisplayX.toInt()}, ${rawDisplayY.toInt()}) outside display bounds (${dispW.toInt()}x${dispH.toInt()})."
+            AiActionDiagnostics.record(
+                category = ActionDiagnosticCategory.COORDINATE_NORMALIZATION_ERROR,
+                stage = "calibrateTargetCoordinates",
+                reason = reason
             )
+            return PrecisionCalibrationResult.Rejected(reason)
         }
 
         // Clamp strictly within inset-safe interactive touch area if tiny border margin overflow occurs,
@@ -138,5 +205,28 @@ object PrecisionController {
                 observationId = observation.screenshotId
             )
         )
+    }
+
+    private fun inferPointFromUiTreeSummary(
+        target: AiActionTarget,
+        uiTreeSummary: String,
+        displayWidthPx: Int,
+        displayHeightPx: Int
+    ): Pair<Float, Float>? {
+        if (uiTreeSummary.isBlank()) return null
+        val query = target.selector.ifBlank { target.description }.trim()
+        if (query.isBlank()) return null
+        val rectRegex = Regex("""(?:\[(\d+)\s*,\s*(\d+)\]\s*\[(\d+)\s*,\s*(\d+)\]|Rect\(\s*(\d+)\s*,\s*(\d+)\s*-\s*(\d+)\s*,\s*(\d+)\s*\))""")
+        for (line in uiTreeSummary.lines()) {
+            if (!line.contains(query, ignoreCase = true)) continue
+            val m = rectRegex.find(line) ?: continue
+            val nums = m.groupValues.drop(1).filter { it.isNotEmpty() }.mapNotNull { it.toIntOrNull() }
+            if (nums.size == 4) {
+                val cx = ((nums[0] + nums[2]) / 2f).coerceIn(1f, (displayWidthPx - 1).coerceAtLeast(1).toFloat())
+                val cy = ((nums[1] + nums[3]) / 2f).coerceIn(1f, (displayHeightPx - 1).coerceAtLeast(1).toFloat())
+                return cx to cy
+            }
+        }
+        return null
     }
 }
