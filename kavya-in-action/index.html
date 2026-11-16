@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080d1b">
+<meta name="description" content="Kavya in Action — interactive preview of the assistant's vision and action workflow.">
+<title>Kavya in Action</title>
+<style>
+:root{color-scheme:dark;--bg:#080d1b;--panel:#101a2d;--panel2:#0d1526;--line:#22314b;--muted:#91a3bf;--text:#eef5ff;--cyan:#67e8f9;--blue:#7198ff;--violet:#b69aff;--green:#61e6b0;--amber:#ffca73;--red:#ff8294}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(ellipse at 70% -10%,#1a2b50 0,transparent 42%),var(--bg);color:var(--text);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:none}.shell{max-width:1200px;margin:auto;padding:22px}.top{display:flex;align-items:center;justify-content:space-between;gap:14px;border-bottom:1px solid #1b2940;padding:6px 0 18px}.brand{display:flex;align-items:center;gap:12px;font-weight:800;letter-spacing:.2px}.brandmark{width:40px;height:40px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,#7deaff,#647dff 58%,#a98cff);color:#071020;font-size:19px;box-shadow:0 0 30px #5bc9ff33}.brand small{display:block;color:var(--muted);font-weight:500;font-size:11px;letter-spacing:1.8px;text-transform:uppercase}.topright{display:flex;gap:9px;align-items:center}.pill{border:1px solid var(--line);background:#101a2d;color:#b8c8df;border-radius:999px;padding:7px 11px;font-size:12px}.pill.live{color:var(--green);border-color:#285c52}.layout{display:grid;grid-template-columns:230px minmax(0,1fr);gap:20px;padding-top:22px}.side{align-self:start;position:sticky;top:16px;background:#0d1526cc;border:1px solid var(--line);border-radius:20px;padding:12px}.navbtn{display:flex;width:100%;gap:12px;align-items:center;border:0;background:transparent;color:#a9bad2;padding:12px;border-radius:12px;text-align:left;margin:2px 0}.navbtn:hover,.navbtn.active{background:#1a2a45;color:#fff}.navbtn.active{box-shadow:inset 3px 0 var(--cyan)}.navico{width:22px;text-align:center;color:var(--cyan)}.sidehint{margin:16px 10px 6px;color:#70839f;font-size:11px;text-transform:uppercase;letter-spacing:1.5px}.content{min-width:0}.hero{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;align-items:stretch}.panel{background:linear-gradient(155deg,#121f35ee,#0d1526f2);border:1px solid var(--line);border-radius:22px;padding:22px;box-shadow:0 18px 50px #0002}.eyebrow{color:var(--cyan);font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase}.hero h1{font-size:clamp(30px,4vw,48px);line-height:1.04;letter-spacing:-1.7px;margin:12px 0}.gradient{background:linear-gradient(90deg,#8deaff,#a9a2ff 70%);-webkit-background-clip:text;background-clip:text;color:transparent}.sub{color:var(--muted);max-width:650px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}.btn{border:1px solid #344967;background:#172640;color:#eaf5ff;padding:10px 15px;border-radius:12px;font-weight:700}.btn.primary{border:0;background:linear-gradient(100deg,#65e4f5,#8796ff);color:#081326}.btn:hover{filter:brightness(1.12);transform:translateY(-1px)}.orbwrap{display:grid;place-items:center;min-height:240px;position:relative;overflow:hidden}.orb{width:142px;height:142px;border-radius:50%;position:relative;background:radial-gradient(circle at 35% 28%,#f4ffff 0 2%,#a2f5ff 5%,#58b9f3 24%,#5269db 51%,#1b2b66 73%,#111934 100%);box-shadow:0 0 26px #55dfff99,0 0 75px #596dff66,inset -15px -18px 30px #07102b;animation:float 4s ease-in-out infinite}.orb:before,.orb:after{content:"";position:absolute;inset:-15px;border-radius:50%;border:1px solid #70eaff55;animation:pulse 3s ease-out infinite}.orb:after{inset:-29px;animation-delay:1.5s}.orbcore{position:absolute;inset:35px;border-radius:50%;background:radial-gradient(circle,#e7ffff,#78dcff 35%,#6474ff 75%);filter:blur(1px);opacity:.8}.orblabel{position:absolute;bottom:18px;color:#b5c8e2;font-size:12px;letter-spacing:2px;text-transform:uppercase}@keyframes float{50%{transform:translateY(-9px) scale(1.025)}}@keyframes pulse{0%{transform:scale(.8);opacity:.8}100%{transform:scale(1.22);opacity:0}}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.stat{background:#101a2d;border:1px solid var(--line);border-radius:16px;padding:14px}.stat strong{font-size:22px;display:block}.stat span{color:var(--muted);font-size:12px}.section{display:none}.section.active{display:block}.sectionhead{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:25px 0 13px}.sectionhead h2{font-size:21px;margin:0}.sectionhead p{margin:4px 0 0;color:var(--muted);font-size:13px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.mini{background:#0b1425;border:1px solid #22334e;border-radius:16px;padding:16px}.mini h3{margin:0 0 6px;font-size:15px}.mini p{margin:0;color:var(--muted);font-size:13px}.tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#a8c5e7;background:#172844;border:1px solid #2b4161;padding:5px 8px;border-radius:999px;margin-bottom:10px}.dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.flowstep{background:#0b1425;border:1px solid var(--line);border-radius:15px;padding:14px;position:relative}.flowstep b{display:block;font-size:13px;margin:7px 0 3px}.flowstep small{color:var(--muted);font-size:11px}.num{width:25px;height:25px;border-radius:8px;background:#1b3552;color:var(--cyan);display:grid;place-items:center;font-size:12px;font-weight:800}.labgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.field{margin:13px 0}.field label{display:flex;justify-content:space-between;gap:10px;color:#c6d5e9;font-size:13px;margin-bottom:7px}.field input[type=range]{width:100%;accent-color:#70dff5}.switchrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid #20304a}.switchrow:last-child{border:0}.toggle{width:44px;height:25px;border:0;border-radius:99px;background:#34445e;padding:3px}.toggle:after{content:"";display:block;width:19px;height:19px;background:#fff;border-radius:50%;transition:.2s}.toggle.on{background:#268f91}.toggle.on:after{transform:translateX(19px)}.result{border:1px solid #2b4761;background:#0b1929;border-radius:16px;padding:16px;margin-top:14px}.result strong{display:block;font-size:18px;margin:5px 0}.result p{color:var(--muted);margin:4px 0;font-size:13px}.result.good{border-color:#286b59}.result.warn{border-color:#755b31}.result.cloud{border-color:#62518c}.preview{min-height:185px;border:1px dashed #3b506e;border-radius:15px;display:grid;place-items:center;text-align:center;padding:16px;color:var(--muted);overflow:hidden}.preview img{max-width:100%;max-height:230px;border-radius:10px}.activity{display:grid;gap:9px}.event{display:flex;gap:11px;padding:11px;background:#0b1425;border:1px solid #1e2e47;border-radius:13px}.event i{width:8px;height:8px;border-radius:50%;background:var(--cyan);margin-top:7px;flex:none}.event b{font-size:13px}.event small{display:block;color:var(--muted);font-size:11px}.bar{height:7px;background:#1b2940;border-radius:99px;overflow:hidden;margin-top:8px}.bar span{height:100%;display:block;background:linear-gradient(90deg,#5ee7ed,#8d91ff);border-radius:99px;width:0;transition:width .4s}.notice{border-left:3px solid var(--amber);background:#211c16;color:#d8c5a3;padding:12px 14px;border-radius:8px;font-size:12px;margin-top:16px}.footer{color:#687d9c;text-align:center;font-size:11px;padding:28px 0 8px}.mobilemenu{display:none}.hidden{display:none!important}
+@media(max-width:850px){.layout{grid-template-columns:1fr}.side{position:static;display:flex;overflow:auto;gap:4px;padding:7px}.navbtn{width:auto;white-space:nowrap;padding:10px}.sidehint{display:none}.hero{grid-template-columns:1fr}.orbwrap{min-height:205px}.stats{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:580px){.shell{padding:14px}.top{align-items:flex-start}.topright .pill:not(.live){display:none}.grid2,.labgrid{grid-template-columns:1fr}.flow{grid-template-columns:1fr 1fr}.grid3{grid-template-columns:1fr}.panel{padding:17px}.sectionhead{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header class="top">
+ <div class="brand"><div class="brandmark">K</div><div>KAVYA <small>IN ACTION · INTERACTIVE PREVIEW</small></div></div>
+ <div class="topright"><span class="pill live"><span class="dot"></span> DEMO ONLINE</span><span class="pill">VISION WORKFLOW</span></div>
+</header>
+<div class="layout">
+ <aside class="side" aria-label="Main navigation">
+  <button class="navbtn active" data-view="overview"><span class="navico">◈</span> Overview</button>
+  <button class="navbtn" data-view="vision"><span class="navico">◎</span> Vision Lab</button>
+  <button class="navbtn" data-view="workflow"><span class="navico">⌘</span> How it works</button>
+  <button class="navbtn" data-view="activity"><span class="navico">◷</span> Activity</button>
+ </aside>
+ <main class="content">
+  <section id="overview" class="section active">
+   <div class="hero">
+    <div class="panel">
+     <div class="eyebrow">Your assistant · Your control</div>
+     <h1>See the screen.<br><span class="gradient">Understand the action.</span></h1>
+     <p class="sub">Explore Kavya's visual assistant experience: two local vision models, confidence-based consensus, optional cloud escalation, and Accessibility verification.</p>
+     <div class="actions"><button class="btn primary" id="startDemo">▶ Run interactive demo</button><button class="btn" data-goto="vision">Open Vision Lab ↗</button></div>
+    </div>
+    <div class="panel orbwrap"><div class="orb"><div class="orbcore"></div></div><div class="orblabel">Kavya · Ready to assist</div></div>
+   </div>
+   <div class="stats">
+    <div class="stat"><strong>02</strong><span>Local vision models</span></div>
+    <div class="stat"><strong>01</strong><span>Consensus decision</span></div>
+    <div class="stat"><strong>01</strong><span>Accessibility route</span></div>
+    <div class="stat"><strong>On demand</strong><span>Cloud escalation</span></div>
+   </div>
+   <div class="sectionhead"><div><h2>One coordinated intelligence flow</h2><p>Each stage has one responsibility. No competing model triggers actions.</p></div></div>
+   <div class="flow">
+    <div class="flowstep"><div class="num">01</div><b>Screenshot</b><small>One observation ID and shared frame</small></div>
+    <div class="flowstep"><div class="num">02</div><b>Local vision</b><small>SmolVLM2 + Florence-2 inspect independently</small></div>
+    <div class="flowstep"><div class="num">03</div><b>Consensus</b><small>Confidence and coordinate agreement</small></div>
+    <div class="flowstep"><div class="num">04</div><b>Accessibility</b><small>Match, act through existing controls, verify</small></div>
+   </div>
+   <div class="sectionhead"><div><h2>Explore the experience</h2><p>Try the interactive screens below.</p></div></div>
+   <div class="grid3">
+    <div class="mini"><span class="tag">◎ Vision</span><h3>Vision Lab</h3><p>Adjust confidence and coordinate agreement to see the routing decision.</p></div>
+    <div class="mini"><span class="tag">⌘ Workflow</span><h3>Action pipeline</h3><p>Follow the screenshot-to-Accessibility sequence and safety checks.</p></div>
+    <div class="mini"><span class="tag">◷ Diagnostics</span><h3>Activity feed</h3><p>Review each simulated decision and its reason code.</p></div>
+   </div>
+   <div class="notice">This is a browser-based interactive product demo. It does not connect to your phone, run the actual local models, call external APIs, capture your device screen, or perform real taps.</div>
+  </section>
+
+  <section id="vision" class="section">
+   <div class="sectionhead"><div><h2>Vision Lab</h2><p>Simulate the two-model consensus rules with adjustable inputs.</p></div><span class="tag"><span class="dot"></span> Local simulation</span></div>
+   <div class="labgrid">
+    <div class="panel">
+     <h3 style="margin:0 0 4px">Model outputs</h3><p class="sub" style="font-size:12px">Set confidence for each local model.</p>
+     <div class="field"><label for="smol">SmolVLM2 2.2B <b id="smolVal">68%</b></label><input id="smol" type="range" min="0" max="100" value="68"></div>
+     <div class="bar"><span id="smolBar" style="width:68%"></span></div>
+     <div class="field"><label for="florence">Florence-2 <b id="florenceVal">72%</b></label><input id="florence" type="range" min="0" max="100" value="72"></div>
+     <div class="bar"><span id="florenceBar" style="width:72%"></span></div>
+     <div class="switchrow"><div><b style="font-size:13px">Coordinates agree</b><small style="display:block;color:var(--muted)">Same target within tolerance</small></div><button class="toggle on" id="agreeToggle" aria-label="Toggle coordinate agreement" aria-pressed="true"></button></div>
+     <div class="switchrow"><div><b style="font-size:13px">Equal very-low confidence</b><small style="display:block;color:var(--muted)">Both below 30%, effectively equal</small></div><span class="tag" id="equalState">No</span></div>
+     <div class="actions"><button class="btn primary" id="evaluate">Evaluate consensus</button><button class="btn" id="resetLab">Reset</button></div>
+    </div>
+    <div class="panel">
+     <h3 style="margin:0 0 4px">Screenshot preview</h3><p class="sub" style="font-size:12px">Choose an image to preview locally in this browser.</p>
+     <label class="btn" for="screenFile" style="display:inline-block;margin:8px 0 12px">＋ Choose screenshot</label><input class="hidden" id="screenFile" type="file" accept="image/*">
+     <div class="preview" id="preview">▧<br>Screenshot preview<br><small>Image stays in this browser tab.</small></div>
+     <div class="result" id="decision" aria-live="polite"><span class="tag">Awaiting evaluation</span><strong>Run consensus</strong><p>Adjust the model outputs, then evaluate the routing decision.</p></div>
+    </div>
+   </div>
+   <div class="sectionhead"><div><h2>Decision principles</h2><p>Cloud escalation is conditional, not the default route.</p></div></div>
+   <div class="grid2">
+    <div class="mini"><span class="tag">Offline path</span><h3>Coordinates agree</h3><p>Use the stronger valid local detection. Keep the action inside the existing Accessibility authorization and verification flow.</p></div>
+    <div class="mini"><span class="tag">Escalation path</span><h3>Coordinates disagree</h3><p>When confidence is low or both models disagree above 50%, request help from an already configured, available vision provider.</p></div>
+   </div>
+  </section>
+
+  <section id="workflow" class="section">
+   <div class="sectionhead"><div><h2>How Kavya works</h2><p>A single observation travels through a controlled pipeline.</p></div></div>
+   <div class="panel">
+    <div class="flow" style="grid-template-columns:repeat(2,1fr)">
+     <div class="flowstep"><div class="num">1</div><b>Capture one fresh observation</b><small>Screenshot, timestamp, dimensions, app context and available UI hierarchy share one observation ID.</small></div>
+     <div class="flowstep"><div class="num">2</div><b>Run both local models</b><small>SmolVLM2 and Florence-2 analyze the same frame independently. Model-specific outputs are normalized.</small></div>
+     <div class="flowstep"><div class="num">3</div><b>Resolve consensus</b><small>Compare calibrated confidence and normalized target bounds with tolerance; never compare raw pixels only.</small></div>
+     <div class="flowstep"><div class="num">4</div><b>Escalate only when needed</b><small>Use only a compatible provider that is already configured and available. No provider is assumed.</small></div>
+     <div class="flowstep"><div class="num">5</div><b>Match the Accessibility node</b><small>Re-check freshness and match bounds, text, content description or resource ID where available.</small></div>
+     <div class="flowstep"><div class="num">6</div><b>Act and verify</b><small>Existing authorization gates the action. A fresh post-action observation verifies the outcome.</small></div>
+    </div>
+   </div>
+   <div class="sectionhead"><div><h2>Reliability guardrails</h2><p>Keep model execution coordinated and prevent stale or duplicate actions.</p></div></div>
+   <div class="grid2">
+    <div class="mini"><h3>Observation isolation</h3><p>Every result belongs to one observation ID. Older results cannot overwrite newer screenshots.</p></div>
+    <div class="mini"><h3>Failure isolation</h3><p>A local model failure does not crash the other model or the assistant.</p></div>
+    <div class="mini"><h3>One action authority</h3><p>Vision adapters return detections; only the central orchestrator can authorize an action.</p></div>
+    <div class="mini"><h3>Truthful fallback</h3><p>If no configured vision provider is available, report that state. Never invent a cloud result.</p></div>
+   </div>
+  </section>
+
+  <section id="activity" class="section">
+   <div class="sectionhead"><div><h2>Activity</h2><p>Local demo event log. Entries are not sent to a server.</p></div><button class="btn" id="clearLog">Clear log</button></div>
+   <div class="panel"><div class="activity" id="activityList"><div class="event"><i></i><div><b>Demo ready</b><small>Waiting for a simulated vision run.</small></div></div></div></div>
+  </section>
+  <footer class="footer">KAVYA IN ACTION · INTERACTIVE CONCEPT DEMO · NO REAL DEVICE ACTIONS</footer>
+ </main>
+</div>
+</div>
+<script>
+(()=>{
+ const $=id=>document.getElementById(id);
+ const nav=[...document.querySelectorAll('.navbtn')];
+ function show(id){document.querySelectorAll('.section').forEach(s=>s.classList.toggle('active',s.id===id));nav.forEach(b=>b.classList.toggle('active',b.dataset.view===id));window.scrollTo({top:0,behavior:'smooth'});}
+ nav.forEach(b=>b.addEventListener('click',()=>show(b.dataset.view)));
+ document.querySelectorAll('[data-goto]').forEach(b=>b.addEventListener('click',()=>show(b.dataset.goto)));
+ const log=(title,detail)=>{const item=document.createElement('div');item.className='event';const dot=document.createElement('i');const wrap=document.createElement('div');const strong=document.createElement('b');strong.textContent=title;const small=document.createElement('small');small.textContent=new Date().toLocaleTimeString()+' · '+detail;wrap.append(strong,small);item.append(dot,wrap);$('activityList').prepend(item);};
+ const sync=()=>{const a=+$('smol').value,b=+$('florence').value;$('smolVal').textContent=a+'%';$('florenceVal').textContent=b+'%';$('smolBar').style.width=a+'%';$('florenceBar').style.width=b+'%';$('equalState').textContent=(a<30&&b<30&&Math.abs(a-b)<=0.5)?'Yes':'No';};
+ $('smol').addEventListener('input',sync);$('florence').addEventListener('input',sync);
+ let agree=true;
+ $('agreeToggle').addEventListener('click',()=>{agree=!agree;$('agreeToggle').classList.toggle('on',agree);$('agreeToggle').setAttribute('aria-pressed',String(agree));});
+ function evaluate(){
+  const a=+$('smol').value,b=+$('florence').value,lowBoth=a<50&&b<50,veryLowEqual=a<30&&b<30&&Math.abs(a-b)<=0.5;
+  let title,detail,kind,reason;
+  if(veryLowEqual){title='Cloud escalation required';detail='Both models are below 30% with equal confidence. Route to an already configured, available vision provider.';kind='cloud';reason='EQUAL_VERY_LOW_CONFIDENCE';}
+  else if(agree){title='Use offline consensus';detail='Both models agree on the target. Keep the stronger valid local detection and pass it to Accessibility for node matching.';kind='good';reason=(lowBoth?'LOW_CONFIDENCE_AGREEMENT':'OFFLINE_AGREEMENT');}
+  else if(lowBoth){title='Cloud escalation required';detail='Both confidence scores are below 50% and the coordinates differ. Do not send an uncertain target to Accessibility.';kind='cloud';reason='LOW_CONFIDENCE_DISAGREEMENT';}
+  else if(a>50&&b>50){title='Cloud escalation required';detail='Both models are above 50% but disagree on coordinates. Ask an already configured, available vision provider to resolve the target.';kind='cloud';reason='HIGH_CONFIDENCE_DISAGREEMENT';}
+  else if(a===50||b===50){title=agree?'Use offline consensus':'Cloud escalation required';detail=agree?'At the 50% boundary, matching coordinates are retained as offline consensus.':'At the 50% boundary with disagreement, escalate conservatively.';kind=agree?'good':'cloud';reason=agree?'OFFLINE_BOUNDARY_AGREEMENT':'BOUNDARY_DISAGREEMENT';}
+  else{title='Cloud escalation required';detail='The models fall on opposite sides of the confidence threshold. Escalate rather than silently choosing a conflicting detection.';kind='cloud';reason='MIXED_CONFIDENCE_DISAGREEMENT';}
+  const box=$('decision');box.className='result '+kind;box.innerHTML='';const tag=document.createElement('span');tag.className='tag';tag.textContent=kind==='good'?'OFFLINE ROUTE':'CLOUD FALLBACK';const strong=document.createElement('strong');strong.textContent=title;const p=document.createElement('p');p.textContent=detail;const code=document.createElement('p');code.textContent='Reason: '+reason;box.append(tag,strong,p,code);log(title,reason+' · Smol '+a+'% / Florence '+b+'% · '+(agree?'coordinates agree':'coordinates differ'));return {kind,reason};
+ }
+ $('evaluate').addEventListener('click',evaluate);
+ $('resetLab').addEventListener('click',()=>{$('smol').value=68;$('florence').value=72;agree=true;$('agreeToggle').classList.add('on');$('agreeToggle').setAttribute('aria-pressed','true');sync();$('decision').className='result';$('decision').innerHTML='<span class="tag">Awaiting evaluation</span><strong>Run consensus</strong><p>Adjust the model outputs, then evaluate the routing decision.</p>';});
+ $('startDemo').addEventListener('click',()=>{show('vision');$('smol').value=42;$('florence').value=38;agree=false;$('agreeToggle').classList.remove('on');$('agreeToggle').setAttribute('aria-pressed','false');sync();evaluate();});
+ $('screenFile').addEventListener('change',e=>{const file=e.target.files&&e.target.files[0];if(!file)return;if(!file.type.startsWith('image/'))return;const url=URL.createObjectURL(file);const img=document.createElement('img');img.alt='Selected local screenshot preview';img.onload=()=>URL.revokeObjectURL(url);img.src=url;$('preview').replaceChildren(img);log('Screenshot preview selected','Image displayed locally only; no upload performed.');});
+ $('clearLog').addEventListener('click',()=>{$('activityList').innerHTML='<div class="event"><i></i><div><b>Activity cleared</b><small>New demo events will appear here.</small></div></div>';});
+ sync();
+})();
+</script>
+</body></html>
