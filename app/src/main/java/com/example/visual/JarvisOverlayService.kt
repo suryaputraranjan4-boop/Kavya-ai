@@ -56,6 +56,7 @@ import com.example.MainActivity
 import com.example.orchestrator.TaskOrchestrationStateMachine
 import com.example.services.ScreenShareManager
 import com.example.utils.AppPreferences
+import com.example.vision.VisualizationOrchestrator
 import com.example.voice.KavyaMicrophoneEngine
 import kotlin.math.roundToInt
 
@@ -399,6 +400,7 @@ class JarvisOverlayService : Service() {
         val isMuted by ExplanationStepController.isMuted.collectAsState()
         val micEngineState by KavyaMicrophoneEngine.engineState.collectAsState()
         val orchestrationSnapshot by TaskOrchestrationStateMachine.snapshot.collectAsState()
+        val orbVisualStatus by VisualizationOrchestrator.orbVisualStatusText.collectAsState()
 
         val isMicActive = micEngineState == KavyaMicrophoneEngine.EngineState.MIC_ACTIVE ||
             micEngineState == KavyaMicrophoneEngine.EngineState.MIC_LISTENING ||
@@ -457,6 +459,9 @@ class JarvisOverlayService : Service() {
                     onToggleMic = {
                         handleMicToggleFromOrb(micEngineState)
                     },
+                    onOpenVisionStudio = {
+                        openVisionStudioFromOverlay()
+                    },
                     onCloseOrb = {
                         AppPreferences.setFloatingOrbEnabled(this@JarvisOverlayService, false)
                         stopAndDetachAll()
@@ -464,6 +469,7 @@ class JarvisOverlayService : Service() {
                 )
 
                 val statusLine = inlineStatusBanner
+                    ?: orbVisualStatus
                     ?: orchestrationSnapshot.stepDescription.ifBlank { orchestrationSnapshot.lastActionSummary }
                         .takeIf { orchestrationSnapshot.isRunning && it.isNotBlank() }
                 AnimatedVisibility(
@@ -654,6 +660,9 @@ class JarvisOverlayService : Service() {
                         onToggleMic = {
                             handleMicToggleFromOrb(micEngineState)
                         },
+                        onOpenVisionStudio = {
+                            openVisionStudioFromOverlay()
+                        },
                         onCloseOrb = {
                             AppPreferences.setFloatingOrbEnabled(this@JarvisOverlayService, false)
                             stopAndDetachAll()
@@ -662,6 +671,15 @@ class JarvisOverlayService : Service() {
                 }
             }
         }
+    }
+
+    private fun openVisionStudioFromOverlay() {
+        JarvisOverlayController.setOrbMinimized(false)
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra(MainActivity.EXTRA_OPEN_ROUTE, "jarvis_intelligence")
+        }
+        startActivity(intent)
     }
 
     private fun handleMicToggleFromOrb(micState: KavyaMicrophoneEngine.EngineState) {

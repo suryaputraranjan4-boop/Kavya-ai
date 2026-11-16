@@ -218,7 +218,7 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                     if (target.exists() && !target.delete()) {
                         throw IllegalStateException("Could not replace an invalid model file: " + spec.fileName)
                     }
-                    val downloaded = downloadOne(spec, target) { bytes ->
+                    val downloaded = downloadOneWithBackoff(spec, target) { bytes ->
                         val progress = ((completedBytes + bytes).toFloat() / totalBytes.toFloat()).coerceIn(0f, 0.99f)
                         _downloadProgress.value = progress
                         _progressText.value = "Downloading " + spec.fileName
@@ -249,6 +249,25 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                 _progressText.value = "Download failed: " + (e.message ?: "unknown error")
             }
         }
+    }
+
+    private suspend fun downloadOneWithBackoff(
+        spec: TtsModelFileSpec,
+        target: File,
+        onProgress: (Long) -> Unit
+    ): Boolean {
+        var attempt = 0
+        while (attempt <= 2) {
+            if (paused) return false
+            if (attempt > 0) {
+                val backoffMs = 1000L shl (attempt - 1)
+                _progressText.value = "Retrying ${spec.fileName} ($attempt/2)..."
+                kotlinx.coroutines.delay(backoffMs)
+            }
+            if (downloadOne(spec, target, onProgress)) return true
+            attempt++
+        }
+        return false
     }
 
     /**

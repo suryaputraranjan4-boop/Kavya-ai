@@ -310,6 +310,23 @@ fun KavyaSideMenu(
                             }
                         )
                         DrawerItemWhiteGlass(
+                            icon = Icons.Default.AutoAwesome,
+                            label = "Vision",
+                            isSelected = currentRoute == "jarvis_intelligence",
+                            testTag = "drawer_item_vision",
+                            onClick = {
+                                navigateTo(navController, drawerState, scope, "jarvis_intelligence")
+                            }
+                        )
+                        DrawerItemWhiteGlass(
+                            icon = Icons.Default.TouchApp,
+                            label = "Visual Action Control",
+                            isSelected = currentRoute == "visual_action_control",
+                            onClick = {
+                                navigateTo(navController, drawerState, scope, "visual_action_control")
+                            }
+                        )
+                        DrawerItemWhiteGlass(
                             icon = Icons.Default.MusicNote,
                             label = "Media & Music",
                             isSelected = currentRoute == "music",
@@ -535,6 +552,7 @@ private fun DrawerItemWhiteGlass(
     icon: ImageVector,
     label: String,
     isSelected: Boolean,
+    testTag: String? = null,
     onClick: () -> Unit
 ) {
     val backgroundColor = if (isSelected) {
@@ -558,6 +576,7 @@ private fun DrawerItemWhiteGlass(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .padding(horizontal = 14.dp, vertical = 2.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(backgroundColor)

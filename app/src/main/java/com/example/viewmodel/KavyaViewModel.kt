@@ -1220,6 +1220,45 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                // 0a-bis. Unified Visualization & Rendering Tool Router (Jarvis Orb + Conversational)
+                val vizDecision = com.example.vision.VisualizationOrchestrator.classifyVisualizationRequest(prompt)
+                if (cleanResponse.isBlank() &&
+                    vizDecision.isVisualizationIntent &&
+                    gateDecision.category !in listOf(
+                        com.example.agent.IntentCategory.STOP,
+                        com.example.agent.IntentCategory.CANCEL,
+                        com.example.agent.IntentCategory.SLEEP,
+                        com.example.agent.IntentCategory.SCHEDULE,
+                        com.example.agent.IntentCategory.MEMORY_SAVE,
+                        com.example.agent.IntentCategory.MEMORY_RECALL
+                    )
+                ) {
+                    val chosenSpec = com.example.vision.VisionTechRegistry.getSpec(vizDecision.primaryTech)
+                    com.example.visual.JarvisOverlayController.setOrbState(com.example.visual.JarvisOrbState.WORKING)
+                    val latch = kotlinx.coroutines.CompletableDeferred<com.example.vision.VisualizationArtifact?>()
+                    com.example.vision.VisualizationOrchestrator.generateVisualizationAsync(
+                        context = getApplication(),
+                        prompt = prompt,
+                        preferredTechId = vizDecision.primaryTech,
+                        source = com.example.vision.VisualizationEntrySource.JARVIS_ORB
+                    ) { generated ->
+                        latch.complete(generated)
+                    }
+                    val builtArtifact = kotlinx.coroutines.withTimeoutOrNull(8500L) { latch.await() }
+                    if (builtArtifact != null) {
+                        com.example.visual.JarvisOverlayController.setOrbState(com.example.visual.JarvisOrbState.EXPLAINING)
+                        cleanResponse = "Created '${builtArtifact.title}' with ${chosenSpec.displayName}. ${builtArtifact.summaryText}\nOpen Hamburger Menu -> Vision (or tap the Hub icon on the Jarvis Orb) to inspect and export."
+                    } else {
+                        cleanResponse = "Preparing '${chosenSpec.displayName}' visualization in Vision Studio for your request."
+                    }
+                    aType = "VISION_STUDIO"
+                    aParam = vizDecision.primaryTech.wireId
+                    if (_autoSpeak.value && !alreadySpoken) {
+                        voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
+                        alreadySpoken = true
+                    }
+                }
+
                 // 0b. CEO AI ORCHESTRATOR ROUTING (AI = ONLY BRAIN, ACCESSIBILITY = RESTRICTED EXECUTOR)
                 // All device actions, app opens, taps, types, scrolls, calls, messages, media, and multi-step commands
                 // MUST pass exclusively through CeoAiOrchestrator -> SelectedProviderClient -> AiAuthorityGateway -> ScreenObservation -> Verification.

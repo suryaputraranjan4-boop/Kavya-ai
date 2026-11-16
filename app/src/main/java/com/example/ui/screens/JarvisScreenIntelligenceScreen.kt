@@ -44,6 +44,7 @@ import com.example.ui.components.ScreenSharePreflightDialog
 import com.example.ui.components.ScreenSharePreflightSummaryCard
 import com.example.ui.components.rememberScreenSharePreflightSnapshot
 import com.example.viewmodel.KavyaViewModel
+import com.example.vision.VisionWorkspaceContent
 import com.example.visual.*
 
 /**
@@ -73,14 +74,23 @@ fun JarvisScreenIntelligenceScreen(
     val annotationSteps by ExplanationStepController.steps.collectAsState()
     val currentStepIdx by ExplanationStepController.currentStepIndex.collectAsState()
 
+    val activeLevel by JarvisOverlayController.activeExplanationLevel.collectAsState()
+    var selectedLevel by remember(activeLevel) { mutableStateOf(activeLevel) }
+
     val (preflightSnapshot, refreshPreflight) = rememberScreenSharePreflightSnapshot(shareState)
     var showPreflightDialog by remember { mutableStateOf(false) }
+    var activeVisionTab by remember { mutableIntStateOf(0) }
     var testQueryInput by remember { mutableStateOf("Explain this screen") }
+    var actionFeedbackBanner by remember { mutableStateOf<String?>(null) }
     var hasOverlayPermission by remember {
         mutableStateOf(JarvisOverlayController.hasOverlayPermission(context))
     }
     var isAccessibilityActive by remember {
         mutableStateOf(KavyaAccessibilityService.instance != null)
+    }
+
+    LaunchedEffect(context) {
+        JarvisGuidanceEngine.bindContext(context)
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -141,7 +151,7 @@ fun JarvisScreenIntelligenceScreen(
                                 .background(orbConfig.theme.primaryColor)
                         )
                         Text(
-                            text = "JARVIS SCREEN INTELLIGENCE",
+                            text = "VISION STUDIO & JARVIS",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace,
@@ -167,13 +177,42 @@ fun JarvisScreenIntelligenceScreen(
         containerColor = Color(0xFF090D14),
         modifier = modifier
     ) { paddingValues ->
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            TabRow(
+                selectedTabIndex = activeVisionTab,
+                containerColor = Color(0xFF0E1522),
+                contentColor = orbConfig.theme.primaryColor
+            ) {
+                Tab(
+                    selected = activeVisionTab == 0,
+                    onClick = { activeVisionTab = 0 },
+                    text = { Text("Vision Studio (16)", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                )
+                Tab(
+                    selected = activeVisionTab == 1,
+                    onClick = { activeVisionTab = 1 },
+                    text = { Text("JARVIS Live & Orb", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                )
+            }
+
+            if (activeVisionTab == 0) {
+                VisionWorkspaceContent(
+                    accentColor = orbConfig.theme.primaryColor,
+                    reducedMotion = orbConfig.reducedMotion,
+                    modifier = Modifier.weight(1f)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
             // 1. Live Interactive JARVIS Orb Preview Stage
             item {
                 Card(
@@ -325,20 +364,33 @@ fun JarvisScreenIntelligenceScreen(
                             ) {
                                 if (annotationSteps.size > 1) {
                                     OutlinedButton(
-                                        onClick = { ExplanationStepController.previousStep() },
+                                        onClick = {
+                                            actionFeedbackBanner = JarvisGuidanceEngine.handleVoiceGuidanceControlCommand(context, "previous")
+                                        },
                                         enabled = currentStepIdx > 0,
                                         shape = RoundedCornerShape(10.dp),
                                         modifier = Modifier.weight(1f)
                                     ) {
-                                        Text("◀ Prev Step", color = Color.White, fontSize = 11.sp)
+                                        Text("◀ Prev", color = Color.White, fontSize = 11.sp)
                                     }
                                     OutlinedButton(
-                                        onClick = { ExplanationStepController.nextStep() },
+                                        onClick = {
+                                            actionFeedbackBanner = JarvisGuidanceEngine.handleVoiceGuidanceControlCommand(context, "repeat")
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Repeat", color = Color.White, fontSize = 11.sp)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            actionFeedbackBanner = JarvisGuidanceEngine.handleVoiceGuidanceControlCommand(context, "next")
+                                        },
                                         enabled = currentStepIdx < annotationSteps.size - 1,
                                         shape = RoundedCornerShape(10.dp),
                                         modifier = Modifier.weight(1f)
                                     ) {
-                                        Text("Next Step ▶", color = orbConfig.theme.primaryColor, fontSize = 11.sp)
+                                        Text("Next ▶", color = orbConfig.theme.primaryColor, fontSize = 11.sp)
                                     }
                                 }
 
@@ -474,10 +526,35 @@ fun JarvisScreenIntelligenceScreen(
                         modifier = Modifier.padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        // Explanation depth selector
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ScreenSharePresentationLevel.entries.forEach { lvl ->
+                                val isLvlSelected = selectedLevel == lvl
+                                FilterChip(
+                                    selected = isLvlSelected,
+                                    onClick = {
+                                        selectedLevel = lvl
+                                        JarvisOverlayController.setExplanationLevel(lvl)
+                                    },
+                                    label = {
+                                        Text(
+                                            text = lvl.title,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isLvlSelected) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+
                         OutlinedTextField(
                             value = testQueryInput,
                             onValueChange = { testQueryInput = it },
-                            label = { Text("Query or Task", fontSize = 11.sp) },
+                            label = { Text("Query or Task (EN / HI / Hinglish)", fontSize = 11.sp) },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -488,70 +565,115 @@ fun JarvisScreenIntelligenceScreen(
                             )
                         )
 
+                        // Quick visual query chips
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(
+                                listOf(
+                                    "Explain this screen",
+                                    "Show pie chart breakdown",
+                                    "Draw flowchart of screen workflow",
+                                    "Show 3D spatial structure",
+                                    "Guide me step by step"
+                                )
+                            ) { chipQuery ->
+                                SuggestionChip(
+                                    onClick = { testQueryInput = chipQuery },
+                                    label = { Text(chipQuery, fontSize = 10.5.sp) }
+                                )
+                            }
+                        }
+
+                        actionFeedbackBanner?.let { feedback ->
+                            Text(
+                                text = feedback,
+                                color = orbConfig.theme.primaryColor,
+                                fontSize = 11.5.sp
+                            )
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // Mode A Button
+                            // Mode A Button (Full Grounded Perception + AI Pipeline)
                             Button(
                                 onClick = {
-                                    val plan = JarvisIntelligencePlanner.createPlan(
-                                        userQuery = testQueryInput.ifBlank { "Explain this screen" },
-                                        forcedMode = JarvisMode.EXPLAINS_ANYTHING
+                                    val q = testQueryInput.ifBlank { "Explain this screen" }
+                                    actionFeedbackBanner = "Running Mode A visual perception (${selectedLevel.title})..."
+                                    JarvisGuidanceEngine.explainActiveScreenAsync(
+                                        context = context,
+                                        query = q,
+                                        preferredLevel = selectedLevel
                                     )
-                                    JarvisOverlayController.presentVisualPlan(plan)
                                 },
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = orbConfig.theme.primaryColor),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
                             ) {
-                                Text("Mode A: Explain", color = Color.Black, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                Text("Mode A: Explain", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
 
-                            // Mode B Button
+                            // Mode B Button (Step-by-Step Interactive Walkthrough)
                             Button(
                                 onClick = {
-                                    val plan = JarvisIntelligencePlanner.createPlan(
-                                        userQuery = testQueryInput.ifBlank { "Where is Back button" },
-                                        forcedMode = JarvisMode.SHOWS_YOU_HOW
+                                    val q = testQueryInput.ifBlank { "Guide me step by step on this screen" }
+                                    val stepQuery = if (q.contains("step", true) || q.contains("how", true) || q.contains("kaise", true)) q else "Guide me step by step: $q"
+                                    actionFeedbackBanner = "Generating interactive step walkthrough..."
+                                    JarvisGuidanceEngine.explainActiveScreenAsync(
+                                        context = context,
+                                        query = stepQuery,
+                                        preferredLevel = selectedLevel
                                     )
-                                    JarvisOverlayController.presentVisualPlan(plan)
                                 },
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9100)),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
                             ) {
-                                Text("Mode B: Show How", color = Color.Black, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                Text("Mode B: Show How", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
 
-                            // Mode C Button
+                            // Mode C Button (Routes through central AI-first autonomous execution pipeline)
                             Button(
                                 onClick = {
+                                    val q = testQueryInput.ifBlank { "Inspect and perform next requested action" }
                                     val plan = JarvisIntelligencePlanner.createPlan(
-                                        userQuery = testQueryInput.ifBlank { "Click search" },
+                                        userQuery = q,
                                         forcedMode = JarvisMode.DO_IT
                                     )
                                     JarvisOverlayController.presentVisualPlan(plan)
+                                    viewModel.sendMessage(q)
+                                    actionFeedbackBanner = "Dispatched to AI agent executor: $q"
                                 },
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
                             ) {
-                                Text("Mode C: Do It", color = Color.Black, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                Text("Mode C: Do It", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
 
                         // Full Screen Explainer Launch
                         OutlinedButton(
                             onClick = {
-                                val plan = JarvisIntelligencePlanner.createPlan(
-                                    userQuery = "Explain the whole screen",
-                                    forcedMode = JarvisMode.EXPLAINS_ANYTHING
+                                val q = testQueryInput.ifBlank { "Explain the whole screen" }
+                                actionFeedbackBanner = "Capturing screen & launching full-screen explainer..."
+                                JarvisGuidanceEngine.explainActiveScreenAsync(
+                                    context = context,
+                                    query = q,
+                                    preferredLevel = selectedLevel,
+                                    openFullScreenExplainer = true
                                 )
-                                JarvisOverlayController.showFullScreenExplainer(plan)
                             },
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
                         ) {
                             Icon(imageVector = Icons.Default.Fullscreen, contentDescription = "Full Screen Explainer", tint = orbConfig.theme.primaryColor)
                             Spacer(modifier = Modifier.width(8.dp))
@@ -590,6 +712,8 @@ fun JarvisScreenIntelligenceScreen(
 
             item {
                 Spacer(modifier = Modifier.height(24.dp))
+            }
+        }
             }
         }
     }

@@ -1037,6 +1037,61 @@ object AppPreferences {
     fun setScreenShareQualityMode(context: Context, mode: String) {
         getPrefs(context).edit().putString(KEY_SCREEN_SHARE_QUALITY_MODE, mode).apply()
     }
+
+    // Kokoro-82M Bilingual Hindi + English Voice Preferences (Female Voices)
+    private const val KEY_KOKORO_VARIANT = "key_kokoro_variant"
+    private const val KEY_KOKORO_HINDI_VOICE = "key_kokoro_hindi_voice"
+    private const val KEY_KOKORO_ENGLISH_VOICE = "key_kokoro_english_voice"
+    private const val KEY_KOKORO_LANG_MODE = "key_kokoro_lang_mode"
+    private const val KEY_APPROVED_VISION_MODELS = "key_approved_lightweight_vision_models"
+
+    fun getKokoroVariant(context: Context): String {
+        return getPrefs(context).getString(KEY_KOKORO_VARIANT, "AUTO") ?: "AUTO"
+    }
+
+    fun setKokoroVariant(context: Context, variant: String) {
+        getPrefs(context).edit().putString(KEY_KOKORO_VARIANT, variant).apply()
+    }
+
+    fun getKokoroHindiVoice(context: Context): String {
+        val voice = getPrefs(context).getString(KEY_KOKORO_HINDI_VOICE, "hf_alpha") ?: "hf_alpha"
+        return if (voice == "hf_alpha" || voice == "hf_beta") voice else "hf_alpha"
+    }
+
+    fun setKokoroHindiVoice(context: Context, voiceId: String) {
+        val safe = if (voiceId == "hf_alpha" || voiceId == "hf_beta") voiceId else "hf_alpha"
+        getPrefs(context).edit().putString(KEY_KOKORO_HINDI_VOICE, safe).apply()
+    }
+
+    fun getKokoroEnglishVoice(context: Context): String {
+        val allowed = setOf(
+            "af_heart", "af_bella", "af_nova", "af_aoede", "af_alloy",
+            "af_jessica", "af_kore", "af_nicole", "af_river", "af_sarah", "af_sky",
+            "bf_emma", "bf_alice", "bf_isabella", "bf_lily"
+        )
+        val voice = getPrefs(context).getString(KEY_KOKORO_ENGLISH_VOICE, "af_heart") ?: "af_heart"
+        return if (voice in allowed) voice else "af_heart"
+    }
+
+    fun setKokoroEnglishVoice(context: Context, voiceId: String) {
+        getPrefs(context).edit().putString(KEY_KOKORO_ENGLISH_VOICE, voiceId).apply()
+    }
+
+    fun getKokoroLanguageMode(context: Context): String {
+        return getPrefs(context).getString(KEY_KOKORO_LANG_MODE, "AUTO_HINDI_ENGLISH") ?: "AUTO_HINDI_ENGLISH"
+    }
+
+    fun setKokoroLanguageMode(context: Context, mode: String) {
+        getPrefs(context).edit().putString(KEY_KOKORO_LANG_MODE, mode).apply()
+    }
+
+    fun getApprovedLightweightVisionModels(context: Context): Set<String> {
+        return getPrefs(context).getStringSet(KEY_APPROVED_VISION_MODELS, emptySet())?.toSet() ?: emptySet()
+    }
+
+    fun setApprovedLightweightVisionModels(context: Context, modelIds: Set<String>) {
+        getPrefs(context).edit().putStringSet(KEY_APPROVED_VISION_MODELS, modelIds.toSet()).apply()
+    }
 }
 
 /**

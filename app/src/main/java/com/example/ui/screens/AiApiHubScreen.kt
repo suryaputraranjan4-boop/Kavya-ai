@@ -24,6 +24,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import com.example.ai.offline.BatchBudgetPreview
+import com.example.ai.offline.GemmaModelManager
+import com.example.ai.offline.ManagedModelDescriptor
+import com.example.ai.offline.ModelCatalog
+import com.example.ai.offline.ModelDownloadCoordinator
+import com.example.ai.offline.ModelDownloadProgressState
+import com.example.ai.offline.ModelLifecycleState
+import com.example.ai.offline.OfflineStorageProfile
 import com.example.memory.okf.OkfCategory
 import com.example.memory.okf.OkfKnowledgeUnit
 import com.example.memory.okf.OkfMemoryRepository
@@ -100,12 +109,26 @@ fun AiApiHubScreen(navController: NavController) {
         }
     }
 
-    // Gemma 4 E4B State
+    // Gemma 4 E4B & Shared Model Hub State
     val gemmaStatus by com.example.ai.offline.GemmaModelManager.status.collectAsState()
     var gemmaFile by remember { mutableStateOf(com.example.ai.offline.GemmaModelManager.getModelFile(context)) }
     var isGemmaImporting by remember { mutableStateOf(false) }
     var selectedAiProvider by remember { mutableStateOf(AppPreferences.getAiProvider(context)) }
     var offlineAiEnabled by remember { mutableStateOf(AppPreferences.isOfflineFallbackEnabled(context)) }
+
+    val modelCoordinator = remember { ModelDownloadCoordinator.getInstance(context) }
+    val modelStates by modelCoordinator.states.collectAsState()
+    var activeStorageProfile by remember { mutableStateOf(GemmaModelManager.getStorageProfile(context)) }
+    var showExpandedProfileDialog by remember { mutableStateOf(false) }
+    var showExcludedModels by remember { mutableStateOf(false) }
+    var selectedLightweightIds by remember {
+        mutableStateOf(
+            ModelCatalog.LIGHTWEIGHT_VISION_DESCRIPTORS
+                .filter { it.recommendedDefault }
+                .map { it.manifest.modelId }
+                .toSet()
+        )
+    }
 
     val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -527,6 +550,74 @@ fun AiApiHubScreen(navController: NavController) {
                             }
                         }
                     }
+                }
+            }
+
+            item {
+                val batchPreview = remember(selectedLightweightIds, modelStates, activeStorageProfile) {
+                    modelCoordinator.previewBatchBudget(selectedLightweightIds.toList())
+                }
+                OnDeviceModelHubCard(
+                    activeProfile = activeStorageProfile,
+                    modelStates = modelStates,
+                    selectedLightweightIds = selectedLightweightIds,
+                    batchPreview = batchPreview,
+                    showExcludedModels = showExcludedModels,
+                    onToggleExcludedModels = { showExcludedModels = !showExcludedModels },
+                    onSwitchProfile = { targetProfile ->
+                        if (targetProfile == OfflineStorageProfile.EXPANDED) {
+                            showExpandedProfileDialog = true
+                        } else {
+                            GemmaModelManager.setStorageProfile(context, OfflineStorageProfile.STRICT_2GB)
+                            activeStorageProfile = OfflineStorageProfile.STRICT_2GB
+                        }
+                    },
+                    onToggleLightweightSelect = { modelId ->
+                        selectedLightweightIds = if (modelId in selectedLightweightIds) {
+                            selectedLightweightIds - modelId
+                        } else {
+                            selectedLightweightIds + modelId
+                        }
+                    },
+                    onDownloadSelectedBatch = {
+                        modelCoordinator.startOrResumeBatch(selectedLightweightIds.toList())
+                    },
+                    onStartOrResume = { id -> modelCoordinator.startOrResumeDownload(id) },
+                    onPause = { id -> modelCoordinator.pauseDownload(id) },
+                    onCancel = { id -> modelCoordinator.cancelDownload(id) },
+                    onVerify = { id -> modelCoordinator.verifyModelAsync(id) },
+                    onDelete = { id -> modelCoordinator.deleteModel(id) },
+                    onRedownload = { id -> modelCoordinator.redownloadModel(id) }
+                )
+
+                if (showExpandedProfileDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showExpandedProfileDialog = false },
+                        title = { Text("Enable Expanded Model Storage?") },
+                        text = {
+                            Text(
+                                "Expanded mode raises the local model cap from 2 GB to 4 GB so large bundles like Florence-2 can install alongside SmolVLM2 and Kokoro-82M."
+                            )
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    GemmaModelManager.setStorageProfile(
+                                        context,
+                                        OfflineStorageProfile.EXPANDED,
+                                        userApprovedExpanded = true
+                                    )
+                                    activeStorageProfile = GemmaModelManager.getStorageProfile(context)
+                                    showExpandedProfileDialog = false
+                                }
+                            ) { Text("Allow Expanded (4 GB)") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showExpandedProfileDialog = false }) {
+                                Text("Keep 2 GB Strict")
+                            }
+                        }
+                    )
                 }
             }
             item {
@@ -2242,4 +2333,359 @@ fun RuntimeEventRow(event: RuntimeActivityEvent) {
         }
     }
 }
+
+@Composable
+private fun OnDeviceModelHubCard(
+    activeProfile: OfflineStorageProfile,
+    modelStates: Map<String, ModelDownloadProgressState>,
+    selectedLightweightIds: Set<String>,
+    batchPreview: BatchBudgetPreview,
+    showExcludedModels: Boolean,
+    onToggleExcludedModels: () -> Unit,
+    onSwitchProfile: (OfflineStorageProfile) -> Unit,
+    onToggleLightweightSelect: (String) -> Unit,
+    onDownloadSelectedBatch: () -> Unit,
+    onStartOrResume: (String) -> Unit,
+    onPause: (String) -> Unit,
+    onCancel: (String) -> Unit,
+    onVerify: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onRedownload: (String) -> Unit
+) {
+    GlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("on_device_model_hub_card"),
+        shape = RoundedCornerShape(18.dp),
+        backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
+        borderColor = AccentCyan.copy(alpha = 0.35f)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "On-Device Model Hub",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = "Voice (Kokoro-82M) • Lightweight Vision (12 ONNX) • Advanced Vision",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = TextSecondary
+                    )
+                }
+                RoleBadge(
+                    label = if (activeProfile == OfflineStorageProfile.EXPANDED) "4 GB EXPANDED" else "2 GB STRICT",
+                    color = if (activeProfile == OfflineStorageProfile.EXPANDED) AccentYellow else AccentCyan
+                )
+            }
+
+            // Storage profile toggle row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { onSwitchProfile(OfflineStorageProfile.STRICT_2GB) },
+                    enabled = activeProfile != OfflineStorageProfile.STRICT_2GB,
+                    modifier = Modifier.weight(1f).testTag("profile_strict_2gb_btn"),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Strict 2 GB", fontSize = 11.sp)
+                }
+                OutlinedButton(
+                    onClick = { onSwitchProfile(OfflineStorageProfile.EXPANDED) },
+                    enabled = activeProfile != OfflineStorageProfile.EXPANDED,
+                    modifier = Modifier.weight(1f).testTag("profile_expanded_4gb_btn"),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Expanded 4 GB", fontSize = 11.sp)
+                }
+            }
+
+            HorizontalDivider(color = OutlineVariant.copy(alpha = 0.45f))
+
+            // 1. Voice Synthesis Group
+            Text(
+                text = "Voice Synthesis",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = AccentCyan
+            )
+            ModelCatalog.getVoiceDescriptors().forEach { desc ->
+                ManagedModelRow(
+                    descriptor = desc,
+                    state = modelStates[desc.manifest.modelId],
+                    selectable = false,
+                    isSelected = false,
+                    onToggleSelect = {},
+                    onStartOrResume = { onStartOrResume(desc.manifest.modelId) },
+                    onPause = { onPause(desc.manifest.modelId) },
+                    onCancel = { onCancel(desc.manifest.modelId) },
+                    onVerify = { onVerify(desc.manifest.modelId) },
+                    onDelete = { onDelete(desc.manifest.modelId) },
+                    onRedownload = { onRedownload(desc.manifest.modelId) }
+                )
+            }
+
+            HorizontalDivider(color = OutlineVariant.copy(alpha = 0.45f))
+
+            // 2. Lightweight Vision Group (Multi-select + Batch Budget)
+            Text(
+                text = "Lightweight Vision (12 Verified ONNX Models)",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = SuccessGreenGlow
+            )
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Color.Black.copy(alpha = 0.25f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val downloadMb = batchPreview.totalDownloadBytes / (1024 * 1024)
+                    val projectedMb = batchPreview.projectedTotalBytes / (1024 * 1024)
+                    Text(
+                        text = "Selected: ${selectedLightweightIds.size} model(s) • Pending download: ~$downloadMb MB • Projected total: ~$projectedMb MB",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = if (batchPreview.fitsBudget) AccentCyan else Error
+                    )
+                    if (!batchPreview.fitsBudget) {
+                        Text(
+                            text = batchPreview.reason,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp),
+                            color = Error
+                        )
+                    }
+                    Button(
+                        onClick = onDownloadSelectedBatch,
+                        enabled = selectedLightweightIds.isNotEmpty() && batchPreview.fitsBudget,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("download_selected_vision_batch_btn")
+                    ) {
+                        Text("Download Selected Models (${selectedLightweightIds.size})", fontSize = 12.sp)
+                    }
+                }
+            }
+
+            ModelCatalog.LIGHTWEIGHT_VISION_DESCRIPTORS.forEach { desc ->
+                ManagedModelRow(
+                    descriptor = desc,
+                    state = modelStates[desc.manifest.modelId],
+                    selectable = true,
+                    isSelected = desc.manifest.modelId in selectedLightweightIds,
+                    onToggleSelect = { onToggleLightweightSelect(desc.manifest.modelId) },
+                    onStartOrResume = { onStartOrResume(desc.manifest.modelId) },
+                    onPause = { onPause(desc.manifest.modelId) },
+                    onCancel = { onCancel(desc.manifest.modelId) },
+                    onVerify = { onVerify(desc.manifest.modelId) },
+                    onDelete = { onDelete(desc.manifest.modelId) },
+                    onRedownload = { onRedownload(desc.manifest.modelId) }
+                )
+            }
+
+            HorizontalDivider(color = OutlineVariant.copy(alpha = 0.45f))
+
+            // 3. Advanced Vision Group
+            Text(
+                text = "Advanced Vision (Sequential RAM Governed)",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = AccentPurpleLight
+            )
+            ModelCatalog.getAdvancedVisionDescriptors().forEach { desc ->
+                ManagedModelRow(
+                    descriptor = desc,
+                    state = modelStates[desc.manifest.modelId],
+                    selectable = false,
+                    isSelected = false,
+                    onToggleSelect = {},
+                    onStartOrResume = { onStartOrResume(desc.manifest.modelId) },
+                    onPause = { onPause(desc.manifest.modelId) },
+                    onCancel = { onCancel(desc.manifest.modelId) },
+                    onVerify = { onVerify(desc.manifest.modelId) },
+                    onDelete = { onDelete(desc.manifest.modelId) },
+                    onRedownload = { onRedownload(desc.manifest.modelId) }
+                )
+            }
+
+            // Excluded Upstream Entries disclosure
+            TextButton(
+                onClick = onToggleExcludedModels,
+                modifier = Modifier.testTag("toggle_excluded_models_btn")
+            ) {
+                Text(
+                    text = if (showExcludedModels) "Hide Excluded Upstream Models (${ModelCatalog.EXCLUDED_MODELS.size})" else "View Excluded Upstream Models (${ModelCatalog.EXCLUDED_MODELS.size})",
+                    fontSize = 11.sp,
+                    color = TextSecondary
+                )
+            }
+            AnimatedVisibility(visible = showExcludedModels) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ModelCatalog.EXCLUDED_MODELS.forEach { record ->
+                        Text(
+                            text = "• ${record.modelId}: ${record.technicalReasons.joinToString(" ")}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp),
+                            color = TextTertiary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ManagedModelRow(
+    descriptor: ManagedModelDescriptor,
+    state: ModelDownloadProgressState?,
+    selectable: Boolean,
+    isSelected: Boolean,
+    onToggleSelect: () -> Unit,
+    onStartOrResume: () -> Unit,
+    onPause: () -> Unit,
+    onCancel: () -> Unit,
+    onVerify: () -> Unit,
+    onDelete: () -> Unit,
+    onRedownload: () -> Unit
+) {
+    val lifecycle = state?.state ?: ModelLifecycleState.NOT_INSTALLED
+    val sizeMb = (descriptor.estimatedSizeBytes / (1024 * 1024)).coerceAtLeast(1)
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = Color.White.copy(alpha = 0.04f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(0.8.dp, OutlineVariant.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (selectable) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onToggleSelect() },
+                        modifier = Modifier.testTag("select_model_${descriptor.manifest.modelId}")
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = descriptor.displayName,
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = "${descriptor.purposeSummary} • ${descriptor.manifest.license} • ~$sizeMb MB",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp),
+                        color = TextSecondary
+                    )
+                }
+                val badgeColor = when (lifecycle) {
+                    ModelLifecycleState.READY -> SuccessGreenGlow
+                    ModelLifecycleState.ERROR, ModelLifecycleState.UNSUPPORTED_DEVICE -> Error
+                    ModelLifecycleState.DOWNLOADING, ModelLifecycleState.RESUMING,
+                    ModelLifecycleState.VERIFYING, ModelLifecycleState.LOADING_RUNTIME -> AccentCyan
+                    else -> TextSecondary
+                }
+                RoleBadge(label = lifecycle.label.uppercase(), color = badgeColor)
+            }
+
+            if (lifecycle == ModelLifecycleState.DOWNLOADING ||
+                lifecycle == ModelLifecycleState.RESUMING ||
+                lifecycle == ModelLifecycleState.VERIFYING
+            ) {
+                LinearProgressIndicator(
+                    progress = { state?.progress ?: 0f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            state?.errorMessage?.takeIf { it.isNotBlank() }?.let { err ->
+                Text(text = err, style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp), color = Error)
+            } ?: state?.statusMessage?.takeIf { it.isNotBlank() }?.let { msg ->
+                Text(text = msg, style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp), color = TextTertiary)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                when (lifecycle) {
+                    ModelLifecycleState.NOT_INSTALLED, ModelLifecycleState.ERROR -> {
+                        OutlinedButton(
+                            onClick = onStartOrResume,
+                            modifier = Modifier.weight(1f).testTag("download_btn_${descriptor.manifest.modelId}"),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(if (lifecycle == ModelLifecycleState.ERROR) "Retry" else "Download", fontSize = 11.sp)
+                        }
+                    }
+                    ModelLifecycleState.PAUSED -> {
+                        OutlinedButton(
+                            onClick = onStartOrResume,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Resume", fontSize = 11.sp) }
+                        OutlinedButton(
+                            onClick = onCancel,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Cancel", fontSize = 11.sp, color = Error) }
+                    }
+                    ModelLifecycleState.DOWNLOADING, ModelLifecycleState.DOWNLOAD_QUEUED,
+                    ModelLifecycleState.RESUMING, ModelLifecycleState.VERIFYING,
+                    ModelLifecycleState.LOADING_RUNTIME -> {
+                        OutlinedButton(
+                            onClick = onPause,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Pause", fontSize = 11.sp) }
+                        OutlinedButton(
+                            onClick = onCancel,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Cancel", fontSize = 11.sp, color = Error) }
+                    }
+                    ModelLifecycleState.READY -> {
+                        OutlinedButton(
+                            onClick = onVerify,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Verify", fontSize = 11.sp) }
+                        OutlinedButton(
+                            onClick = onRedownload,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Re-fetch", fontSize = 11.sp) }
+                        OutlinedButton(
+                            onClick = onDelete,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Delete", fontSize = 11.sp, color = Error) }
+                    }
+                    ModelLifecycleState.UNSUPPORTED_DEVICE -> Unit
+                }
+            }
+        }
+    }
+}
+
 

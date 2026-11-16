@@ -194,7 +194,8 @@ data class Edge3D(val startIdx: Int, val endIdx: Int)
 data class WireframeMesh3D(
     val name: String,
     val vertices: List<Point3D>,
-    val edges: List<Edge3D>
+    val edges: List<Edge3D>,
+    val parts: List<String> = listOf("Core Shell", "Inner Lattice", "Sensor Axis")
 ) {
     companion object {
         fun createCube(size: Float = 1.0f): WireframeMesh3D {
@@ -214,7 +215,7 @@ data class WireframeMesh3D(
                 Edge3D(4, 5), Edge3D(5, 6), Edge3D(6, 7), Edge3D(7, 4),
                 Edge3D(0, 4), Edge3D(1, 5), Edge3D(2, 6), Edge3D(3, 7)
             )
-            return WireframeMesh3D("Holographic Cube", vertices, edges)
+            return WireframeMesh3D("Holographic Cube", vertices, edges, listOf("Front Face", "Back Face", "Connectors"))
         }
 
         fun createDiamond(size: Float = 1.2f): WireframeMesh3D {
@@ -232,7 +233,7 @@ data class WireframeMesh3D(
                 Edge3D(1, 2), Edge3D(2, 3), Edge3D(3, 4), Edge3D(4, 1),
                 Edge3D(5, 1), Edge3D(5, 2), Edge3D(5, 3), Edge3D(5, 4)
             )
-            return WireframeMesh3D("AI Quantum Core", vertices, edges)
+            return WireframeMesh3D("AI Quantum Core", vertices, edges, listOf("Upper Crown", "Equatorial Ring", "Lower Crown"))
         }
 
         fun createPyramid(size: Float = 1.1f): WireframeMesh3D {
@@ -248,7 +249,7 @@ data class WireframeMesh3D(
                 Edge3D(0, 1), Edge3D(0, 2), Edge3D(0, 3), Edge3D(0, 4),
                 Edge3D(1, 2), Edge3D(2, 3), Edge3D(3, 4), Edge3D(4, 1)
             )
-            return WireframeMesh3D("Data Prism", vertices, edges)
+            return WireframeMesh3D("Data Prism", vertices, edges, listOf("Apex Rays", "Base Grid"))
         }
     }
 }
@@ -262,7 +263,8 @@ enum class VisualCardType {
     COMPARISON,
     CANVAS_GRAPH,
     TIMELINE_FLOW,
-    OBJECT_3D
+    OBJECT_3D,
+    FLOWCHART
 }
 
 /**
@@ -270,8 +272,22 @@ enum class VisualCardType {
  */
 enum class GraphChartType {
     BAR_CHART,
-    LINE_CHART
+    LINE_CHART,
+    PIE_CHART,
+    DONUT_CHART
 }
+
+data class FlowchartNode(
+    val id: String,
+    val label: String,
+    val role: String = "STEP"
+)
+
+data class FlowchartEdge(
+    val fromId: String,
+    val toId: String,
+    val label: String = ""
+)
 
 /**
  * Dynamic data for animated Canvas graph card.
@@ -319,6 +335,8 @@ data class VisualCardData(
     val graphData: GraphData? = null,
     val timelineSteps: List<TimelineStep> = emptyList(),
     val mesh3d: WireframeMesh3D? = null,
+    val flowchartNodes: List<FlowchartNode> = emptyList(),
+    val flowchartEdges: List<FlowchartEdge> = emptyList(),
     val citations: List<String> = emptyList(),
     val targetAnchorBounds: Rect? = null,
     val confidence: Float = 0.95f

@@ -107,14 +107,57 @@ class GeminiAudioPlayer(
         }
     }
 
-    @Volatile private var audioTrack: AudioTrack? = null
-    @Volatile private var audioTrackSampleRate: Int = 0
-    private val pcmExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
-    private val pcmStopRunnable = Runnable {
-        if (audioQueue.isEmpty() && !isProcessingQueue) {
-            notifySpeaking(false)
+    private val audioManager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+    private var activeFocusRequest: android.media.AudioFocusRequest? = null
+    private val focusChangeListener = android.media.AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            android.media.AudioManager.AUDIOFOCUS_LOSS,
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> stop()
         }
     }
+
+    private fun requestSpeechFocus(): Boolean {
+        val am = audioManager ?: return true
+        return try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val req = activeFocusRequest ?: android.media.AudioFocusRequest.Builder(
+                    android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                ).setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .build()
+                ).setOnAudioFocusChangeListener(focusChangeListener).build().also { activeFocusRequest = it }
+                am.requestAudioFocus(req) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(
+                    focusChangeListener,
+                    android.media.AudioManager.STREAM_MUSIC,
+                    android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                ) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
+    private fun abandonSpeechFocus() {
+        val am = audioManager ?: return
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                activeFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(focusChangeListener)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile private var audioTrackSampleRate: Int = 0
+    @Volatile private var pendingPcmChunks = 0
+    private val pcmExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     fun playWav(wavBytes: ByteArray, text: String? = null, enqueue: Boolean = false, onComplete: (() -> Unit)? = null) {
         playAudioBytes(wavBytes, text, enqueue, onComplete)
@@ -125,7 +168,6 @@ class GeminiAudioPlayer(
             onComplete?.invoke()
             return
         }
-        // Use low-latency streaming AudioTrack for live PCM chunks
         playPcmStreaming(pcmBytes, sampleRate, text, enqueue, onComplete)
     }
 
@@ -147,12 +189,12 @@ class GeminiAudioPlayer(
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         ).coerceAtLeast(4096)
-        val bufSize = maxOf(minBufSize * 2, minChunkSize)
+        val bufSize = maxOf(minBufSize * 2, minChunkSize.coerceAtLeast(8192))
 
         val track = AudioTrack(
             AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setUsage(AudioAttributes.USAGE_ASSISTANT)
                 .build(),
             AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -180,22 +222,31 @@ class GeminiAudioPlayer(
         if (!enqueue) {
             stop()
         }
-        text?.let { notifyCaption(it) }
+        requestSpeechFocus()
+        pendingPcmChunks++
 
         val currentGen = playbackGeneration
         pcmExecutor.execute {
             if (currentGen != playbackGeneration) return@execute
             try {
-                mainHandler.removeCallbacks(pcmStopRunnable)
+                text?.let { notifyCaption(it) }
                 notifySpeaking(true)
                 val track = getOrCreateAudioTrack(sampleRate, pcmBytes.size)
-                track.write(pcmBytes, 0, pcmBytes.size)
-                val durationMs = ((pcmBytes.size.toLong() * 1000L) / (sampleRate * 2)).coerceAtLeast(60L)
-                mainHandler.postDelayed(pcmStopRunnable, durationMs + 150L)
+                track.write(pcmBytes, 0, pcmBytes.size, AudioTrack.WRITE_BLOCKING)
+                val durationMs = ((pcmBytes.size.toLong() * 1000L) / (sampleRate * 2)).coerceAtLeast(40L)
+                // Sleep cleanly on single-thread executor until buffer finishes playing unless cancelled
+                if (currentGen == playbackGeneration && pendingPcmChunks == 1) {
+                    try { Thread.sleep(durationMs.coerceAtMost(8_000L)) } catch (_: InterruptedException) {}
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "AudioTrack streaming error", e)
             } finally {
                 if (currentGen == playbackGeneration) {
+                    pendingPcmChunks = (pendingPcmChunks - 1).coerceAtLeast(0)
+                    if (pendingPcmChunks == 0 && audioQueue.isEmpty() && !isProcessingQueue) {
+                        abandonSpeechFocus()
+                        notifySpeaking(false)
+                    }
                     onComplete?.invoke()
                 }
             }

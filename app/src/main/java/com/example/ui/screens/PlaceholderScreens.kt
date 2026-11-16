@@ -23,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -382,6 +383,8 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
 
     val voiceEngineManager = remember { com.example.ai.tts.VoiceEngineManager.getInstance(context) }
     val indicModelManager = remember { com.example.ai.tts.IndicTinyTtsModelManager.getInstance(context) }
+    val kokoroEngine = remember { voiceEngineManager.getKokoroEngine() }
+    val downloadCoordinator = remember { com.example.ai.offline.ModelDownloadCoordinator.getInstance(context) }
     val chatterboxModelManager = remember { com.example.ai.ChatterboxModelManager.getInstance(context) }
     val profileManager = remember { com.example.ai.VoiceProfileManager.getInstance(context) }
     val ttsClient = remember { com.example.ai.ChatterboxTtsClient(context) }
@@ -391,6 +394,29 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
     val indicStatus by indicModelManager.status.collectAsState()
     val indicProgress by indicModelManager.downloadProgress.collectAsState()
     val indicProgressText by indicModelManager.progressText.collectAsState()
+    val modelStates by downloadCoordinator.states.collectAsState()
+
+    var kokoroVariant by remember {
+        mutableStateOf(com.example.ai.tts.KokoroVariantPreference.fromId(com.example.utils.AppPreferences.getKokoroVariant(context)))
+    }
+    var kokoroHindiVoice by remember { mutableStateOf(com.example.utils.AppPreferences.getKokoroHindiVoice(context)) }
+    var kokoroEnglishVoice by remember { mutableStateOf(com.example.utils.AppPreferences.getKokoroEnglishVoice(context)) }
+    var kokoroLangMode by remember {
+        mutableStateOf(com.example.ai.tts.KokoroLanguageMode.fromId(com.example.utils.AppPreferences.getKokoroLanguageMode(context)))
+    }
+    var kokoroTestText by remember { mutableStateOf(com.example.ai.tts.VoiceEngineManager.PREVIEW_SAMPLE_BILINGUAL) }
+    var lastVoiceError by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(voiceEngineManager) {
+        val prevErrCb = voiceEngineManager.onSpeechError
+        voiceEngineManager.onSpeechError = { msg ->
+            lastVoiceError = msg
+            prevErrCb?.invoke(msg)
+        }
+        onDispose {
+            voiceEngineManager.onSpeechError = prevErrCb
+        }
+    }
 
     val chatterboxFileMap by chatterboxModelManager.fileProgressMap.collectAsState()
     val profiles by profileManager.profiles.collectAsState()
@@ -549,18 +575,279 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
 
                         Spacer(modifier = Modifier.height(6.dp))
 
-                        // Live Sample Voice Preview
+                        if (!lastVoiceError.isNullOrBlank()) {
+                            Text(
+                                text = "Voice Engine Error: $lastVoiceError",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Error
+                            )
+                        }
+
+                        // Live Sample Voice Preview + Barge-in Stop
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    lastVoiceError = null
+                                    voiceEngineManager.previewEngine(activeEngineState.value)
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("play_voice_sample_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.VolumeUp, contentDescription = "Play voice sample", modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Play Sample")
+                            }
+                            OutlinedButton(
+                                onClick = { voiceEngineManager.stop() },
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("stop_voice_button"),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = "Stop speaking", tint = Error, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Stop", color = Error)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // SECTION 1B: KOKORO-82M BILINGUAL HINDI + ENGLISH FEMALE TTS
+            item {
+                val targetModelId = when (kokoroVariant) {
+                    com.example.ai.tts.KokoroVariantPreference.CPU_FP16 -> com.example.ai.offline.ModelCatalog.KOKORO_CPU_MANIFEST.modelId
+                    else -> com.example.ai.offline.ModelCatalog.KOKORO_GPU_MANIFEST.modelId
+                }
+                val kokoroState = modelStates[targetModelId]
+                    ?: com.example.ai.offline.ModelDownloadProgressState(modelId = targetModelId)
+                val deviceSupported = remember { com.example.ai.tts.KokoroTtsEngine.isDeviceSupported() }
+
+                Text("Kokoro-82M Bilingual (Hindi + English Female)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Spacer(modifier = Modifier.height(8.dp))
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    borderColor = AccentCyan.copy(alpha = 0.35f)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("litert-community/Kokoro-82M", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                                Text(
+                                    if (!deviceSupported) "Requires Android 8.0+ (API 26+) on arm64-v8a" else kokoroState.statusMessage,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = when (kokoroState.state) {
+                                        com.example.ai.offline.ModelLifecycleState.READY -> SuccessGreen
+                                        com.example.ai.offline.ModelLifecycleState.DOWNLOADING,
+                                        com.example.ai.offline.ModelLifecycleState.RESUMING -> PrimaryLight
+                                        com.example.ai.offline.ModelLifecycleState.ERROR,
+                                        com.example.ai.offline.ModelLifecycleState.UNSUPPORTED_DEVICE -> Error
+                                        else -> AccentCyan
+                                    }
+                                )
+                            }
+                            StatusBadge(
+                                text = kokoroState.state.label,
+                                isActive = kokoroState.state == com.example.ai.offline.ModelLifecycleState.READY
+                            )
+                        }
+
+                        if (kokoroState.state in listOf(
+                                com.example.ai.offline.ModelLifecycleState.DOWNLOADING,
+                                com.example.ai.offline.ModelLifecycleState.RESUMING,
+                                com.example.ai.offline.ModelLifecycleState.PAUSED,
+                                com.example.ai.offline.ModelLifecycleState.VERIFYING
+                            )
+                        ) {
+                            LinearProgressIndicator(
+                                progress = { kokoroState.progress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = AccentCyan,
+                                trackColor = SurfaceElevated
+                            )
+                        }
+
+                        // Variant Selector
+                        Text("Runtime Variant", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            com.example.ai.tts.KokoroVariantPreference.entries.forEach { variant ->
+                                val selected = kokoroVariant == variant
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        kokoroVariant = variant
+                                        com.example.utils.AppPreferences.setKokoroVariant(context, variant.id)
+                                    },
+                                    label = {
+                                        Text(
+                                            when (variant) {
+                                                com.example.ai.tts.KokoroVariantPreference.AUTO -> "Auto"
+                                                com.example.ai.tts.KokoroVariantPreference.GPU_FP16 -> "GPU FP16"
+                                                com.example.ai.tts.KokoroVariantPreference.CPU_FP16 -> "CPU XNNPACK"
+                                            },
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                )
+                            }
+                        }
+
+                        // Download / Lifecycle Action Buttons
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            when (kokoroState.state) {
+                                com.example.ai.offline.ModelLifecycleState.DOWNLOADING,
+                                com.example.ai.offline.ModelLifecycleState.RESUMING,
+                                com.example.ai.offline.ModelLifecycleState.DOWNLOAD_QUEUED -> {
+                                    Button(
+                                        onClick = { downloadCoordinator.pauseDownload(targetModelId) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
+                                    ) { Text("Pause") }
+                                    OutlinedButton(
+                                        onClick = { downloadCoordinator.cancelDownload(targetModelId) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                                    ) { Text("Cancel", color = Error) }
+                                }
+                                com.example.ai.offline.ModelLifecycleState.PAUSED -> {
+                                    Button(
+                                        onClick = { downloadCoordinator.startOrResumeDownload(targetModelId) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                                    ) { Text("Resume") }
+                                    OutlinedButton(
+                                        onClick = { downloadCoordinator.cancelDownload(targetModelId) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                                    ) { Text("Cancel", color = Error) }
+                                }
+                                com.example.ai.offline.ModelLifecycleState.READY -> {
+                                    Button(
+                                        onClick = { downloadCoordinator.verifyModelAsync(targetModelId) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
+                                    ) { Text("Verify", color = PrimaryLight) }
+                                    OutlinedButton(
+                                        onClick = { downloadCoordinator.deleteModel(targetModelId) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                                    ) { Text("Delete", color = Error) }
+                                    Button(
+                                        onClick = { downloadCoordinator.redownloadModel(targetModelId) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                                    ) { Text("Re-fetch") }
+                                }
+                                else -> {
+                                    Button(
+                                        onClick = { downloadCoordinator.startOrResumeDownload(targetModelId) },
+                                        enabled = deviceSupported,
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Primary)
+                                    ) {
+                                        Icon(Icons.Default.Download, contentDescription = "Download Kokoro-82M", modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Download Kokoro-82M")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { downloadCoordinator.verifyModelAsync(targetModelId) },
+                                        enabled = deviceSupported,
+                                        modifier = Modifier.heightIn(min = 48.dp)
+                                    ) { Text("Verify", color = PrimaryLight) }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = OutlineVariant.copy(alpha = 0.4f))
+
+                        // Female Hindi Voice Selector
+                        Text("Hindi Female Voice", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            com.example.ai.tts.KokoroLanguageSegmenter.FEMALE_HINDI_VOICES.forEach { voice ->
+                                val selected = kokoroHindiVoice == voice.id
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        kokoroHindiVoice = voice.id
+                                        com.example.utils.AppPreferences.setKokoroHindiVoice(context, voice.id)
+                                    },
+                                    label = { Text(voice.displayName, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+
+                        // Female English Voice Selector (scrollable row)
+                        Text("English Female Voice", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(com.example.ai.tts.KokoroLanguageSegmenter.FEMALE_ENGLISH_VOICES) { voice ->
+                                val selected = kokoroEnglishVoice == voice.id
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        kokoroEnglishVoice = voice.id
+                                        com.example.utils.AppPreferences.setKokoroEnglishVoice(context, voice.id)
+                                    },
+                                    label = { Text(voice.displayName, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+
+                        // Language Switching Mode
+                        Text("Bilingual Language Mode", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            com.example.ai.tts.KokoroLanguageMode.entries.forEach { mode ->
+                                val selected = kokoroLangMode == mode
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        kokoroLangMode = mode
+                                        com.example.utils.AppPreferences.setKokoroLanguageMode(context, mode.id)
+                                    },
+                                    label = {
+                                        Text(
+                                            when (mode) {
+                                                com.example.ai.tts.KokoroLanguageMode.AUTO_HINDI_ENGLISH -> "Auto Mix"
+                                                com.example.ai.tts.KokoroLanguageMode.HINDI_ONLY -> "Hindi"
+                                                com.example.ai.tts.KokoroLanguageMode.ENGLISH_ONLY -> "English"
+                                            },
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                )
+                            }
+                        }
+
+                        // Test Prompt & Play Bilingual Sample
+                        OutlinedTextField(
+                            value = kokoroTestText,
+                            onValueChange = { kokoroTestText = it },
+                            label = { Text("Bilingual Test Prompt (Hindi + Hinglish + English)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 2
+                        )
                         Button(
                             onClick = {
-                                voiceEngineManager.previewEngine(activeEngineState.value)
+                                lastVoiceError = null
+                                voiceEngineManager.setActiveEngine(com.example.ai.tts.VoiceEngine.KOKORO_82M)
+                                activeEngineState.value = com.example.ai.tts.VoiceEngine.KOKORO_82M
+                                voiceEngineManager.speak(kokoroTestText)
                             },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Primary),
-                            shape = RoundedCornerShape(12.dp)
+                            enabled = kokoroTestText.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan.copy(alpha = 0.25f))
                         ) {
-                            Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.GraphicEq, contentDescription = "Speak Kokoro Sample", tint = AccentCyan, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("🔊 Play Voice Sample (\"नमस्ते! मैं काव्या हूँ।\")")
+                            Text("Speak with Kokoro-82M (${kokoroHindiVoice} + ${kokoroEnglishVoice})", color = TextPrimary, fontSize = 12.sp)
                         }
                     }
                 }

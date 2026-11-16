@@ -389,10 +389,14 @@ fun Interactive3DMeshViewer(
     theme: JarvisThemePreset,
     modifier: Modifier = Modifier,
     initialRotX: Float = 0.35f,
-    initialRotY: Float = 0.55f
+    initialRotY: Float = 0.55f,
+    zoomScale: Float = 1.0f,
+    focusedPartIndex: Int = -1,
+    schematic2DMode: Boolean = false,
+    resetTrigger: Int = 0
 ) {
-    var rotX by remember { mutableFloatStateOf(initialRotX) }
-    var rotY by remember { mutableFloatStateOf(initialRotY) }
+    var rotX by remember(resetTrigger) { mutableFloatStateOf(if (schematic2DMode) 0f else initialRotX) }
+    var rotY by remember(resetTrigger) { mutableFloatStateOf(if (schematic2DMode) 0f else initialRotY) }
 
     val infiniteTransition = rememberInfiniteTransition(label = "MeshAmbientSpin")
     val autoSpin by infiniteTransition.animateFloat(
@@ -408,24 +412,42 @@ fun Interactive3DMeshViewer(
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    rotY += dragAmount.x * 0.012f
-                    rotX -= dragAmount.y * 0.012f
+            .pointerInput(schematic2DMode) {
+                if (!schematic2DMode) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        rotY += dragAmount.x * 0.012f
+                        rotX -= dragAmount.y * 0.012f
+                    }
                 }
             }
     ) {
         val center = Offset(size.width / 2f, size.height / 2f)
+        val effectiveScale = zoomScale.coerceIn(0.5f, 2.5f)
+        val effectiveRotX = if (schematic2DMode) 0f else rotX
+        val effectiveRotY = if (schematic2DMode) 0f else (rotY + autoSpin * 0.25f)
+
         JarvisDrawingEngine.drawWireframeMesh3D(
             drawScope = this,
             mesh = mesh,
-            rotX = rotX,
-            rotY = rotY + autoSpin * 0.25f,
+            rotX = effectiveRotX,
+            rotY = effectiveRotY,
             rotZ = 0f,
             theme = theme,
             center = center,
-            scale = 1.0f
+            scale = effectiveScale
         )
+
+        // Optional highlighted part-focus vertices
+        if (focusedPartIndex >= 0 && mesh.vertices.isNotEmpty()) {
+            val focusIdx = focusedPartIndex % mesh.vertices.size
+            val rotated = mesh.vertices[focusIdx]
+                .rotateX(effectiveRotX)
+                .rotateY(effectiveRotY)
+            val proj = rotated.project(size.width, size.height, fov = 340f * effectiveScale)
+            val screenPos = Offset(proj.x, proj.y)
+            drawCircle(color = Color(0xFFFFD700), radius = 12f, center = screenPos, style = Stroke(width = 3f))
+            drawCircle(color = Color.White, radius = 5f, center = screenPos)
+        }
     }
 }

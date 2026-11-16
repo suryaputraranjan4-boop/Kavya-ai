@@ -1,11 +1,17 @@
 package com.example.visual
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Rect
 import android.util.Base64
 import android.util.Log
 import com.example.agent.FreshScreenRecognizer
+import com.example.agent.FreshScreenState
 import com.example.agent.UIElementResolver
+import com.example.ai.offline.Gemma4E4BEngine
+import com.example.ai.offline.OnDeviceVisionOrchestrator
+import com.example.ai.offline.SmolVlmTaskMode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,8 +66,15 @@ object JarvisGuidanceEngine {
     private val engineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeAnalysisJob: Job? = null
 
+    @Volatile
+    private var lastAppContext: Context? = null
+
     var externalSpeakCallback: ((String) -> Unit)? = null
     var externalStopSpeakCallback: (() -> Unit)? = null
+
+    fun bindContext(context: Context) {
+        lastAppContext = context.applicationContext
+    }
 
     /**
      * Resolves and highlights an element on the active screen for step-by-step guidance.
@@ -202,6 +215,7 @@ object JarvisGuidanceEngine {
      * Returns a non-null spoken/chat response when handled as an active JARVIS guidance control command.
      */
     fun handleVoiceGuidanceControlCommand(context: Context, command: String): String? {
+        bindContext(context)
         val lower = command.lowercase(java.util.Locale.ROOT).trim()
         val hasActiveSteps = ExplanationStepController.steps.value.isNotEmpty()
         val hasActivePlan = JarvisOverlayController.activePlan.value != null
@@ -241,9 +255,34 @@ object JarvisGuidanceEngine {
     }
 
     /**
+     * Verifies a screen transition after a user/agent action via [PostActionVerifier] and ONLY
+     * advances the active guidance step sequence when a genuine transition is confirmed.
+     */
+    fun verifyStepTransitionAndAdvance(
+        beforeScreen: FreshScreenState,
+        afterScreen: FreshScreenState,
+        expectedKind: PreActionVerifier.IntendedActionKind = PreActionVerifier.IntendedActionKind.TAP_TARGET
+    ): PostActionVerificationResult {
+        val result = PostActionVerifier.verifyTransition(
+            beforeScreen = beforeScreen,
+            afterScreen = afterScreen,
+            expectedKind = expectedKind
+        )
+        if (result.transitionVerified && ExplanationStepController.steps.value.isNotEmpty()) {
+            val idx = ExplanationStepController.currentStepIndex.value
+            val total = ExplanationStepController.steps.value.size
+            if (idx < total - 1) {
+                ExplanationStepController.nextStep()
+            }
+        }
+        return result
+    }
+
+    /**
      * Reads and summarizes the visible screen aloud through the AI-authorized screen explanation pipeline.
      */
     fun readCurrentScreenAloud(context: Context) {
+        bindContext(context)
         explainActiveScreenAsync(
             context = context,
             query = "Read and summarize the main text on this screen clearly",
@@ -252,29 +291,38 @@ object JarvisGuidanceEngine {
     }
 
     /**
-     * Synchronous entry point no longer fabricates local/offline plans without AI authorization.
+     * Routes synchronous queries into the full AI + perception pipeline when a bound Context exists,
+     * otherwise reports truthfully that active observation/AI authorization is required.
      */
     fun executeJarvisQuery(query: String) {
+        val ctx = lastAppContext
+        if (ctx != null) {
+            explainActiveScreenAsync(context = ctx, query = query)
+            return
+        }
         publishExplanation(
             title = "AI Screen Analysis",
-            summary = "Live screen analysis requires active AI provider authorization.",
-            bulletPoints = listOf("Use Screen Share or ask with an active online AI provider configured."),
+            summary = "Live screen analysis requires active AI provider authorization or local perception models.",
+            bulletPoints = listOf("Use Screen Share or ask with an active AI provider / local model ready."),
             confidence = 0.0f
         )
     }
 
     /**
      * Asynchronous full-pipeline screen explanation triggered from the Floating Orb, Panel, or Voice.
-     * Routes strictly through the user's selected online AI provider (Gemini, OpenRouter, Custom).
-     * Never destroys or hides the Unified JARVIS Live Overlay on error (Phase 11).
+     * Combines live screenshot capture, Accessibility hierarchy, ML Kit Latin+Devanagari pixel OCR,
+     * and installed ONNX lightweight vision models, routing reasoning through the selected AI provider
+     * (or grounded offline VLM/OCR summary if offline).
      */
     fun explainActiveScreenAsync(
         context: Context,
         query: String = "Explain this screen",
-        preferredLevel: ScreenSharePresentationLevel? = null
+        preferredLevel: ScreenSharePresentationLevel? = null,
+        openFullScreenExplainer: Boolean = false
     ) {
         activeAnalysisJob?.cancel()
         val appCtx = context.applicationContext
+        lastAppContext = appCtx
         ScreenAnnotationManager.coordinateMapper.refreshGeometry(appCtx)
 
         val resolvedLevel = preferredLevel ?: inferExplanationLevelFromQuery(query, ScreenSharePresentationLevel.STANDARD)
@@ -294,13 +342,56 @@ object JarvisGuidanceEngine {
                 val initialMap = withContext(Dispatchers.Default) {
                     SemanticScreenAnalyzer.analyzeScreen()
                 }
+                val freshState = withContext(Dispatchers.Default) {
+                    FreshScreenRecognizer.inspectFreshScreenNow()
+                }
 
                 // Capture & validate screenshot (Phase 6)
                 val observation = com.example.orchestrator.ScreenObservationCoordinator.captureFreshObservation(appCtx)
                 val jpegBytes = observation?.imageBytes ?: VisionPipeline.getCompressedJpegFrame()
+                val liveBitmap: Bitmap? = VisionPipeline.getLatestFrame() ?: jpegBytes?.let { bytes ->
+                    withContext(Dispatchers.Default) {
+                        try { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) } catch (_: Throwable) { null }
+                    }
+                }
 
-                if (jpegBytes == null || jpegBytes.isEmpty()) {
-                    val errMsg = "Unable to capture a valid screen image. Enable Screen Share or Accessibility Service and try again."
+                val geom = ScreenAnnotationManager.coordinateMapper.getGeometry()
+                val screenW = observation?.displayWidthPx?.takeIf { it > 0 } ?: geom.width
+                val screenH = observation?.displayHeightPx?.takeIf { it > 0 } ?: geom.height
+
+                // Run real on-device ML Kit OCR (Latin + Devanagari) & installed ONNX vision models
+                val ocrSignals = if (liveBitmap != null && !liveBitmap.isRecycled) {
+                    OnDeviceOcrExtractor.extractPixelOcrSignals(liveBitmap, screenW, screenH)
+                } else emptyList()
+
+                val localVision = if (liveBitmap != null && !liveBitmap.isRecycled) {
+                    OnDeviceVisionOrchestrator.getInstance(appCtx).analyzeScreenWithInstalledModels(
+                        screenshot = liveBitmap,
+                        screenWidth = screenW,
+                        screenHeight = screenH
+                    )
+                } else null
+
+                val fusedElements = MultiSignalFusionEngine.buildUnifiedElements(
+                    accessibilityNodes = freshState.nodes,
+                    foregroundPackage = observation?.foregroundPackage?.ifBlank { initialMap.packageName }.orEmpty(),
+                    ocrSignals = ocrSignals,
+                    visionSignals = localVision?.visionSignals.orEmpty(),
+                    screenWidth = screenW,
+                    screenHeight = screenH
+                )
+
+                val activeFingerprint = MultiSignalFusionEngine.computeScreenFingerprint(
+                    foregroundPackage = initialMap.packageName,
+                    accessibilityNodes = freshState.nodes,
+                    ocrSignals = ocrSignals,
+                    screenshotWidth = screenW,
+                    screenshotHeight = screenH,
+                    bitmapSignature = MultiSignalFusionEngine.computeBitmapQuickSignature(liveBitmap)
+                )
+
+                if ((jpegBytes == null || jpegBytes.isEmpty()) && fusedElements.isEmpty()) {
+                    val errMsg = "Unable to capture a valid screen image or UI hierarchy. Enable Screen Share or Accessibility Service and try again."
                     JarvisOverlayController.showInlineOverlayError("Screen Capture Required", errMsg)
                     com.example.services.ScreenShareManager.setUnifiedStage(
                         com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Error(errMsg)
@@ -311,7 +402,7 @@ object JarvisGuidanceEngine {
 
                 val isStepByStepRequest = query.lowercase(java.util.Locale.ROOT).let { q ->
                     q.contains("step by step") || q.contains("guide me") || q.contains("how do i") ||
-                    q.contains("kaise") || q.contains("sikhao") || q.contains("कैसे")
+                    q.contains("kaise") || q.contains("sikhao") || q.contains("कैसे") || q.contains("dikhao")
                 }
 
                 val levelInstruction = when (resolvedLevel) {
@@ -324,7 +415,21 @@ object JarvisGuidanceEngine {
                 }
 
                 val hierarchySummary = initialMap.elements.take(20).joinToString("\n") {
-                    "- ${it.displayLabel} [${it.type.name}] bounds=${it.bounds}"
+                    "- ${PromptInjectionGuard.sanitizeScreenText(it.displayLabel)} [${it.type.name}] bounds=${it.bounds}"
+                }
+                val ocrSummary = ocrSignals.take(24).joinToString("\n") {
+                    "- [${it.language}] \"${it.text}\" @ ${it.bounds}"
+                }
+                val visionSummary = buildString {
+                    if (localVision != null && localVision.executedModelIds.isNotEmpty()) {
+                        append("Installed ONNX Vision (${localVision.executedModelIds.joinToString()}):\n")
+                        if (localVision.sceneTags.isNotEmpty()) {
+                            append("Tags: ${localVision.sceneTags.joinToString("; ")}\n")
+                        }
+                        localVision.visionSignals.take(10).forEach { sig ->
+                            append("- ${sig.label} (${sig.roleHint}, conf=${(sig.confidence * 100).toInt()}%) @ ${sig.bounds}\n")
+                        }
+                    }
                 }
                 val visionPrompt = """
                     User request: $query
@@ -332,29 +437,108 @@ object JarvisGuidanceEngine {
                     ${if (isStepByStepRequest) "Format your response as clear numbered steps (1., 2., 3.) so the user can follow step by step." else ""}
                     Current foreground app: ${observation?.foregroundPackage?.ifBlank { initialMap.packageName }.orEmpty().ifBlank { "Current Screen" }}
                     UI hierarchy context:
-                    $hierarchySummary
-
+                    ${hierarchySummary.ifBlank { "(none)" }}
+                    On-device pixel OCR (Latin + Devanagari):
+                    ${ocrSummary.ifBlank { "(none extracted)" }}
+                    $visionSummary
                     Analyze the attached live screenshot image and explain only what is genuinely visible on the screen.
                 """.trimIndent()
 
-                val aiRes = com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
-                    context = appCtx,
-                    prompt = visionPrompt,
-                    systemInstruction = "You are Kavya, an expert AI visual screen analyst. Describe only what is truly observed in the attached screenshot image clearly and accurately.",
-                    imageBytes = jpegBytes,
-                    requiresVision = true
-                )
+                val aiRes = if (jpegBytes != null && jpegBytes.isNotEmpty()) {
+                    com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
+                        context = appCtx,
+                        prompt = visionPrompt,
+                        systemInstruction = "You are Kavya, an expert AI visual screen analyst. Describe only what is truly observed in the attached screenshot image and fused signals clearly and accurately.",
+                        imageBytes = jpegBytes,
+                        requiresVision = true
+                    )
+                } else {
+                    com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
+                        context = appCtx,
+                        prompt = visionPrompt,
+                        systemInstruction = "You are Kavya, an expert AI visual screen analyst. Explain the fused accessibility and OCR screen state clearly and accurately.",
+                        requiresVision = false
+                    )
+                }
 
                 when (aiRes) {
                     is com.example.orchestrator.ProviderInvocationResult.Failure -> {
-                        JarvisOverlayController.showInlineOverlayError(
-                            title = "AI Visual Analysis Failed",
-                            message = aiRes.message
-                        )
-                        com.example.services.ScreenShareManager.setUnifiedStage(
-                            com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Error(aiRes.message)
-                        )
-                        externalSpeakCallback?.invoke(aiRes.message)
+                        // Offline fallback: SmolVLM2 (if loaded) or grounded On-Device OCR + Accessibility + ONNX summary (never fabricated)
+                        val offlineSmolRes = if (liveBitmap != null && Gemma4E4BEngine.getInstance(appCtx).isSmolVlm2Loaded()) {
+                            Gemma4E4BEngine.getInstance(appCtx).runSmolVlm2GuiGrounding(
+                                screenshot = liveBitmap,
+                                userGoal = query,
+                                taskMode = if (isStepByStepRequest) SmolVlmTaskMode.TARGET_GROUNDING else SmolVlmTaskMode.SCREEN_SUMMARY,
+                                uiContextHint = ocrSummary
+                            )
+                        } else null
+
+                        if (offlineSmolRes != null && offlineSmolRes.isSuccess) {
+                            val smolSignals = offlineSmolRes.getOrThrow()
+                            val summary = buildString {
+                                append("Offline SmolVLM2 analysis: ")
+                                append(smolSignals.joinToString("; ") { "${it.label} (${it.roleHint})" })
+                                if (ocrSignals.isNotEmpty()) {
+                                    append("\nOCR highlights: ${ocrSignals.take(4).joinToString(" | ") { it.text }}")
+                                }
+                            }
+                            publishGroundedScreenPlan(
+                                query = query,
+                                cardTitle = "Offline Visual Intelligence (SmolVLM2)",
+                                summary = summary,
+                                bullets = smolSignals.map { "${it.label}: ${it.bounds}" } + ocrSignals.take(3).map { "Text: ${it.text}" },
+                                screenMap = initialMap,
+                                isStepByStep = isStepByStepRequest,
+                                openFullScreenExplainer = openFullScreenExplainer,
+                                activeFingerprint = activeFingerprint,
+                                instructionsOverride = smolSignals.mapIndexed { idx, sig ->
+                                    VisualInstruction(
+                                        type = VisualInstructionType.HIGHLIGHT_BOX,
+                                        bounds = sig.bounds,
+                                        clickPoint = Pair(sig.bounds.centerX(), sig.bounds.centerY()),
+                                        label = "Target ${idx + 1}: ${sig.label.take(32)}",
+                                        text = summary
+                                    )
+                                }
+                            )
+                            externalSpeakCallback?.invoke(summary.take(320))
+                        } else if (ocrSignals.isNotEmpty() || (localVision?.executedModelIds?.isNotEmpty() == true) || initialMap.elements.isNotEmpty()) {
+                            val ocrBullets = ocrSignals.take(5).map { "[${it.language.uppercase()}] ${it.text.take(48)}" }
+                            val detBullets = localVision?.visionSignals?.take(4)?.map { "${it.label} (${(it.confidence * 100).toInt()}%)" }.orEmpty()
+                            val a11yBullets = initialMap.actionButtons.take(4).map { "Control: ${it.displayLabel.take(36)}" }
+                            val allBullets = (ocrBullets + detBullets + a11yBullets).distinct().take(6)
+                            val localSummary = buildString {
+                                append("Cloud AI unavailable (${aiRes.message}). Showing verified on-device perception: ")
+                                if (ocrSignals.isNotEmpty()) append("${ocrSignals.size} OCR text line(s), ")
+                                if (localVision != null && localVision.executedModelIds.isNotEmpty()) {
+                                    append("ONNX [${localVision.executedModelIds.joinToString()}] (${localVision.visionSignals.size} detections), ")
+                                }
+                                append("${initialMap.elements.size} UI node(s).")
+                                if (ocrSignals.isNotEmpty()) {
+                                    append("\nVisible text: ${ocrSignals.take(4).joinToString(" • ") { it.text }}")
+                                }
+                            }
+                            publishGroundedScreenPlan(
+                                query = query,
+                                cardTitle = "On-Device Screen Perception",
+                                summary = localSummary,
+                                bullets = allBullets,
+                                screenMap = initialMap,
+                                isStepByStep = isStepByStepRequest,
+                                openFullScreenExplainer = openFullScreenExplainer,
+                                activeFingerprint = activeFingerprint
+                            )
+                            externalSpeakCallback?.invoke(localSummary.take(320))
+                        } else {
+                            JarvisOverlayController.showInlineOverlayError(
+                                title = "AI Visual Analysis Failed",
+                                message = aiRes.message
+                            )
+                            com.example.services.ScreenShareManager.setUnifiedStage(
+                                com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Error(aiRes.message)
+                            )
+                            externalSpeakCallback?.invoke(aiRes.message)
+                        }
                     }
                     is com.example.orchestrator.ProviderInvocationResult.Success -> {
                         val summary = aiRes.text.trim()
@@ -370,54 +554,16 @@ object JarvisGuidanceEngine {
                             ScreenSharePresentationLevel.ADVANCED -> "Advanced Screen Analysis"
                         }
 
-                        // Highlight interactive targets if step-by-step guidance was requested
-                        if (isStepByStepRequest && initialMap.elements.isNotEmpty()) {
-                            val interactiveTargets = initialMap.elements.filter { it.isClickable && it.bounds.width() > 0 && it.bounds.height() > 0 }.take(4)
-                            if (interactiveTargets.isNotEmpty()) {
-                                val instructions = interactiveTargets.mapIndexed { idx, el ->
-                                    VisualInstruction(
-                                        type = VisualInstructionType.HIGHLIGHT_BOX,
-                                        bounds = el.bounds,
-                                        clickPoint = Pair(el.bounds.centerX(), el.bounds.centerY()),
-                                        label = "Step ${idx + 1}: ${el.displayLabel.take(36)}",
-                                        text = bullets.getOrElse(idx) { "Tap ${el.displayLabel}" }
-                                    )
-                                }
-                                val overlayCard = VisualCardData(
-                                    type = VisualCardType.SUMMARY,
-                                    title = cardTitle,
-                                    summary = summary.take(240),
-                                    bullets = bullets,
-                                    detailText = summary,
-                                    confidence = 0.95f
-                                )
-                                val plan = JarvisVisualPlan(
-                                    userQuery = query,
-                                    mode = JarvisMode.SHOWS_YOU_HOW,
-                                    title = cardTitle,
-                                    instructions = instructions,
-                                    cards = listOf(overlayCard),
-                                    targetPackage = initialMap.packageName
-                                )
-                                JarvisOverlayController.presentVisualPlan(plan, autoAdvanceSteps = false)
-                            } else {
-                                publishExplanation(
-                                    title = cardTitle,
-                                    summary = summary.take(240),
-                                    bulletPoints = bullets,
-                                    details = summary,
-                                    confidence = 0.95f
-                                )
-                            }
-                        } else {
-                            publishExplanation(
-                                title = cardTitle,
-                                summary = summary.take(240),
-                                bulletPoints = bullets,
-                                details = summary,
-                                confidence = 0.95f
-                            )
-                        }
+                        publishGroundedScreenPlan(
+                            query = query,
+                            cardTitle = cardTitle,
+                            summary = summary,
+                            bullets = bullets,
+                            screenMap = initialMap,
+                            isStepByStep = isStepByStepRequest,
+                            openFullScreenExplainer = openFullScreenExplainer,
+                            activeFingerprint = activeFingerprint
+                        )
 
                         com.example.services.ScreenShareManager.saveSnapshotToVault(
                             title = cardTitle,
@@ -437,6 +583,80 @@ object JarvisGuidanceEngine {
         }
     }
 
+    private fun publishGroundedScreenPlan(
+        query: String,
+        cardTitle: String,
+        summary: String,
+        bullets: List<String>,
+        screenMap: SemanticScreenMap,
+        isStepByStep: Boolean,
+        openFullScreenExplainer: Boolean,
+        activeFingerprint: String,
+        instructionsOverride: List<VisualInstruction>? = null
+    ) {
+        val structuredPlan = JarvisIntelligencePlanner.createPlan(
+            userQuery = query,
+            screenMap = screenMap,
+            forcedMode = if (isStepByStep) JarvisMode.SHOWS_YOU_HOW else JarvisMode.EXPLAINS_ANYTHING
+        )
+        val extraVisualCards = structuredPlan.cards.filter {
+            it.type == VisualCardType.CANVAS_GRAPH ||
+                it.type == VisualCardType.FLOWCHART ||
+                it.type == VisualCardType.OBJECT_3D
+        }
+        val mainCard = VisualCardData(
+            type = VisualCardType.DETAIL_TYPEWRITER,
+            title = cardTitle,
+            summary = summary.take(240),
+            bullets = bullets,
+            detailText = summary,
+            targetAnchorBounds = structuredPlan.instructions.firstOrNull()?.bounds,
+            confidence = 0.95f
+        )
+        val combinedCards = listOf(mainCard) + extraVisualCards
+
+        val interactiveTargets = screenMap.elements
+            .filter { it.isClickable && it.bounds.width() > 0 && it.bounds.height() > 0 }
+            .take(5)
+        val instructions = instructionsOverride ?: if (isStepByStep && interactiveTargets.isNotEmpty()) {
+            interactiveTargets.mapIndexed { idx, el ->
+                VisualInstruction(
+                    type = VisualInstructionType.HIGHLIGHT_BOX,
+                    bounds = el.bounds,
+                    clickPoint = Pair(el.bounds.centerX(), el.bounds.centerY()),
+                    label = "Step ${idx + 1}: ${el.displayLabel.take(36)}",
+                    text = bullets.getOrElse(idx) { "Tap ${el.displayLabel}" }
+                )
+            }
+        } else {
+            structuredPlan.instructions
+        }
+
+        val finalPlan = JarvisVisualPlan(
+            userQuery = query,
+            mode = if (isStepByStep) JarvisMode.SHOWS_YOU_HOW else JarvisMode.EXPLAINS_ANYTHING,
+            title = cardTitle,
+            instructions = instructions,
+            cards = combinedCards,
+            fullScreenExplainerEnabled = openFullScreenExplainer || structuredPlan.fullScreenExplainerEnabled,
+            targetPackage = screenMap.packageName
+        )
+        ScreenAnnotationManager.recordAnnotatedScreen(screenMap.packageName, activeFingerprint)
+        if (finalPlan.fullScreenExplainerEnabled) {
+            JarvisOverlayController.showFullScreenExplainer(finalPlan)
+        } else {
+            JarvisOverlayController.presentVisualPlan(finalPlan, autoAdvanceSteps = false)
+        }
+        _activeExplanation.value = VisualExplanationCard(
+            id = mainCard.id,
+            title = cardTitle,
+            oneLineSummary = summary.take(240),
+            bulletChips = bullets,
+            detailParagraph = summary,
+            confidenceScore = 0.95f
+        )
+    }
+
     /**
      * Circle / Region Select to Explain.
      * Crops the user-selected region from the live screen frame and runs targeted Vision AI analysis via SelectedProviderClient.
@@ -450,12 +670,14 @@ object JarvisGuidanceEngine {
         query: String = "Explain only the highlighted/selected area concisely in simple Hinglish/English."
     ) {
         activeAnalysisJob?.cancel()
+        val appCtx = context.applicationContext
+        lastAppContext = appCtx
         JarvisOverlayController.setOrbState(JarvisOrbState.THINKING)
 
         activeAnalysisJob = engineScope.launch {
             try {
                 val frameBitmap = VisionPipeline.getLatestFrame()
-                    ?: withContext(Dispatchers.IO) { ScreenshotManager(context).captureScreen() }
+                    ?: withContext(Dispatchers.IO) { ScreenshotManager(appCtx).captureScreen() }
 
                 val regionBytes = withContext(Dispatchers.IO) {
                     VisionPipeline.cropNormalizedRegionCompressed(
@@ -477,16 +699,37 @@ object JarvisGuidanceEngine {
                     return@launch
                 }
 
+                val regionBitmap = withContext(Dispatchers.Default) {
+                    try { BitmapFactory.decodeByteArray(regionBytes, 0, regionBytes.size) } catch (_: Throwable) { null }
+                }
+                val regionOcr = if (regionBitmap != null) {
+                    OnDeviceOcrExtractor.extractPixelOcrSignals(regionBitmap, regionBitmap.width, regionBitmap.height)
+                } else emptyList()
+                val regionLocalVision = if (regionBitmap != null) {
+                    OnDeviceVisionOrchestrator.getInstance(appCtx).analyzeScreenWithInstalledModels(
+                        screenshot = regionBitmap,
+                        screenWidth = regionBitmap.width,
+                        screenHeight = regionBitmap.height,
+                        includeRegionCropClassification = true
+                    )
+                } else null
+
                 val telemetry = com.example.services.ScreenShareManager.telemetry.value
                 val hierarchyHint = if (telemetry.activeBrowserUrl.isNotBlank()) {
                     "Active Browser URL: ${telemetry.activeBrowserUrl}"
                 } else {
                     "User selected normalized screen region (${(leftNorm * 100).toInt()}%..${(rightNorm * 100).toInt()}%)."
                 }
+                val regionOcrText = regionOcr.joinToString(" | ") { "[${it.language}] ${it.text}" }
+                val regionTags = regionLocalVision?.sceneTags?.joinToString("; ").orEmpty()
 
                 val aiRes = com.example.orchestrator.SelectedProviderClient.invokeSelectedProvider(
-                    context = context,
-                    prompt = "$query\nApp: ${telemetry.foregroundPackage}\n$hierarchyHint",
+                    context = appCtx,
+                    prompt = buildString {
+                        append("$query\nApp: ${telemetry.foregroundPackage}\n$hierarchyHint")
+                        if (regionOcrText.isNotBlank()) append("\nExtracted Region OCR: $regionOcrText")
+                        if (regionTags.isNotBlank()) append("\nOn-Device Visual Classification: $regionTags")
+                    },
                     systemInstruction = "Explain only the cropped screen region accurately in simple Hinglish/English.",
                     imageBytes = regionBytes,
                     requiresVision = true
@@ -494,11 +737,26 @@ object JarvisGuidanceEngine {
 
                 when (aiRes) {
                     is com.example.orchestrator.ProviderInvocationResult.Failure -> {
-                        publishExplanation(
-                            title = "AI Authorization Required",
-                            summary = aiRes.message,
-                            bulletPoints = listOf("Error code: ${aiRes.code}")
-                        )
+                        if (regionOcr.isNotEmpty() || regionTags.isNotBlank()) {
+                            val localText = buildString {
+                                append("Cloud AI unavailable (${aiRes.message}). On-device region perception: ")
+                                if (regionOcrText.isNotBlank()) append("Text: $regionOcrText. ")
+                                if (regionTags.isNotBlank()) append("Tags: $regionTags.")
+                            }
+                            publishExplanation(
+                                title = "Region Focus (On-Device OCR)",
+                                summary = localText,
+                                bulletPoints = regionOcr.take(4).map { it.text } + listOfNotNull(regionTags.takeIf { it.isNotBlank() }),
+                                details = localText,
+                                confidence = 0.80f
+                            )
+                        } else {
+                            publishExplanation(
+                                title = "AI Authorization Required",
+                                summary = aiRes.message,
+                                bulletPoints = listOf("Error code: ${aiRes.code}")
+                            )
+                        }
                     }
                     is com.example.orchestrator.ProviderInvocationResult.Success -> {
                         val summaryText = aiRes.text.trim()

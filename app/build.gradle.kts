@@ -120,6 +120,7 @@ dependencies {
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation("androidx.lifecycle:lifecycle-viewmodel-savedstate:2.8.4") // Needed for Compose in Service
   implementation(libs.androidx.navigation.compose)
+  implementation(libs.androidx.webkit)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation("androidx.documentfile:documentfile:1.0.1")
@@ -133,6 +134,9 @@ dependencies {
   implementation(libs.retrofit.converter.serialization)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.mediapipe.tasks.genai)
+  implementation(libs.mediapipe.tasks.audio)
+  implementation(libs.mlkit.text.recognition)
+  implementation(libs.mlkit.text.recognition.devanagari)
   implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
   implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.1")
   testImplementation(libs.androidx.compose.ui.test.junit4)

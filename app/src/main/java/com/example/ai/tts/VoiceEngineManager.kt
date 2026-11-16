@@ -15,12 +15,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 enum class VoiceEngine(val id: String, val displayName: String, val isOffline: Boolean) {
+    KOKORO_82M("KOKORO_82M", "Kokoro-82M Bilingual (Hindi + English Female)", true),
     INDIC_TINY_TTS("INDIC_TINY_TTS", "Indic Tiny TTS Hindi (Female Voice)", true),
     CHATTERBOX("CHATTERBOX_HINDI", "Chatterbox Multilingual Hindi", false);
 
@@ -31,14 +32,17 @@ enum class VoiceEngine(val id: String, val displayName: String, val isOffline: B
 }
 
 /**
- * Centralized speech routing. The selected engine is never silently replaced.
- * Previewing an engine does not mutate the user's saved engine preference.
+ * Centralized speech routing.
+ * Strict Engine Isolation Rule: the selected engine (Kokoro-82M, Indic Tiny TTS, or Chatterbox)
+ * is NEVER silently swapped or fallen back to another engine on failure.
  */
 class VoiceEngineManager private constructor(private val appContext: Context) {
     companion object {
         private const val TAG = "VoiceEngineManager"
         const val PREVIEW_SAMPLE_HINDI =
             "नमस्ते! मैं काव्या हूँ, आपकी एआई सहायिका। मैं आपकी सहायता करने के लिए तैयार हूँ।"
+        const val PREVIEW_SAMPLE_BILINGUAL =
+            "नमस्ते! Kavya ready hai. Please tap Continue on the screen to proceed."
 
         @Volatile private var instance: VoiceEngineManager? = null
 
@@ -49,6 +53,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val kokoroEngine = KokoroTtsEngine(appContext)
     private val indicTinyEngine = IndicTinyTtsEngine(appContext)
     private val chatterboxClient = ChatterboxTtsClient(appContext)
     private val voiceProfileManager = VoiceProfileManager.getInstance(appContext)
@@ -95,10 +100,11 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
             audioPlayer.addCaptionListener(playerCaptionListener)
             updateSpeakingState(audioPlayer.isSpeaking())
         } else {
-            // Detach stale Activity/ViewModel players and safely fall back to the owned player.
             updateSpeakingState(internalPlayer.isSpeaking())
         }
     }
+
+    fun getKokoroEngine(): KokoroTtsEngine = kokoroEngine
 
     fun getActiveEngine(): VoiceEngine =
         VoiceEngine.fromId(AppPreferences.getSpeechEngine(appContext))
@@ -112,8 +118,8 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         text: String,
         enqueue: Boolean = false,
         onComplete: (() -> Unit)? = null,
-        speed: Float = 1.0f,
-        pitch: Float = 1.0f,
+        speed: Float = AppPreferences.getVoiceSpeed(appContext),
+        pitch: Float = AppPreferences.getVoicePitch(appContext),
         emotion: String = "natural"
     ) {
         speakUsingEngine(text, getActiveEngine(), enqueue, onComplete, speed, pitch, emotion)
@@ -142,6 +148,39 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                 synthesisMutex.withLock {
                     updateSpeakingState(true)
                     when (engine) {
+                        VoiceEngine.KOKORO_82M -> {
+                            // Never silently fall back to Indic Tiny TTS on Kokoro errors.
+                            var segmentIdx = 0
+                            val res = kokoroEngine.synthesizeSegmented(
+                                text = text,
+                                speed = speed.coerceIn(0.6f, 2.0f)
+                            ) { segment, pcm16Bytes, sampleRate ->
+                                val shouldEnqueue = enqueue || segmentIdx > 0
+                                player.playPcm(
+                                    pcmBytes = pcm16Bytes,
+                                    sampleRate = sampleRate,
+                                    text = segment.text,
+                                    enqueue = shouldEnqueue,
+                                    onComplete = null
+                                )
+                                playbackQueued = true
+                                segmentIdx++
+                            }
+                            if (res.isFailure) {
+                                throw (res.exceptionOrNull() ?: IllegalStateException("Kokoro-82M synthesis failed"))
+                            }
+                            if (playbackQueued && completion != null) {
+                                player.playPcm(
+                                    pcmBytes = ByteArray(2),
+                                    sampleRate = KokoroTtsEngine.SAMPLE_RATE,
+                                    text = null,
+                                    enqueue = true,
+                                    onComplete = completion
+                                )
+                            } else if (!playbackQueued) {
+                                withContext(Dispatchers.Main) { completion?.invoke() }
+                            }
+                        }
                         VoiceEngine.INDIC_TINY_TTS -> {
                             val pcm = indicTinyEngine.synthesizeSpeech(text, speed = speed.coerceIn(0.25f, 4.0f))
                             if (pcm.isEmpty()) {
@@ -202,7 +241,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
 
     fun previewEngine(
         engine: VoiceEngine,
-        sampleText: String = PREVIEW_SAMPLE_HINDI,
+        sampleText: String = if (engine == VoiceEngine.KOKORO_82M) PREVIEW_SAMPLE_BILINGUAL else PREVIEW_SAMPLE_HINDI,
         onComplete: (() -> Unit)? = null
     ) {
         speakUsingEngine(sampleText, engine, enqueue = false, onComplete = onComplete, speed = 1.0f, pitch = 1.0f, emotion = "natural")
@@ -218,6 +257,10 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
             scope.launch(Dispatchers.Main) { completion.invoke() }
         }
         updateSpeakingState(false)
+    }
+
+    fun onTrimMemory(level: Int) {
+        kokoroEngine.onTrimMemory(level)
     }
 
     private fun updateSpeakingState(speaking: Boolean) {

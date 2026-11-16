@@ -1,0 +1,69 @@
+{
+  "generatedAt": "2026-11-16T12:30:27.938Z",
+  "files": {
+    "vision/vendor/three.bundle.mjs": {
+      "sizeBytes": 829027,
+      "sha256": "8c1fce063db2780ee266bbfd44af395e60b14269ca108144f4a84014c4fd04cc"
+    },
+    "vision/vendor/babylon.bundle.mjs": {
+      "sizeBytes": 8574576,
+      "sha256": "99a45897ee9a02cf29f526474b5be627cdd997955480c9a4a11ef40358ca23b7"
+    },
+    "vision/vendor/model-viewer.bundle.mjs": {
+      "sizeBytes": 1081932,
+      "sha256": "7771ffcf39a58d3f87beb9658537162a3a8077cdac6c60fc1674d73c846545da"
+    },
+    "vision/vendor/threepipe.bundle.mjs": {
+      "sizeBytes": 1961081,
+      "sha256": "bd1bc5770036c492f880ee2df51f5dbc94aabbfd34b63869f3d7696ba54b41ce"
+    },
+    "vision/vendor/gsplat.bundle.mjs": {
+      "sizeBytes": 129437,
+      "sha256": "dcac6040294699e99673194063ab0117e9c0442fe9feff503a34d48f1caf1d14"
+    },
+    "vision/vendor/cesium/Cesium.js": {
+      "sizeBytes": 6095011,
+      "sha256": "ca180396f07e0c96f5f53b4d18d95ffab7a8a2b5cc115aa9a6fe7037a043c2c7"
+    },
+    "vision/vendor/mermaid.bundle.mjs": {
+      "sizeBytes": 5537838,
+      "sha256": "336df803d87a38b70a01e736e666c8f7601d2ce42f5e47c8fafe5d721074b9a3"
+    },
+    "vision/vendor/reactflow.bundle.mjs": {
+      "sizeBytes": 408076,
+      "sha256": "32835cf9511c2a5971bf2c38af183fc46964e380cb5268b91285d4d03a779e3f"
+    },
+    "vision/vendor/reactflow.css": {
+      "sizeBytes": 18296,
+      "sha256": "6e8ffcea56270aa1a53c781073c4647a4fa1a02b2d14016e7c50e56b2c078919"
+    },
+    "vision/vendor/excalidraw.bundle.mjs": {
+      "sizeBytes": 8460859,
+      "sha256": "5fdc3ca89100978629b67afeb251b6099aa7709baff50d3c42ffc2ce3ddebd06"
+    },
+    "vision/vendor/excalidraw.css": {
+      "sizeBytes": 144689,
+      "sha256": "e72092760bae272ebe075bdadaff7f82909d318c5d819313185b19e99be31e49"
+    },
+    "vision/vendor/d3.bundle.mjs": {
+      "sizeBytes": 283460,
+      "sha256": "cbec1f2261400157d32a2da479aad001dcf3a43230ce98cdba7d37172c9f9f12"
+    },
+    "vision/vendor/plotly.bundle.js": {
+      "sizeBytes": 4842992,
+      "sha256": "aae4d8a38474c54013bdf0050847cf3835de7eccbf4c8779fcd26e250dadb9bb"
+    },
+    "vision/vendor/echarts.bundle.js": {
+      "sizeBytes": 1121883,
+      "sha256": "b66b25aeb4df84e33199dc21694014d336d222cbd9deb0e5a7c14bd6aa0d0fd0"
+    },
+    "vision/vendor/force-graph-3d.bundle.mjs": {
+      "sizeBytes": 1508650,
+      "sha256": "e0f3d8fed473c6591a41bb932189016d459eebb15da6cf6f747320b22fe92038"
+    },
+    "vision/vendor/gsap.bundle.mjs": {
+      "sizeBytes": 71136,
+      "sha256": "6c29701bcb5afa64559b3d5fc97458be92f85ae1920f213abdcb704b0beb7f86"
+    }
+  }
+}

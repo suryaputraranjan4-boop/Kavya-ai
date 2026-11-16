@@ -70,6 +70,7 @@ fun JarvisFloatingOrb(
     onExplainScreen: (() -> Unit)? = null,
     onReadScreenText: (() -> Unit)? = null,
     onToggleMic: (() -> Unit)? = null,
+    onOpenVisionStudio: (() -> Unit)? = null,
     onCloseOrb: (() -> Unit)? = null
 ) {
     var localQuickActions by remember { mutableStateOf(false) }
@@ -699,6 +700,25 @@ fun JarvisFloatingOrb(
                                 imageVector = Icons.Default.RecordVoiceOver,
                                 contentDescription = "Read Screen Text",
                                 tint = theme.secondaryColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    if (onOpenVisionStudio != null) {
+                        IconButton(
+                            onClick = {
+                                if (isExpanded == null) localQuickActions = false
+                                onOpenVisionStudio()
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("jarvis_orb_vision_action")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Hub,
+                                contentDescription = "Open Vision Studio",
+                                tint = corePrimaryColor,
                                 modifier = Modifier.size(20.dp)
                             )
                         }

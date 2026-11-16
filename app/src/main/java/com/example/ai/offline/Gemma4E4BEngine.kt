@@ -541,7 +541,111 @@ class Gemma4E4BEngine private constructor() {
             if (!isFlorence2Loaded()) {
                 return@withContext Result.failure(IllegalStateException("MODEL_NOT_INSTALLED: Florence-2 auxiliary runtime is not loaded."))
             }
-            Result.success(emptyList())
+            val visionSession = florenceSessions["vision_encoder"]
+                ?: return@withContext Result.failure(
+                    IllegalStateException("MODEL_CORRUPT: Florence-2 vision_encoder ONNX session is not resident.")
+                )
+            val env = florenceOrtEnv ?: ai.onnxruntime.OrtEnvironment.getEnvironment().also { florenceOrtEnv = it }
+            try {
+                val inputEntry = visionSession.inputInfo.entries.firstOrNull()
+                    ?: return@withContext Result.failure(IllegalStateException("Florence-2 vision_encoder has no input tensor"))
+                val tensorInfo = inputEntry.value.info as? ai.onnxruntime.TensorInfo
+                val shape = tensorInfo?.shape
+                val targetH = if (shape != null && shape.size >= 4 && shape[2] in 128..1024) shape[2].toInt() else 768
+                val targetW = if (shape != null && shape.size >= 4 && shape[3] in 128..1024) shape[3].toInt() else 768
+
+                val scaled = if (screenshot.width == targetW && screenshot.height == targetH) {
+                    screenshot
+                } else {
+                    Bitmap.createScaledBitmap(screenshot, targetW, targetH, true)
+                }
+                val pixels = IntArray(targetW * targetH)
+                scaled.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+                if (scaled !== screenshot) scaled.recycle()
+
+                val plane = targetW * targetH
+                val arr = FloatArray(3 * plane)
+                for (i in pixels.indices) {
+                    val px = pixels[i]
+                    arr[i] = ((((px ushr 16) and 0xFF) / 255f) - 0.485f) / 0.229f
+                    arr[plane + i] = ((((px ushr 8) and 0xFF) / 255f) - 0.456f) / 0.224f
+                    arr[2 * plane + i] = (((px and 0xFF) / 255f) - 0.406f) / 0.225f
+                }
+                val fb = java.nio.FloatBuffer.allocate(arr.size).apply {
+                    put(arr)
+                    rewind()
+                }
+                val signals = mutableListOf<com.example.visual.VisionElementSignal>()
+                ai.onnxruntime.OnnxTensor.createTensor(
+                    env,
+                    fb,
+                    longArrayOf(1L, 3L, targetH.toLong(), targetW.toLong())
+                ).use { inputTensor ->
+                    visionSession.run(mapOf(inputEntry.key to inputTensor)).use { result ->
+                        val outTensor = result.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor
+                        val outShape = outTensor?.info?.shape
+                        val outBuf = outTensor?.floatBuffer
+                        if (outBuf != null && outShape != null && outShape.size >= 2) {
+                            val totalFloats = outBuf.remaining()
+                            val feats = FloatArray(totalFloats).also { outBuf.get(it) }
+                            // Project spatial visual tokens (e.g. [1, N, D]) onto normalized grid cells
+                            val numTokens = outShape[1].toInt().coerceAtLeast(1)
+                            val dim = (totalFloats / numTokens).coerceAtLeast(1)
+                            val gridSide = kotlin.math.sqrt(numTokens.toFloat()).toInt().coerceIn(4, 24)
+                            val cellEnergies = FloatArray(gridSide * gridSide)
+                            var maxEnergy = 0f
+                            for (g in 0 until (gridSide * gridSide).coerceAtMost(numTokens)) {
+                                var energy = 0f
+                                val base = g * dim
+                                val step = (dim / 32).coerceAtLeast(1)
+                                var cnt = 0
+                                var idx = base
+                                while (idx < base + dim && idx < feats.size) {
+                                    energy += kotlin.math.abs(feats[idx])
+                                    cnt++
+                                    idx += step
+                                }
+                                val avg = if (cnt > 0) energy / cnt else 0f
+                                cellEnergies[g] = avg
+                                if (avg > maxEnergy) maxEnergy = avg
+                            }
+                            if (maxEnergy > 0f) {
+                                val topCells = cellEnergies.indices
+                                    .sortedByDescending { cellEnergies[it] }
+                                    .take(4)
+                                topCells.forEachIndexed { idx, cellIdx ->
+                                    val score = (cellEnergies[cellIdx] / maxEnergy).coerceIn(0.45f, 0.85f)
+                                    val row = cellIdx / gridSide
+                                    val col = cellIdx % gridSide
+                                    val bounds = com.example.visual.PrecisionCoordinateMapper.mapNormalizedBoxToDevice(
+                                        normLeft = (col.toFloat() / gridSide).coerceIn(0f, 1f),
+                                        normTop = (row.toFloat() / gridSide).coerceIn(0f, 1f),
+                                        normRight = ((col + 1).toFloat() / gridSide).coerceIn(0f, 1f),
+                                        normBottom = ((row + 1).toFloat() / gridSide).coerceIn(0f, 1f),
+                                        screenWidth = screenshot.width.coerceAtLeast(1),
+                                        screenHeight = screenshot.height.coerceAtLeast(1)
+                                    )
+                                    signals.add(
+                                        com.example.visual.VisionElementSignal(
+                                            label = "Visual Salient Region ${idx + 1} ($taskPrompt)",
+                                            roleHint = "aux_salient_region",
+                                            bounds = bounds,
+                                            confidence = score,
+                                            sourceSignal = com.example.visual.SignalSource.AUX_VISION_MODEL,
+                                            sourceModelId = GemmaModelManager.FLORENCE2_MANIFEST.modelId,
+                                            sourceModelRevision = GemmaModelManager.FLORENCE2_MANIFEST.pinnedRevision,
+                                            isConfidenceCalibrated = false
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Result.success(signals)
+            } catch (t: Throwable) {
+                Result.failure(IllegalStateException("Florence-2 vision pass failed: ${t.message}", t))
+            }
         }
     }
 

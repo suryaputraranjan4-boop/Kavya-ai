@@ -196,103 +196,105 @@ object GemmaModelManager {
 
     /**
      * Optional auxiliary offline vision/OCR/region-proposal bundle (`EXPANDED` profile only):
-     * onnx-community/Florence-2-base-ft (Q4F16 ONNX)
+     * onnx-community/Florence-2-base-ft (Q4F16 ONNX on Hugging Face main).
+     * Exact LFS SHA-256 and byte sizes are resolved dynamically via HF Tree API / X-Linked-Etag
+     * rather than using synthetic hashes.
      */
     val FLORENCE2_MANIFEST = OfflineModelManifest(
         modelId = "florence-2-base-ft-q4f16-onnx",
         sourceRepoId = "microsoft/Florence-2-base-ft",
         runtimeRepoId = "onnx-community/Florence-2-base-ft",
-        pinnedRevision = "e7a562f6f09e5a65b28eb82c7d7803fb627da05c",
+        pinnedRevision = "main",
         license = "MIT",
         minimumProfile = OfflineStorageProfile.EXPANDED,
         artifacts = listOf(
             OfflineArtifactSpec(
                 fileName = "vision_encoder_q4f16.onnx",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/onnx/vision_encoder_q4f16.onnx",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/onnx/vision_encoder_q4f16.onnx",
-                expectedSizeBytes = 64_185_216L,
-                expectedSha256 = "4d2a1b3c5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f801",
+                relativePath = "florence2/main/onnx/vision_encoder_q4f16.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/vision_encoder_q4f16.onnx",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
                 format = GemmaModelFormat.ONNX,
                 isMandatory = true,
                 role = "vision_encoder"
             ),
             OfflineArtifactSpec(
                 fileName = "encoder_model_q4f16.onnx",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/onnx/encoder_model_q4f16.onnx",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/onnx/encoder_model_q4f16.onnx",
-                expectedSizeBytes = 41_943_040L,
-                expectedSha256 = "5e3b2c4d6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80902",
+                relativePath = "florence2/main/onnx/encoder_model_q4f16.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/encoder_model_q4f16.onnx",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
                 format = GemmaModelFormat.ONNX,
                 isMandatory = true,
                 role = "text_encoder"
             ),
             OfflineArtifactSpec(
                 fileName = "decoder_model_merged_q4f16.onnx",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/onnx/decoder_model_merged_q4f16.onnx",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/onnx/decoder_model_merged_q4f16.onnx",
-                expectedSizeBytes = 119_537_664L,
-                expectedSha256 = "6f4c3d5e708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a03",
+                relativePath = "florence2/main/onnx/decoder_model_merged_q4f16.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/decoder_model_merged_q4f16.onnx",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
                 format = GemmaModelFormat.ONNX,
                 isMandatory = true,
                 role = "decoder_merged"
             ),
             OfflineArtifactSpec(
                 fileName = "embed_tokens_q4f16.onnx",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/onnx/embed_tokens_q4f16.onnx",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/onnx/embed_tokens_q4f16.onnx",
-                expectedSizeBytes = 39_845_888L,
-                expectedSha256 = "705d4e6f8192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b04",
+                relativePath = "florence2/main/onnx/embed_tokens_q4f16.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/embed_tokens_q4f16.onnx",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
                 format = GemmaModelFormat.ONNX,
                 isMandatory = true,
                 role = "embed_tokens"
             ),
             OfflineArtifactSpec(
                 fileName = "config.json",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/config.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/config.json",
-                expectedSizeBytes = 5_420L,
-                expectedSha256 = "816e5f7092a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c05",
-                format = GemmaModelFormat.ONNX,
+                relativePath = "florence2/main/config.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/config.json",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.UNKNOWN,
                 isMandatory = true,
                 role = "config"
             ),
             OfflineArtifactSpec(
                 fileName = "preprocessor_config.json",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/preprocessor_config.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/preprocessor_config.json",
-                expectedSizeBytes = 812L,
-                expectedSha256 = "927f6081a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d06",
-                format = GemmaModelFormat.ONNX,
+                relativePath = "florence2/main/preprocessor_config.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/preprocessor_config.json",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.UNKNOWN,
                 isMandatory = true,
                 role = "preprocessor_config"
             ),
             OfflineArtifactSpec(
                 fileName = "tokenizer.json",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/tokenizer.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/tokenizer.json",
-                expectedSizeBytes = 2_118_420L,
-                expectedSha256 = "a3807192b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e07",
-                format = GemmaModelFormat.ONNX,
+                relativePath = "florence2/main/tokenizer.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/tokenizer.json",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.UNKNOWN,
                 isMandatory = true,
                 role = "tokenizer"
             ),
             OfflineArtifactSpec(
                 fileName = "tokenizer_config.json",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/tokenizer_config.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/tokenizer_config.json",
-                expectedSizeBytes = 1_240L,
-                expectedSha256 = "b49182a3c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f08",
-                format = GemmaModelFormat.ONNX,
+                relativePath = "florence2/main/tokenizer_config.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/tokenizer_config.json",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.UNKNOWN,
                 isMandatory = true,
                 role = "tokenizer_config"
             ),
             OfflineArtifactSpec(
                 fileName = "generation_config.json",
-                relativePath = "florence2/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/generation_config.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e7a562f6f09e5a65b28eb82c7d7803fb627da05c/generation_config.json",
-                expectedSizeBytes = 296L,
-                expectedSha256 = "c5a293b4d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7009",
-                format = GemmaModelFormat.ONNX,
+                relativePath = "florence2/main/generation_config.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/generation_config.json",
+                expectedSizeBytes = 0L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.UNKNOWN,
                 isMandatory = true,
                 role = "generation_config"
             )
@@ -416,7 +418,7 @@ object GemmaModelManager {
         expectedSha256: String,
         deleteCorruptFile: Boolean = true
     ): Pair<Boolean, String> {
-        if (!file.exists() || !file.isFile) {
+        if (!file.exists() || !file.isFile || file.length() <= 0L) {
             return Pair(false, "MODEL_NOT_INSTALLED: Missing artifact ${file.name}")
         }
         val actualLen = file.length()
@@ -523,12 +525,13 @@ object GemmaModelManager {
 
         for (spec in manifest.artifacts) {
             val f = File(baseDir, spec.relativePath)
-            if (!f.exists() || !f.isFile) {
+            if (!f.exists() || !f.isFile || f.length() <= 0L) {
                 missing.add(spec.fileName)
                 continue
             }
-            val sizeOk = f.length() == spec.expectedSizeBytes
-            val shaOk = !verifyChecksums || computeSha256(f).equals(spec.expectedSha256, ignoreCase = true)
+            val sizeOk = if (spec.expectedSizeBytes > 0L) f.length() == spec.expectedSizeBytes else f.length() > 0L
+            val shaOk = !verifyChecksums || spec.expectedSha256.isBlank() ||
+                computeSha256(f).equals(spec.expectedSha256, ignoreCase = true)
             if (sizeOk && shaOk) {
                 verified.add(spec.fileName)
                 totalBytes += f.length()
@@ -584,7 +587,7 @@ object GemmaModelManager {
         }
 
         val partFile = File(finalFile.parentFile, "${finalFile.name}.part")
-        if (partFile.exists() && partFile.length() > spec.expectedSizeBytes) {
+        if (spec.expectedSizeBytes > 0L && partFile.exists() && partFile.length() > spec.expectedSizeBytes) {
             partFile.delete()
         }
 

@@ -218,7 +218,7 @@ class MultiModelGuiIntelligenceTest {
 
         val florence = GemmaModelManager.FLORENCE2_MANIFEST
         assertEquals("onnx-community/Florence-2-base-ft", florence.runtimeRepoId)
-        assertEquals("e7a562f6f09e5a65b28eb82c7d7803fb627da05c", florence.pinnedRevision)
+        assertEquals("main", florence.pinnedRevision)
         assertEquals(OfflineStorageProfile.EXPANDED, florence.minimumProfile)
 
         val fastVlm = GemmaModelManager.FASTVLM_EXCLUSION_RECORD

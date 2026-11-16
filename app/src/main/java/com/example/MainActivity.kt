@@ -30,7 +30,10 @@ class MainActivity : ComponentActivity() {
 
   companion object {
     private const val TAG = "MainActivity"
+    const val EXTRA_OPEN_ROUTE = "open_route"
   }
+
+  private val pendingDeepLinkRoute = mutableStateOf<String?>(null)
 
   private val permissionLauncher = registerForActivityResult(
     ActivityResultContracts.RequestMultiplePermissions()
@@ -48,6 +51,7 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     com.example.orchestrator.AiAuthorityGateway.invalidateAllOnStartup()
     enableEdgeToEdge()
+    pendingDeepLinkRoute.value = intent?.getStringExtra(EXTRA_OPEN_ROUTE)
 
     requestAppPermissions()
 
@@ -56,6 +60,14 @@ class MainActivity : ComponentActivity() {
         val navController = rememberNavController()
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
+        val deepLinkTarget by pendingDeepLinkRoute
+        LaunchedEffect(deepLinkTarget) {
+            val target = deepLinkTarget
+            if (!target.isNullOrBlank()) {
+                navController.navigate(target) { launchSingleTop = true }
+                pendingDeepLinkRoute.value = null
+            }
+        }
         
         CompositionLocalProvider(LocalDrawerState provides drawerState) {
             ModalNavigationDrawer(
@@ -134,6 +146,20 @@ class MainActivity : ComponentActivity() {
   override fun onPause() {
     super.onPause()
     com.example.state.KavyaStateManager.isActivityVisible = false
+  }
+
+  override fun onNewIntent(intent: android.content.Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    pendingDeepLinkRoute.value = intent.getStringExtra(EXTRA_OPEN_ROUTE)
+  }
+
+  override fun onTrimMemory(level: Int) {
+    super.onTrimMemory(level)
+    com.example.ai.offline.Gemma4E4BEngine.getInstance(this).onTrimMemory(level)
+    com.example.ai.offline.OnDeviceVisionOrchestrator.getInstance(this).onTrimMemory(level)
+    com.example.ai.tts.VoiceEngineManager.getInstance(this).onTrimMemory(level)
+    com.example.vision.VisualizationOrchestrator.onTrimMemory(level)
   }
 }
 

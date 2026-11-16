@@ -41,10 +41,15 @@ fun JarvisCardFrame(
     theme: JarvisThemePreset,
     modifier: Modifier = Modifier,
     confidence: Float = 0.95f,
+    copyPayload: String = "",
+    onReadAloud: ((String) -> Unit)? = null,
     onClose: (() -> Unit)? = null,
     onMinimize: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var isExpanded by remember { mutableStateOf(true) }
+
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -73,7 +78,8 @@ fun JarvisCardFrame(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Box(
                         modifier = Modifier
@@ -95,7 +101,7 @@ fun JarvisCardFrame(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     // Confidence pill
                     Surface(
@@ -112,10 +118,50 @@ fun JarvisCardFrame(
                         )
                     }
 
+                    if (onReadAloud != null && copyPayload.isNotBlank()) {
+                        IconButton(
+                            onClick = { onReadAloud(copyPayload) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolumeUp,
+                                contentDescription = "Read aloud",
+                                tint = theme.primaryColor,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    if (copyPayload.isNotBlank()) {
+                        IconButton(
+                            onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(copyPayload)) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy text",
+                                tint = Color.White.copy(alpha = 0.75f),
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { isExpanded = !isExpanded },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = if (isExpanded) "Collapse card" else "Expand card",
+                            tint = Color.White.copy(alpha = 0.7f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
                     if (onMinimize != null) {
                         IconButton(
                             onClick = onMinimize,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Remove,
@@ -129,7 +175,7 @@ fun JarvisCardFrame(
                     if (onClose != null) {
                         IconButton(
                             onClick = onClose,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
@@ -142,9 +188,12 @@ fun JarvisCardFrame(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            content()
+            AnimatedVisibility(visible = isExpanded) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    content()
+                }
+            }
         }
     }
 }
@@ -163,6 +212,11 @@ fun JarvisSummaryCardView(
         title = card.title,
         theme = theme,
         confidence = card.confidence,
+        copyPayload = buildString {
+            append(card.summary)
+            if (card.bullets.isNotEmpty()) append("\n• " + card.bullets.joinToString("\n• "))
+        },
+        onReadAloud = JarvisGuidanceEngine.externalSpeakCallback,
         modifier = modifier,
         onClose = onClose
     ) {
@@ -226,6 +280,8 @@ fun JarvisDetailTypewriterCardView(
         title = card.title,
         theme = theme,
         confidence = card.confidence,
+        copyPayload = fullText,
+        onReadAloud = JarvisGuidanceEngine.externalSpeakCallback,
         modifier = modifier,
         onClose = onClose
     ) {
@@ -361,80 +417,120 @@ fun JarvisCanvasGraphCardView(
         title = graphData.title,
         theme = theme,
         confidence = card.confidence,
+        copyPayload = graphData.labels.zip(graphData.values).joinToString(", ") { "${it.first}: ${it.second.toInt()}${graphData.unit}" },
+        onReadAloud = JarvisGuidanceEngine.externalSpeakCallback,
         modifier = modifier,
         onClose = onClose
     ) {
-        val maxValue = graphData.values.maxOrNull()?.coerceAtLeast(1f) ?: 1f
+        val maxValue = graphData.values.maxOrNull() ?: 0f
+        val totalValue = graphData.values.sum()
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(140.dp)
-                .padding(vertical = 4.dp)
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val w = size.width
-                val h = size.height
-                val progress = animatedProgress.value
+        if (maxValue <= 0f || graphData.values.isEmpty()) {
+            Text(
+                text = "All recorded values are 0${graphData.unit} — no non-zero metrics detected.",
+                color = Color.White.copy(alpha = 0.7f),
+                fontSize = 12.sp,
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(145.dp)
+                    .padding(vertical = 4.dp)
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val w = size.width
+                    val h = size.height
+                    val progress = animatedProgress.value
 
-                when (graphData.type) {
-                    GraphChartType.BAR_CHART -> {
-                        val barCount = graphData.values.size
-                        val spacing = 12f
-                        val barWidth = ((w - spacing * (barCount + 1)) / barCount).coerceAtLeast(8f)
-
-                        graphData.values.forEachIndexed { i, value ->
-                            val barHeight = (value / maxValue) * (h - 24f) * progress
-                            val left = spacing + i * (barWidth + spacing)
-                            val top = h - barHeight
-
-                            // Gradient Bar
-                            drawRect(
-                                brush = Brush.verticalGradient(
-                                    listOf(theme.primaryColor, theme.secondaryColor.copy(alpha = 0.4f)),
-                                    startY = top,
-                                    endY = h
-                                ),
-                                topLeft = Offset(left, top),
-                                size = Size(barWidth, barHeight)
-                            )
-
-                            // Top Glow Cap
-                            drawLine(
-                                color = Color.White,
-                                start = Offset(left, top),
-                                end = Offset(left + barWidth, top),
-                                strokeWidth = 2.5f
-                            )
-                        }
-                    }
-
-                    GraphChartType.LINE_CHART -> {
-                        val count = graphData.values.size
-                        if (count > 1) {
-                            val stepX = w / (count - 1)
-                            val path = Path()
-                            val points = mutableListOf<Offset>()
+                    when (graphData.type) {
+                        GraphChartType.BAR_CHART -> {
+                            val barCount = graphData.values.size
+                            val spacing = 12f
+                            val barWidth = ((w - spacing * (barCount + 1)) / barCount).coerceAtLeast(8f)
 
                             graphData.values.forEachIndexed { i, value ->
-                                val x = i * stepX
-                                val y = h - ((value / maxValue) * (h - 24f) * progress)
-                                val pt = Offset(x, y)
-                                points.add(pt)
-                                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                                val barHeight = if (value <= 0f) 0f else (value / maxValue) * (h - 24f) * progress
+                                val left = spacing + i * (barWidth + spacing)
+                                val top = h - barHeight
+
+                                if (barHeight > 0f) {
+                                    drawRect(
+                                        brush = Brush.verticalGradient(
+                                            listOf(theme.primaryColor, theme.secondaryColor.copy(alpha = 0.4f)),
+                                            startY = top,
+                                            endY = h
+                                        ),
+                                        topLeft = Offset(left, top),
+                                        size = Size(barWidth, barHeight)
+                                    )
+                                    drawLine(
+                                        color = Color.White,
+                                        start = Offset(left, top),
+                                        end = Offset(left + barWidth, top),
+                                        strokeWidth = 2.5f
+                                    )
+                                }
                             }
+                        }
 
-                            // Glowing Line
-                            drawPath(
-                                path = path,
-                                color = theme.primaryColor,
-                                style = Stroke(width = 3f, cap = StrokeCap.Round)
+                        GraphChartType.LINE_CHART -> {
+                            val count = graphData.values.size
+                            if (count > 1) {
+                                val stepX = w / (count - 1)
+                                val path = Path()
+                                val points = mutableListOf<Offset>()
+
+                                graphData.values.forEachIndexed { i, value ->
+                                    val x = i * stepX
+                                    val y = h - ((value / maxValue) * (h - 24f) * progress)
+                                    val pt = Offset(x, y)
+                                    points.add(pt)
+                                    if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                                }
+
+                                drawPath(
+                                    path = path,
+                                    color = theme.primaryColor,
+                                    style = Stroke(width = 3f, cap = StrokeCap.Round)
+                                )
+                                for (pt in points) {
+                                    drawCircle(Color.White, radius = 4f, center = pt)
+                                    drawCircle(theme.primaryColor, radius = 7f, center = pt, style = Stroke(width = 1.8f))
+                                }
+                            }
+                        }
+
+                        GraphChartType.PIE_CHART, GraphChartType.DONUT_CHART -> {
+                            val palette = listOf(
+                                theme.primaryColor,
+                                theme.secondaryColor,
+                                Color(0xFF00E676),
+                                Color(0xFFFFD700),
+                                Color(0xFF7C4DFF)
                             )
-
-                            // Points
-                            for (pt in points) {
-                                drawCircle(Color.White, radius = 4f, center = pt)
-                                drawCircle(theme.primaryColor, radius = 7f, center = pt, style = Stroke(width = 1.8f))
+                            val diameter = kotlin.math.min(w, h) * 0.85f
+                            val topLeft = Offset((w - diameter) / 2f, (h - diameter) / 2f)
+                            var startAngle = -90f
+                            graphData.values.forEachIndexed { i, value ->
+                                val sweep = if (totalValue > 0f) (value / totalValue) * 360f * progress else 0f
+                                if (sweep > 0.5f) {
+                                    drawArc(
+                                        color = palette[i % palette.size],
+                                        startAngle = startAngle,
+                                        sweepAngle = sweep,
+                                        useCenter = graphData.type == GraphChartType.PIE_CHART,
+                                        topLeft = topLeft,
+                                        size = Size(diameter, diameter),
+                                        style = if (graphData.type == GraphChartType.DONUT_CHART) {
+                                            Stroke(width = diameter * 0.24f)
+                                        } else {
+                                            androidx.compose.ui.graphics.drawscope.Fill
+                                        }
+                                    )
+                                    startAngle += sweep
+                                }
                             }
                         }
                     }
@@ -548,16 +644,22 @@ fun Jarvis3DViewerCardView(
 ) {
     val initialMesh = card.mesh3d ?: WireframeMesh3D.createDiamond()
     var currentMesh by remember { mutableStateOf(initialMesh) }
+    var zoomScale by remember { mutableFloatStateOf(1.0f) }
+    var focusedPartIndex by remember { mutableIntStateOf(-1) }
+    var schematic2D by remember { mutableStateOf(false) }
+    var resetTrigger by remember { mutableIntStateOf(0) }
 
     JarvisCardFrame(
         title = card.title,
         theme = theme,
         confidence = card.confidence,
+        copyPayload = "${card.title}: ${card.summary}",
+        onReadAloud = JarvisGuidanceEngine.externalSpeakCallback,
         modifier = modifier,
         onClose = onClose
     ) {
         Text(
-            text = "Holographic 3D Object • Drag to rotate in real-time",
+            text = if (schematic2D) "2D Schematic Projection • Toggle 3D to orbit" else "Holographic 3D Object • Drag to rotate, Zoom, or focus part",
             color = Color.White.copy(alpha = 0.7f),
             fontSize = 11.sp,
             fontFamily = FontFamily.Monospace
@@ -576,44 +678,154 @@ fun Jarvis3DViewerCardView(
             Interactive3DMeshViewer(
                 mesh = currentMesh,
                 theme = theme,
+                zoomScale = zoomScale,
+                focusedPartIndex = focusedPartIndex,
+                schematic2DMode = schematic2D,
+                resetTrigger = resetTrigger,
                 modifier = Modifier.fillMaxSize()
             )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Preset switcher buttons
+        // Zoom, Reset & 2D Schematic controls
         Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            FilterChip(
-                selected = currentMesh.name.contains("Core"),
-                onClick = { currentMesh = WireframeMesh3D.createDiamond() },
-                label = { Text("Quantum Core", fontSize = 10.sp) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = theme.primaryColor.copy(alpha = 0.3f),
-                    selectedLabelColor = Color.White
+            OutlinedButton(
+                onClick = { zoomScale = (zoomScale - 0.2f).coerceAtLeast(0.6f) },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) { Text("- Zoom", fontSize = 10.sp, color = Color.White) }
+            OutlinedButton(
+                onClick = { zoomScale = (zoomScale + 0.2f).coerceAtMost(2.2f) },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) { Text("+ Zoom", fontSize = 10.sp, color = Color.White) }
+            OutlinedButton(
+                onClick = {
+                    zoomScale = 1.0f
+                    focusedPartIndex = -1
+                    schematic2D = false
+                    resetTrigger++
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) { Text("Reset", fontSize = 10.sp, color = theme.primaryColor) }
+            OutlinedButton(
+                onClick = { schematic2D = !schematic2D },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) { Text(if (schematic2D) "3D Mode" else "2D View", fontSize = 10.sp, color = theme.primaryColor) }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Preset switcher + Part focus chips
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            item {
+                FilterChip(
+                    selected = currentMesh.name.contains("Core"),
+                    onClick = { currentMesh = WireframeMesh3D.createDiamond(); focusedPartIndex = -1 },
+                    label = { Text("Quantum Core", fontSize = 10.sp) }
                 )
-            )
-            FilterChip(
-                selected = currentMesh.name.contains("Cube"),
-                onClick = { currentMesh = WireframeMesh3D.createCube() },
-                label = { Text("Cube Matrix", fontSize = 10.sp) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = theme.primaryColor.copy(alpha = 0.3f),
-                    selectedLabelColor = Color.White
+            }
+            item {
+                FilterChip(
+                    selected = currentMesh.name.contains("Cube"),
+                    onClick = { currentMesh = WireframeMesh3D.createCube(); focusedPartIndex = -1 },
+                    label = { Text("Cube Matrix", fontSize = 10.sp) }
                 )
-            )
-            FilterChip(
-                selected = currentMesh.name.contains("Prism"),
-                onClick = { currentMesh = WireframeMesh3D.createPyramid() },
-                label = { Text("Prism", fontSize = 10.sp) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = theme.primaryColor.copy(alpha = 0.3f),
-                    selectedLabelColor = Color.White
+            }
+            item {
+                FilterChip(
+                    selected = currentMesh.name.contains("Prism"),
+                    onClick = { currentMesh = WireframeMesh3D.createPyramid(); focusedPartIndex = -1 },
+                    label = { Text("Prism", fontSize = 10.sp) }
                 )
-            )
+            }
+            items(currentMesh.parts.size) { partIdx ->
+                FilterChip(
+                    selected = focusedPartIndex == partIdx,
+                    onClick = { focusedPartIndex = if (focusedPartIndex == partIdx) -1 else partIdx },
+                    label = { Text("Focus: ${currentMesh.parts[partIdx]}", fontSize = 10.sp) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Interactive Flowchart & System Architecture DAG Card.
+ */
+@Composable
+fun JarvisFlowchartCardView(
+    card: VisualCardData,
+    theme: JarvisThemePreset,
+    modifier: Modifier = Modifier,
+    onClose: (() -> Unit)? = null
+) {
+    val nodes = card.flowchartNodes.ifEmpty {
+        listOf(
+            FlowchartNode("capture", "Screen Capture", "INPUT"),
+            FlowchartNode("ocr", "ML Kit OCR + ONNX", "FUSION"),
+            FlowchartNode("reason", "VLM / Gemini Plan", "AI"),
+            FlowchartNode("render", "Overlay Guide", "OUTPUT")
+        )
+    }
+
+    JarvisCardFrame(
+        title = card.title,
+        theme = theme,
+        confidence = card.confidence,
+        copyPayload = "${card.title}: ${nodes.joinToString(" -> ") { it.label }}",
+        onReadAloud = JarvisGuidanceEngine.externalSpeakCallback,
+        modifier = modifier,
+        onClose = onClose
+    ) {
+        Text(
+            text = card.summary,
+            color = Color.White.copy(alpha = 0.85f),
+            fontSize = 12.sp
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            nodes.forEachIndexed { idx, node ->
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color.White.copy(alpha = 0.05f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, theme.primaryColor.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(node.label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Surface(shape = RoundedCornerShape(6.dp), color = theme.primaryColor.copy(alpha = 0.2f)) {
+                            Text(
+                                text = node.role,
+                                color = theme.primaryColor,
+                                fontSize = 9.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+                if (idx < nodes.lastIndex) {
+                    Box(modifier = Modifier.fillMaxWidth().height(16.dp), contentAlignment = Alignment.Center) {
+                        Canvas(modifier = Modifier.size(16.dp)) {
+                            drawLine(
+                                color = theme.primaryColor,
+                                start = Offset(size.width / 2f, 0f),
+                                end = Offset(size.width / 2f, size.height),
+                                strokeWidth = 2.5f
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -635,5 +847,6 @@ fun JarvisExplanationCardDispatcher(
         VisualCardType.CANVAS_GRAPH -> JarvisCanvasGraphCardView(card, theme, modifier, onClose)
         VisualCardType.TIMELINE_FLOW -> JarvisTimelineCardView(card, theme, modifier, onClose)
         VisualCardType.OBJECT_3D -> Jarvis3DViewerCardView(card, theme, modifier, onClose)
+        VisualCardType.FLOWCHART -> JarvisFlowchartCardView(card, theme, modifier, onClose)
     }
 }

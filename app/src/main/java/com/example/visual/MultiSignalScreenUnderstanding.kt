@@ -23,6 +23,8 @@ enum class SignalSource {
     ACCESSIBILITY,
     OCR,
     VISION,
+    LOCAL_CLASSIFIER,
+    LOCAL_DETECTOR,
     AUX_VISION_MODEL,
     LOCAL_GUI_VLM,
     ONLINE_GEMINI_VISION
@@ -383,13 +385,33 @@ object MultiSignalFusionEngine {
     fun computeScreenFingerprint(
         foregroundPackage: String,
         accessibilityNodes: List<AnalyzedNode>,
-        ocrSignals: List<OcrTextSignal> = emptyList()
+        ocrSignals: List<OcrTextSignal> = emptyList(),
+        screenshotWidth: Int = 0,
+        screenshotHeight: Int = 0,
+        bitmapSignature: Int = 0
     ): String {
         val nodeSig = accessibilityNodes.take(30).joinToString("|") {
             "${it.resourceId}:${it.text}:${it.contentDescription}:${it.bounds.flattenToString()}"
         }
         val ocrSig = ocrSignals.take(15).joinToString("|") { "${it.text}:${it.bounds.flattenToString()}" }
-        return "$foregroundPackage#${nodeSig.hashCode()}#${ocrSig.hashCode()}"
+        return "$foregroundPackage#${nodeSig.hashCode()}#${ocrSig.hashCode()}#${screenshotWidth}x${screenshotHeight}#$bitmapSignature"
+    }
+
+    fun computeBitmapQuickSignature(bitmap: android.graphics.Bitmap?): Int {
+        if (bitmap == null || bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return 0
+        var hash = bitmap.width * 31 + bitmap.height
+        val stepX = (bitmap.width / 8).coerceAtLeast(1)
+        val stepY = (bitmap.height / 8).coerceAtLeast(1)
+        var y = stepY / 2
+        while (y < bitmap.height) {
+            var x = stepX / 2
+            while (x < bitmap.width) {
+                hash = hash * 31 + bitmap.getPixel(x, y)
+                x += stepX
+            }
+            y += stepY
+        }
+        return hash
     }
 
     @Synchronized
@@ -999,18 +1021,135 @@ object PromptInjectionGuard {
 }
 
 object OnDeviceOcrExtractor {
+
+    /**
+     * Legacy synchronous signature: never fabricates pixel OCR from Accessibility elements when
+     * no real pixel recognizer was run; returns empty list when bitmap is absent or use
+     * `extractPixelOcrSignals(...)` for real ML Kit Latin + Devanagari extraction.
+     */
     fun extractSignals(
         bitmap: android.graphics.Bitmap?,
         a11yElements: List<com.example.services.KavyaAccessibilityService.InteractiveElement> = emptyList()
     ): List<OcrTextSignal> {
-        return a11yElements.mapNotNull { el ->
-            val label = el.text.ifBlank { el.contentDescription }.trim()
-            if (label.isBlank()) null
-            else OcrTextSignal(
-                text = PromptInjectionGuard.sanitizeScreenText(label),
-                bounds = Rect(el.bounds),
-                confidence = 0.88f
+        if (bitmap == null || bitmap.isRecycled) return emptyList()
+        return kotlinx.coroutines.runBlocking {
+            extractPixelOcrSignals(
+                bitmap = bitmap,
+                screenWidth = bitmap.width.coerceAtLeast(1),
+                screenHeight = bitmap.height.coerceAtLeast(1)
             )
         }
     }
+
+    /**
+     * Runs real pixel-level OCR using ML Kit Text Recognition v2 (Latin + Devanagari/Hindi)
+     * and maps recognized bounding boxes to physical display pixels via [PrecisionCoordinateMapper].
+     * Never copies accessibility nodes as fake OCR results.
+     */
+    suspend fun extractPixelOcrSignals(
+        bitmap: android.graphics.Bitmap?,
+        screenWidth: Int,
+        screenHeight: Int
+    ): List<OcrTextSignal> {
+        if (bitmap == null || bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+            return emptyList()
+        }
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bitmap, 0)
+            val latinClient = try {
+                com.google.mlkit.vision.text.TextRecognition.getClient(
+                    com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS
+                )
+            } catch (_: Throwable) {
+                null
+            }
+            val devanagariClient = try {
+                com.google.mlkit.vision.text.TextRecognition.getClient(
+                    com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions.Builder().build()
+                )
+            } catch (_: Throwable) {
+                null
+            }
+
+            val rawLines = mutableListOf<OcrTextSignal>()
+            try {
+                if (latinClient != null) {
+                    val latinRes = awaitMlKitTask(latinClient.process(image))
+                    latinRes?.textBlocks?.forEach { block ->
+                        block.lines.forEach { line ->
+                            val clean = PromptInjectionGuard.sanitizeScreenText(line.text).trim()
+                            val box = line.boundingBox ?: block.boundingBox
+                            if (clean.isNotBlank() && box != null) {
+                                val mapped = PrecisionCoordinateMapper.mapScreenshotRectToDevice(
+                                    screenshotRect = box,
+                                    screenshotWidth = bitmap.width,
+                                    screenshotHeight = bitmap.height,
+                                    screenWidth = screenWidth.coerceAtLeast(1),
+                                    screenHeight = screenHeight.coerceAtLeast(1)
+                                )
+                                rawLines.add(
+                                    OcrTextSignal(
+                                        text = clean,
+                                        bounds = mapped,
+                                        language = if (clean.any { it in '\u0900'..'\u097F' }) "hi" else "en",
+                                        confidence = line.confidence.takeIf { it in 0f..1f } ?: 0.88f
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+                if (devanagariClient != null) {
+                    val devaRes = awaitMlKitTask(devanagariClient.process(image))
+                    devaRes?.textBlocks?.forEach { block ->
+                        block.lines.forEach { line ->
+                            val clean = PromptInjectionGuard.sanitizeScreenText(line.text).trim()
+                            val box = line.boundingBox ?: block.boundingBox
+                            val hasDevanagari = clean.any { it in '\u0900'..'\u097F' }
+                            if (clean.isNotBlank() && box != null) {
+                                val mapped = PrecisionCoordinateMapper.mapScreenshotRectToDevice(
+                                    screenshotRect = box,
+                                    screenshotWidth = bitmap.width,
+                                    screenshotHeight = bitmap.height,
+                                    screenWidth = screenWidth.coerceAtLeast(1),
+                                    screenHeight = screenHeight.coerceAtLeast(1)
+                                )
+                                val isDuplicate = rawLines.any { existing ->
+                                    MultiSignalFusionEngine.computeIoU(existing.bounds, mapped) >= 0.45f &&
+                                        (!hasDevanagari || existing.text.equals(clean, ignoreCase = true))
+                                }
+                                if (!isDuplicate) {
+                                    rawLines.add(
+                                        OcrTextSignal(
+                                            text = clean,
+                                            bounds = mapped,
+                                            language = if (hasDevanagari) "hi" else "en",
+                                            confidence = line.confidence.takeIf { it in 0f..1f } ?: 0.90f
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+                // ML Kit native model not yet downloaded or unavailable in JVM sandbox -> return whatever succeeded cleanly
+            } finally {
+                try { latinClient?.close() } catch (_: Throwable) {}
+                try { devanagariClient?.close() } catch (_: Throwable) {}
+            }
+            rawLines
+        }
+    }
+
+    private suspend fun <T> awaitMlKitTask(task: com.google.android.gms.tasks.Task<T>): T? =
+        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            task.addOnSuccessListener { result ->
+                if (cont.isActive) cont.resumeWith(Result.success(result))
+            }.addOnFailureListener {
+                if (cont.isActive) cont.resumeWith(Result.success(null))
+            }.addOnCanceledListener {
+                if (cont.isActive) cont.resumeWith(Result.success(null))
+            }
+        }
 }

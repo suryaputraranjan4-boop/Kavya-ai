@@ -26,7 +26,8 @@ object JarvisIntelligencePlanner {
             "how do i", "how to", "show me how", "where is", "guide me",
             "walk me through", "help me find", "point to", "kaise kare", "dikhao",
             "where should i tap", "show me where to click", "where to click", "where to tap",
-            "what should i do next", "kahan tap karu", "kaha click karu", "button kahan hai"
+            "what should i do next", "kahan tap karu", "kaha click karu", "button kahan hai",
+            "कहां", "कहाँ", "कैसे करें", "दिखाओ", "सिखाओ", "step by step"
         )
         if (showPatterns.any { q.contains(it) }) {
             return JarvisMode.SHOWS_YOU_HOW
@@ -35,7 +36,8 @@ object JarvisIntelligencePlanner {
         // Mode C: "Do It" (Autonomous execution)
         val doPatterns = listOf(
             "click", "tap on", "open app", "do it for me", "submit", "send message",
-            "turn on", "turn off", "search for", "download", "kardo", "chalao"
+            "turn on", "turn off", "search for", "download", "kardo", "chalao", "kar do",
+            "खोलो", "चलाओ", "भेजो"
         )
         if (doPatterns.any { q.startsWith(it) || q.contains("do it") }) {
             return JarvisMode.DO_IT
@@ -272,8 +274,19 @@ object JarvisIntelligencePlanner {
         if (userQuery.contains("graph", ignoreCase = true) ||
             userQuery.contains("chart", ignoreCase = true) ||
             userQuery.contains("stat", ignoreCase = true) ||
+            userQuery.contains("pie", ignoreCase = true) ||
+            userQuery.contains("donut", ignoreCase = true) ||
+            userQuery.contains("breakdown", ignoreCase = true) ||
+            userQuery.contains("ratio", ignoreCase = true) ||
             screenMap.mediaRegions.isNotEmpty()
         ) {
+            val qLower = userQuery.lowercase(Locale.ROOT)
+            val resolvedChartType = when {
+                qLower.contains("donut") -> GraphChartType.DONUT_CHART
+                qLower.contains("pie") || qLower.contains("breakdown") || qLower.contains("ratio") -> GraphChartType.PIE_CHART
+                qLower.contains("line") || qLower.contains("trend") -> GraphChartType.LINE_CHART
+                else -> GraphChartType.BAR_CHART
+            }
             cards.add(
                 VisualCardData(
                     type = VisualCardType.CANVAS_GRAPH,
@@ -281,13 +294,13 @@ object JarvisIntelligencePlanner {
                     summary = "Live visual representation of screen distribution",
                     graphData = GraphData(
                         title = "UI Element Distribution",
-                        type = GraphChartType.BAR_CHART,
+                        type = resolvedChartType,
                         labels = listOf("Buttons", "Content", "Inputs", "Media"),
                         values = listOf(
-                            screenMap.actionButtons.size.toFloat().coerceAtLeast(1f),
-                            screenMap.contentBlocks.size.toFloat().coerceAtLeast(1f),
-                            screenMap.inputFields.size.toFloat().coerceAtLeast(1f),
-                            screenMap.mediaRegions.size.toFloat().coerceAtLeast(1f)
+                            screenMap.actionButtons.size.toFloat(),
+                            screenMap.contentBlocks.size.toFloat(),
+                            screenMap.inputFields.size.toFloat(),
+                            screenMap.mediaRegions.size.toFloat()
                         ),
                         unit = " items"
                     ),
@@ -297,7 +310,45 @@ object JarvisIntelligencePlanner {
             )
         }
 
-        // 4. 3D Holographic Object Card if requested
+        // 4. Flowchart Card if query asks for workflow, diagram, pipeline, or process
+        if (userQuery.contains("flowchart", ignoreCase = true) ||
+            userQuery.contains("diagram", ignoreCase = true) ||
+            userQuery.contains("workflow", ignoreCase = true) ||
+            userQuery.contains("architecture", ignoreCase = true) ||
+            userQuery.contains("pipeline", ignoreCase = true) ||
+            userQuery.contains("process", ignoreCase = true)
+        ) {
+            val flowNodes = mutableListOf<FlowchartNode>()
+            flowNodes.add(FlowchartNode("screen", "Screen: $appName", "START"))
+            sortedSections.take(3).forEachIndexed { idx, el ->
+                flowNodes.add(
+                    FlowchartNode(
+                        id = "step_${idx + 1}",
+                        label = el.displayLabel.take(26),
+                        role = if (el.isClickable) "ACTION" else "INFO"
+                    )
+                )
+            }
+            if (flowNodes.size == 1) {
+                flowNodes.add(FlowchartNode("inspect", "Visual Inspection", "ACTION"))
+            }
+            val flowEdges = flowNodes.zipWithNext { a, b ->
+                FlowchartEdge(fromId = a.id, toId = b.id, label = "next")
+            }
+            cards.add(
+                VisualCardData(
+                    type = VisualCardType.FLOWCHART,
+                    title = "Screen Flow & Architecture",
+                    summary = "Interactive step topology for $appName",
+                    flowchartNodes = flowNodes,
+                    flowchartEdges = flowEdges,
+                    targetAnchorBounds = anchorBounds,
+                    confidence = computedConfidence
+                )
+            )
+        }
+
+        // 5. 3D Holographic Object Card if requested
         if (userQuery.contains("3d", ignoreCase = true) ||
             userQuery.contains("model", ignoreCase = true) ||
             userQuery.contains("structure", ignoreCase = true)
