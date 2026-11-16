@@ -76,6 +76,16 @@ object JarvisGuidanceEngine {
         lastAppContext = context.applicationContext
     }
 
+    internal fun resetForTesting() {
+        activeAnalysisJob?.cancel()
+        activeAnalysisJob = null
+        lastAppContext = null
+        _guidanceState.value = JarvisGuidanceState()
+        _activeExplanation.value = null
+        externalSpeakCallback = null
+        externalStopSpeakCallback = null
+    }
+
     /**
      * Resolves and highlights an element on the active screen for step-by-step guidance.
      */

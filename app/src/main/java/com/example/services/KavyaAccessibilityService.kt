@@ -574,8 +574,28 @@ class KavyaAccessibilityService : AccessibilityService() {
             if (byDesc != null && clickNodeAndAwait(byDesc)) {
                 return true to "Clicked target via semantic node '$descriptionHint'"
             }
+            // 3. Spatial + semantic Accessibility match around calibrated consensus point before gesture tap
+            if (fallbackPoint != null) {
+                val metrics = resources.displayMetrics
+                val screenW = metrics.widthPixels.coerceAtLeast(1)
+                val screenH = metrics.heightPixels.coerceAtLeast(1)
+                val normCenter = com.example.visual.NormalizedPoint(
+                    fallbackPoint.xPx / screenW.toFloat(),
+                    fallbackPoint.yPx / screenH.toFloat()
+                ).clamped()
+                val spatiallyMatched = findBestNodeForVisionTarget(
+                    targetLabel = descriptionHint.ifBlank { selectorHint },
+                    predictedBox = null,
+                    predictedCenter = normCenter,
+                    screenWidth = screenW,
+                    screenHeight = screenH
+                )
+                if (spatiallyMatched != null && clickNodeAndAwait(spatiallyMatched)) {
+                    return true to "Clicked Accessibility node spatially+semantically matched to vision consensus (${fallbackPoint.xPx.toInt()}, ${fallbackPoint.yPx.toInt()})"
+                }
+            }
         }
-        // 3. Fallback to calibrated screen coordinates
+        // 4. Fallback to calibrated screen coordinates
         if (fallbackPoint != null) {
             val ok = performAuthorizedTap(permit, fallbackPoint.xPx, fallbackPoint.yPx)
             return ok to if (ok) {
@@ -1501,6 +1521,68 @@ class KavyaAccessibilityService : AccessibilityService() {
         }
         traverse(root, 0)
         return result
+    }
+
+    fun extractAnalyzedNodes(maxNodes: Int = 220): List<com.example.agent.AnalyzedNode> {
+        val root = safeGetRootInActiveWindow() ?: return emptyList()
+        val result = mutableListOf<com.example.agent.AnalyzedNode>()
+        fun traverse(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || result.size >= maxNodes || depth > 18) return
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            val txt = node.text?.toString()?.trim().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+            val viewId = node.viewIdResourceName?.trim().orEmpty()
+            val cls = node.className?.toString()?.trim().orEmpty()
+            val clickable = node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+            val editable = node.isEditable
+            val scrollable = node.isScrollable
+            if (rect.width() > 0 && rect.height() > 0 && (txt.isNotEmpty() || desc.isNotEmpty() || viewId.isNotEmpty() || clickable || editable || scrollable)) {
+                result.add(
+                    com.example.agent.AnalyzedNode(
+                        node = node,
+                        text = txt,
+                        contentDescription = desc,
+                        resourceId = viewId,
+                        className = cls,
+                        bounds = rect,
+                        isClickable = clickable,
+                        isEditable = editable,
+                        isScrollable = scrollable
+                    )
+                )
+            }
+            for (i in 0 until node.childCount) {
+                if (result.size >= maxNodes) break
+                traverse(node.getChild(i), depth + 1)
+            }
+        }
+        traverse(root, 0)
+        return result
+    }
+
+    /**
+     * Matches normalized vision consensus coordinates/boxes + target label against live Android Accessibility nodes.
+     */
+    fun findBestNodeForVisionTarget(
+        targetLabel: String,
+        predictedBox: com.example.visual.NormalizedBox?,
+        predictedCenter: com.example.visual.NormalizedPoint?,
+        screenWidth: Int,
+        screenHeight: Int
+    ): AccessibilityNodeInfo? {
+        val analyzed = extractAnalyzedNodes()
+        if (analyzed.isEmpty()) return null
+        val match = com.example.visual.VisionConsensusEngine.matchAccessibilityTarget(
+            nodes = analyzed,
+            targetLabel = targetLabel,
+            predictedBox = predictedBox,
+            predictedCenter = predictedCenter,
+            screenWidth = screenWidth,
+            screenHeight = screenHeight
+        )
+        if (!match.matched || match.matchedBounds == null) return null
+        return analyzed.firstOrNull { it.bounds == match.matchedBounds }?.node
     }
 }
 

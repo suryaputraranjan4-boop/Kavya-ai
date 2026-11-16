@@ -176,27 +176,27 @@ object ScreenSharePreflightEvaluator {
     ): PreflightSnapshot {
         val notifGrantedEffective = if (androidSdkInt < Build.VERSION_CODES.TIRAMISU) true else notificationGranted
         val voiceCheckStatus = when {
-            voiceModelReady -> PreflightCheckStatus.GRANTED
+            voiceModelReady -> PreflightCheckStatus.OPTIONAL_GRANTED
             voiceModelStatus == ModelDownloadStatus.DOWNLOADING ||
                 voiceModelStatus == ModelDownloadStatus.VERIFYING -> PreflightCheckStatus.IN_PROGRESS
-            else -> PreflightCheckStatus.MISSING
+            else -> PreflightCheckStatus.OPTIONAL_MISSING
         }
         val voiceStatusLabel = when {
-            voiceModelReady -> "Verified"
+            voiceModelReady -> "Optional • Installed"
             voiceModelStatus == ModelDownloadStatus.DOWNLOADING ->
                 "Downloading ${(voiceModelProgress * 100).toInt().coerceIn(0, 99)}%"
             voiceModelStatus == ModelDownloadStatus.VERIFYING -> "Verifying..."
             voiceModelStatus == ModelDownloadStatus.PAUSED -> "Paused"
-            voiceModelStatus == ModelDownloadStatus.ERROR -> "Retry needed"
-            else -> "Not downloaded"
+            voiceModelStatus == ModelDownloadStatus.ERROR -> "Retry optional fetch"
+            else -> "Optional (Gemini default)"
         }
         val voiceActionLabel = when {
-            voiceModelReady -> "Verified"
+            voiceModelReady -> "Installed"
             voiceModelStatus == ModelDownloadStatus.DOWNLOADING -> "Pause"
             voiceModelStatus == ModelDownloadStatus.VERIFYING -> "Checking..."
             voiceModelStatus == ModelDownloadStatus.PAUSED -> "Resume Download"
             voiceModelStatus == ModelDownloadStatus.ERROR -> "Re-download"
-            else -> "Download Model"
+            else -> "Optional Download"
         }
 
         val items = listOf(
@@ -233,11 +233,11 @@ object ScreenSharePreflightEvaluator {
             ),
             PreflightCheckItem(
                 id = PreflightCheckId.VOICE_MODEL,
-                title = "Local voice model (Indic Tiny TTS)",
+                title = "Optional offline voice model (Indic Tiny TTS)",
                 purpose = voiceModelProgressText.ifBlank {
-                    "Verified offline Hindi ONNX voice model (~91 MB) for crisp, low-latency spoken screen guidance."
+                    "Optional offline Hindi ONNX voice (~91 MB). Gemini Voice is active by default and does not require any download."
                 },
-                isRequired = true,
+                isRequired = false,
                 status = voiceCheckStatus,
                 statusLabel = voiceStatusLabel,
                 actionLabel = voiceActionLabel
@@ -417,7 +417,7 @@ fun ScreenSharePreflightSummaryCard(
                         val missingNames = snapshot.remainingAllRequiredItems.joinToString(", ") { it.title }
                         Text(
                             text = if (missingNames.isBlank()) {
-                                "Required permissions and verified voice model are ready."
+                                "Required permissions are ready (Gemini Voice active by default)."
                             } else {
                                 "Remaining: $missingNames"
                             },
@@ -775,11 +775,19 @@ fun ScreenSharePreflightView(
                 }
 
                 snapshot.optionalChecks.forEach { item ->
+                    val isVoiceOptional = item.id == PreflightCheckId.VOICE_MODEL
                     PreflightPermissionCard(
                         item = item,
-                        showProgressBar = false,
-                        progress = 0f,
-                        actionEnabled = true,
+                        showProgressBar = isVoiceOptional &&
+                            (modelStatus == ModelDownloadStatus.DOWNLOADING ||
+                                modelStatus == ModelDownloadStatus.VERIFYING ||
+                                modelStatus == ModelDownloadStatus.PAUSED),
+                        progress = if (isVoiceOptional) modelProgress else 0f,
+                        actionEnabled = !(isVoiceOptional && modelStatus == ModelDownloadStatus.VERIFYING),
+                        secondaryActionLabel = if (isVoiceOptional && onOpenVoiceSettings != null) {
+                            "Voice Studio"
+                        } else null,
+                        onSecondaryAction = onOpenVoiceSettings,
                         onAction = { handleItemAction(item) }
                     )
                 }

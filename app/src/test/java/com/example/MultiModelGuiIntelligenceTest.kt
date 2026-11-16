@@ -98,7 +98,9 @@ class MultiModelGuiIntelligenceTest {
             f.parentFile?.mkdirs()
             java.io.RandomAccessFile(f, "rw").use { raf ->
                 raf.write(byteArrayOf(0x08, 0x01, 0x12, 0x00))
-                raf.setLength(spec.expectedSizeBytes)
+                if (spec.expectedSizeBytes > 0L) {
+                    raf.setLength(spec.expectedSizeBytes)
+                }
             }
         }
     }

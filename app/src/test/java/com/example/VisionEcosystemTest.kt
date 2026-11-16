@@ -2,9 +2,13 @@ package com.example
 
 import android.app.Application
 import android.content.Context
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.navigation.compose.NavHost
@@ -251,30 +255,33 @@ class VisionEcosystemTest {
             val drawerState = rememberDrawerState(DrawerValue.Open)
             val scope = rememberCoroutineScope()
 
-            NavHost(navController = navController, startDestination = "home") {
-                composable("home") {
-                    KavyaSideMenu(
-                        navController = navController,
-                        drawerState = drawerState,
-                        scope = scope
-                    )
+            Box(modifier = Modifier.fillMaxSize()) {
+                NavHost(navController = navController, startDestination = "home") {
+                    composable("home") {
+                        KavyaSideMenu(
+                            navController = navController,
+                            drawerState = drawerState,
+                            scope = scope
+                        )
+                    }
+                    composable("jarvis_intelligence") {
+                        navigatedRoute = "jarvis_intelligence"
+                    }
                 }
-                composable("jarvis_intelligence") {
-                    navigatedRoute = "jarvis_intelligence"
-                }
-            }
 
-            JarvisFloatingOrb(
-                state = JarvisOrbState.IDLE,
-                config = JarvisOrbConfig(),
-                isWindowOverlay = true,
-                isExpanded = true,
-                onOpenVisionStudio = { orbVisionTapped = true }
-            )
+                JarvisFloatingOrb(
+                    state = JarvisOrbState.IDLE,
+                    config = JarvisOrbConfig(),
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                    isWindowOverlay = true,
+                    isExpanded = true,
+                    onOpenVisionStudio = { orbVisionTapped = true }
+                )
+            }
         }
 
         // Verify Hamburger Menu has 'Vision' item and navigates cleanly to jarvis_intelligence
-        composeRule.onNodeWithTag("drawer_item_vision").assertExists().performClick()
+        composeRule.onNodeWithTag("drawer_item_vision").performScrollTo().assertExists().performClick()
         composeRule.waitForIdle()
         assertEquals("jarvis_intelligence", navigatedRoute)
 

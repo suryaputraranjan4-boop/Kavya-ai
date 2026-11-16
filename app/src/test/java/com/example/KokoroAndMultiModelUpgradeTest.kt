@@ -42,6 +42,7 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLooper
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
@@ -129,7 +130,12 @@ class KokoroAndMultiModelUpgradeTest {
             latch.countDown()
         }
         voiceMgr.speak("Namaste world")
-        assertTrue("Kokoro error callback should fire", latch.await(5, TimeUnit.SECONDS))
+        val deadline = System.currentTimeMillis() + 5_000L
+        while (latch.count > 0 && System.currentTimeMillis() < deadline) {
+            ShadowLooper.idleMainLooper()
+            Thread.sleep(20)
+        }
+        assertTrue("Kokoro error callback should fire", latch.count == 0L)
         assertNotNull(capturedError)
         assertEquals(VoiceEngine.KOKORO_82M, voiceMgr.getActiveEngine())
         voiceMgr.onSpeechError = null
@@ -273,8 +279,22 @@ class KokoroAndMultiModelUpgradeTest {
         assertEquals(ScreenSharePresentationLevel.ADVANCED, JarvisGuidanceEngine.inferExplanationLevelFromQuery("Vistar aur technical detail mein batao"))
         assertEquals(ScreenSharePresentationLevel.STANDARD, JarvisGuidanceEngine.inferExplanationLevelFromQuery("Explain this screen"))
 
-        val step1 = ScreenAnnotationStep(1, 2, "Step 1", "Tap Input", "Tap the box", Rect(50, 200, 500, 300))
-        val step2 = ScreenAnnotationStep(2, 2, "Step 2", "Tap Submit", "Tap Submit", Rect(50, 500, 500, 600))
+        val step1 = ScreenAnnotationStep(
+            stepNumber = 1,
+            totalSteps = 2,
+            title = "Step 1",
+            label = "Tap Input",
+            spokenExplanation = "Tap the box",
+            bounds = Rect(50, 200, 500, 300)
+        )
+        val step2 = ScreenAnnotationStep(
+            stepNumber = 2,
+            totalSteps = 2,
+            title = "Step 2",
+            label = "Tap Submit",
+            spokenExplanation = "Tap Submit",
+            bounds = Rect(50, 500, 500, 600)
+        )
         ExplanationStepController.startSequence(listOf(step1, step2), autoAdvance = false)
         assertEquals(0, ExplanationStepController.currentStepIndex.value)
 

@@ -69,7 +69,9 @@ object VisionPackageManager {
         return try {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             val cfg = am?.deviceConfigurationInfo
-            val glMajor = (cfg?.reqGlEsVersion ?: 0x20000) ushr 16
+            val rawGl = cfg?.reqGlEsVersion ?: 0
+            if (rawGl == 0) return true
+            val glMajor = rawGl ushr 16
             glMajor >= 2
         } catch (_: Throwable) {
             true

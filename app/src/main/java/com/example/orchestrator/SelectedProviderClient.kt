@@ -152,6 +152,132 @@ object SelectedProviderClient {
         )
     }
 
+    data class ConfiguredVisionProvider(
+        val providerId: String,
+        val modelId: String,
+        val apiKey: String,
+        val customEndpointUrl: String = ""
+    )
+
+    /**
+     * Dynamically discovers ALL configured, enabled, vision-capable cloud providers without hardcoding
+     * any single provider. Orders the user's selected provider first (if vision-capable & enabled),
+     * followed by any other configured, enabled vision-capable cloud providers.
+     */
+    fun discoverConfiguredVisionProviders(context: Context): List<ConfiguredVisionProvider> {
+        val candidates = mutableListOf<ConfiguredVisionProvider>()
+        val (selectedProv, selectedModel) = resolveSelectedProviderAndModel(context)
+
+        fun tryAdd(providerId: String, modelId: String, apiKey: String, customUrl: String = "", enabled: Boolean = true) {
+            if (!enabled) return
+            val cleanKey = apiKey.trim()
+            if (providerId != "CUSTOM" && (cleanKey.isBlank() || AppPreferences.isPlaceholderKey(cleanKey))) return
+            if (providerId == "CUSTOM" && customUrl.isBlank()) return
+            val caps = resolveCapabilities(providerId, modelId)
+            if (!caps.isOnlineProvider || !caps.supportsVision) return
+            val entry = ConfiguredVisionProvider(providerId, modelId, cleanKey, customUrl)
+            if (candidates.none { it.providerId == entry.providerId && it.modelId == entry.modelId && it.customEndpointUrl == entry.customEndpointUrl }) {
+                candidates.add(entry)
+            }
+        }
+
+        // 1. Selected provider priority
+        when (selectedProv) {
+            "GEMINI" -> tryAdd("GEMINI", selectedModel, resolveApiKey(context, "GEMINI"), enabled = true)
+            "OPENROUTER" -> tryAdd("OPENROUTER", selectedModel, AppPreferences.getOpenRouterApiKey(context), enabled = AppPreferences.isOpenRouterEnabled(context))
+            "HUGGINGFACE" -> tryAdd("HUGGINGFACE", selectedModel, AppPreferences.getHuggingFaceApiKey(context), enabled = AppPreferences.isHuggingFaceEnabled(context))
+            "CUSTOM" -> AppPreferences.getCustomApis(context).filter { it.isEnabled }.forEach { custom ->
+                tryAdd("CUSTOM", custom.model, custom.apiKey, custom.endpointUrl, enabled = true)
+            }
+        }
+
+        // 2. Other configured & enabled vision-capable cloud providers
+        tryAdd("GEMINI", AppPreferences.getGeminiModel(context).ifBlank { GeminiModelRegistry.DEFAULT_AGENT_MODEL }, resolveApiKey(context, "GEMINI"), enabled = true)
+        tryAdd("OPENROUTER", AppPreferences.getOpenRouterModel(context).ifBlank { "openrouter/free" }, AppPreferences.getOpenRouterApiKey(context), enabled = AppPreferences.isOpenRouterEnabled(context))
+        tryAdd("HUGGINGFACE", AppPreferences.getHuggingFaceModel(context), AppPreferences.getHuggingFaceApiKey(context), enabled = AppPreferences.isHuggingFaceEnabled(context))
+        AppPreferences.getCustomApis(context).filter { it.isEnabled }.forEach { custom ->
+            tryAdd("CUSTOM", custom.model, custom.apiKey, custom.endpointUrl, enabled = true)
+        }
+
+        return candidates
+    }
+
+    /**
+     * Escalates visual ambiguity / low-confidence screenshots to an already-configured & enabled
+     * cloud vision provider. Never hardcodes a provider, never leaks into network in strict offline mode,
+     * and returns `CLOUD_PROVIDER_UNAVAILABLE` when no vision provider is available.
+     */
+    suspend fun invokeVisionEscalation(
+        context: Context,
+        prompt: String,
+        systemInstruction: String,
+        imageBytes: ByteArray?,
+        preferredProviderId: String? = null
+    ): ProviderInvocationResult = withContext(Dispatchers.IO) {
+        if (AppPreferences.isOfflineFallbackEnabled(context)) {
+            return@withContext ProviderInvocationResult.Failure(
+                code = "CLOUD_PROVIDER_UNAVAILABLE",
+                message = "Strict offline mode is enabled; cloud vision escalation disabled."
+            )
+        }
+        if (!isNetworkConnected(context)) {
+            return@withContext ProviderInvocationResult.Failure(
+                code = "CLOUD_PROVIDER_UNAVAILABLE",
+                message = "Network unavailable; cannot reach cloud vision provider.",
+                isNetworkError = true
+            )
+        }
+        val discovered = discoverConfiguredVisionProviders(context)
+        val ordered = if (!preferredProviderId.isNullOrBlank()) {
+            val match = discovered.filter { it.providerId.equals(preferredProviderId, ignoreCase = true) }
+            val rest = discovered.filterNot { it.providerId.equals(preferredProviderId, ignoreCase = true) }
+            match + rest
+        } else {
+            discovered
+        }
+        if (ordered.isEmpty()) {
+            return@withContext ProviderInvocationResult.Failure(
+                code = "CLOUD_PROVIDER_UNAVAILABLE",
+                message = "No configured and enabled cloud vision provider available for escalation."
+            )
+        }
+
+        var lastFailure: ProviderInvocationResult.Failure? = null
+        for (provider in ordered) {
+            val request = ProviderInvocationRequest(
+                providerId = provider.providerId,
+                modelId = provider.modelId,
+                apiKey = provider.apiKey,
+                customEndpointUrl = provider.customEndpointUrl,
+                prompt = prompt,
+                systemInstruction = systemInstruction,
+                imageBytes = imageBytes
+            )
+            val outcome = testTransport?.invoke(context, request) ?: when (provider.providerId) {
+                "GEMINI" -> invokeGemini(context, request)
+                "OPENROUTER" -> invokeOpenRouter(request)
+                "HUGGINGFACE" -> invokeHuggingFace(request)
+                "CUSTOM" -> invokeCustom(request)
+                else -> ProviderInvocationResult.Failure(
+                    code = "CLOUD_PROVIDER_UNAVAILABLE",
+                    message = "Unsupported cloud vision provider '${provider.providerId}'."
+                )
+            }
+            if (outcome is ProviderInvocationResult.Success) {
+                ApiStateManager.recordSuccess(provider.providerId, provider.modelId, provider.apiKey)
+                return@withContext outcome
+            }
+            val fail = outcome as ProviderInvocationResult.Failure
+            ApiStateManager.recordFailure(provider.providerId, provider.modelId, provider.apiKey, fail.code, fail.message)
+            lastFailure = fail
+        }
+
+        lastFailure ?: ProviderInvocationResult.Failure(
+            code = "CLOUD_PROVIDER_UNAVAILABLE",
+            message = "All configured cloud vision providers failed."
+        )
+    }
+
     suspend fun invokeSelectedProvider(
         context: Context,
         prompt: String,

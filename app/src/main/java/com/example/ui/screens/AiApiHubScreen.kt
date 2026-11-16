@@ -164,6 +164,8 @@ fun AiApiHubScreen(navController: NavController) {
     var isGeminiEditing by remember { mutableStateOf(false) }
     var isGeminiTesting by remember { mutableStateOf(false) }
     var geminiTestResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    var geminiVoiceName by remember { mutableStateOf(AppPreferences.getGeminiVoice(context)) }
+    var activeVoiceEngineId by remember { mutableStateOf(AppPreferences.getSpeechEngine(context)) }
     val effectiveGeminiKey = AppPreferences.getEffectiveApiKey(context)
     val geminiPresetModels = remember {
         com.example.ai.providers.GeminiProvider.VERIFIED_MODELS.map { it.id }
@@ -1161,6 +1163,59 @@ fun AiApiHubScreen(navController: NavController) {
                         }
                     }
                 )
+            }
+
+            item {
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.85f),
+                    borderColor = AccentCyan.copy(alpha = 0.35f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    "Gemini Voice (Default TTS)",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    "Active voice: $geminiVoiceName • No local download needed",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                    color = TextSecondary
+                                )
+                            }
+                            RoleBadge(
+                                label = if (activeVoiceEngineId == "GEMINI_VOICE") "DEFAULT ACTIVE" else activeVoiceEngineId,
+                                color = if (activeVoiceEngineId == "GEMINI_VOICE") SuccessGreenGlow else AccentCyan
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            com.example.ai.tts.VoiceEngine.GEMINI_PREBUILT_VOICES.take(4).forEach { vName ->
+                                FilterChip(
+                                    selected = geminiVoiceName.equals(vName, ignoreCase = true) && activeVoiceEngineId == "GEMINI_VOICE",
+                                    onClick = {
+                                        geminiVoiceName = vName
+                                        activeVoiceEngineId = com.example.ai.tts.VoiceEngine.GEMINI_VOICE.id
+                                        com.example.ai.tts.VoiceEngineManager.getInstance(context).setGeminiVoiceName(vName)
+                                    },
+                                    label = { Text(vName, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // =========================================================================

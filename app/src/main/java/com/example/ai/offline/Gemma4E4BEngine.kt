@@ -264,11 +264,20 @@ class Gemma4E4BEngine private constructor() {
         val isAuthoritativeForTap: Boolean = false
     )
 
+    data class Florence2ParsedDetection(
+        val label: String,
+        val normalizedBox: com.example.visual.NormalizedBox,
+        val confidence: Float
+    )
+
     companion object {
         private const val TAG = "KavyaOfflineEngine"
         const val MIN_RAM_MB_FOR_SMOLVLM2 = 1100L
         const val MIN_RAM_MB_FOR_FLORENCE2 = 650L
         const val THERMAL_STATUS_SEVERE_THRESHOLD = 3 // PowerManager.THERMAL_STATUS_SEVERE
+        private val FLORENCE_LOC_REGEX = Regex(
+            """([^<\n\r]*?)<loc_(\d{1,4})><loc_(\d{1,4})><loc_(\d{1,4})><loc_(\d{1,4})>"""
+        )
 
         @Volatile
         private var INSTANCE: Gemma4E4BEngine? = null
@@ -281,6 +290,40 @@ class Gemma4E4BEngine private constructor() {
                 inst.appContext = context.applicationContext
             }
             return inst
+        }
+
+        /**
+         * Parses Microsoft Florence-2 quantized `<loc_x1><loc_y1><loc_x2><loc_y2>` outputs
+         * (0..999 bin scale) into clamped normalized [0f..1f] boxes.
+         */
+        fun parseFlorence2LocationOutput(
+            decodedText: String,
+            targetHint: String = "",
+            defaultConfidence: Float = 0.78f
+        ): List<Florence2ParsedDetection> {
+            if (decodedText.isBlank()) return emptyList()
+            val results = mutableListOf<Florence2ParsedDetection>()
+            FLORENCE_LOC_REGEX.findAll(decodedText).forEachIndexed { idx, match ->
+                val rawLabel = match.groupValues[1]
+                    .replace(Regex("</?s>|<pad>|<unk>"), "")
+                    .trim()
+                val x1 = (match.groupValues[2].toFloatOrNull() ?: return@forEachIndexed) / 1000f
+                val y1 = (match.groupValues[3].toFloatOrNull() ?: return@forEachIndexed) / 1000f
+                val x2 = (match.groupValues[4].toFloatOrNull() ?: return@forEachIndexed) / 1000f
+                val y2 = (match.groupValues[5].toFloatOrNull() ?: return@forEachIndexed) / 1000f
+                val box = com.example.visual.NormalizedBox(x1, y1, x2, y2).normalized()
+                if (box.area > 0f) {
+                    val label = rawLabel.ifBlank { targetHint.ifBlank { "region_${idx + 1}" } }
+                    results.add(
+                        Florence2ParsedDetection(
+                            label = label,
+                            normalizedBox = box,
+                            confidence = com.example.visual.VisionDetectionCandidate.sanitizeConfidence(defaultConfidence)
+                        )
+                    )
+                }
+            }
+            return results
         }
     }
 
@@ -301,6 +344,7 @@ class Gemma4E4BEngine private constructor() {
     private var florence2Ready: Boolean = false
     private var florenceOrtEnv: OrtEnvironment? = null
     private val florenceSessions = mutableMapOf<String, OrtSession>()
+    private var florenceBaseDir: File? = null
 
     private var _diagnostics = GemmaDiagnostics()
     val diagnostics: GemmaDiagnostics get() = _diagnostics
@@ -527,6 +571,7 @@ class Gemma4E4BEngine private constructor() {
                 }
             }
 
+            florenceBaseDir = baseDir
             florence2Ready = true
             _activeLoadedRole = ActiveLoadedRole.FLORENCE2_AUX_VISION
             Result.success("READY")
@@ -585,7 +630,18 @@ class Gemma4E4BEngine private constructor() {
                         val outTensor = result.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor
                         val outShape = outTensor?.info?.shape
                         val outBuf = outTensor?.floatBuffer
-                        if (outBuf != null && outShape != null && outShape.size >= 2) {
+
+                        // Prefer full encoder-decoder grounding when tokenizer + encoder + decoder + embed_tokens exist
+                        val decodedFromGraph = tryRunFlorenceEncoderDecoder(
+                            env = env,
+                            imageFeatures = outTensor,
+                            taskPrompt = taskPrompt,
+                            screenWidth = screenshot.width.coerceAtLeast(1),
+                            screenHeight = screenshot.height.coerceAtLeast(1)
+                        )
+                        if (decodedFromGraph.isNotEmpty()) {
+                            signals.addAll(decodedFromGraph)
+                        } else if (outBuf != null && outShape != null && outShape.size >= 2) {
                             val totalFloats = outBuf.remaining()
                             val feats = FloatArray(totalFloats).also { outBuf.get(it) }
                             // Project spatial visual tokens (e.g. [1, N, D]) onto normalized grid cells
@@ -614,7 +670,7 @@ class Gemma4E4BEngine private constructor() {
                                     .sortedByDescending { cellEnergies[it] }
                                     .take(4)
                                 topCells.forEachIndexed { idx, cellIdx ->
-                                    val score = (cellEnergies[cellIdx] / maxEnergy).coerceIn(0.45f, 0.85f)
+                                    val score = (cellEnergies[cellIdx] / maxEnergy).coerceIn(0.35f, 0.72f)
                                     val row = cellIdx / gridSide
                                     val col = cellIdx % gridSide
                                     val bounds = com.example.visual.PrecisionCoordinateMapper.mapNormalizedBoxToDevice(
@@ -643,9 +699,177 @@ class Gemma4E4BEngine private constructor() {
                     }
                 }
                 Result.success(signals)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
                 Result.failure(IllegalStateException("Florence-2 vision pass failed: ${t.message}", t))
             }
+        }
+    }
+
+    private fun tryRunFlorenceEncoderDecoder(
+        env: OrtEnvironment,
+        imageFeatures: ai.onnxruntime.OnnxTensor?,
+        taskPrompt: String,
+        screenWidth: Int,
+        screenHeight: Int
+    ): List<com.example.visual.VisionElementSignal> {
+        val textEncoder = florenceSessions["text_encoder"] ?: return emptyList()
+        val decoder = florenceSessions["decoder_merged"] ?: return emptyList()
+        val embedTokens = florenceSessions["embed_tokens"] ?: return emptyList()
+        val baseDir = florenceBaseDir ?: return emptyList()
+        if (imageFeatures == null) return emptyList()
+
+        val tokenizerSpec = GemmaModelManager.FLORENCE2_MANIFEST.artifacts.firstOrNull { it.role == "tokenizer" } ?: return emptyList()
+        val tokenizerFile = File(baseDir, tokenizerSpec.relativePath)
+        if (!tokenizerFile.exists()) return emptyList()
+
+        return try {
+            val tokJson = org.json.JSONObject(tokenizerFile.readText())
+            val vocabObj = tokJson.optJSONObject("model")?.optJSONObject("vocab") ?: return emptyList()
+            val addedTokensArr = tokJson.optJSONArray("added_tokens")
+            val tokenToId = HashMap<String, Long>(4096)
+            val idToToken = HashMap<Long, String>(4096)
+            val vocabKeys = vocabObj.keys()
+            while (vocabKeys.hasNext()) {
+                val k = vocabKeys.next()
+                val v = vocabObj.optLong(k, -1L)
+                if (v >= 0L) {
+                    tokenToId[k] = v
+                    idToToken[v] = k
+                }
+            }
+            if (addedTokensArr != null) {
+                for (i in 0 until addedTokensArr.length()) {
+                    val item = addedTokensArr.optJSONObject(i) ?: continue
+                    val content = item.optString("content", "")
+                    val id = item.optLong("id", -1L)
+                    if (content.isNotEmpty() && id >= 0L) {
+                        tokenToId[content] = id
+                        idToToken[id] = content
+                    }
+                }
+            }
+
+            val bosId = tokenToId["<s>"] ?: 0L
+            val eosId = tokenToId["</s>"] ?: 2L
+            val promptIds = mutableListOf<Long>().apply {
+                add(bosId)
+                taskPrompt.split(Regex("\\s+")).filter { it.isNotBlank() }.forEach { word ->
+                    val exact = tokenToId[word] ?: tokenToId["\u0120$word"] ?: tokenToId[word.lowercase()]
+                    if (exact != null) add(exact)
+                }
+                add(eosId)
+            }
+
+            // Encode text tokens with embed_tokens -> concat with image_features -> text_encoder
+            val idsTensor = ai.onnxruntime.OnnxTensor.createTensor(
+                env,
+                java.nio.LongBuffer.wrap(promptIds.toLongArray()),
+                longArrayOf(1L, promptIds.size.toLong())
+            )
+            val textEmbedsResult = idsTensor.use { t ->
+                val inName = embedTokens.inputInfo.keys.firstOrNull() ?: return emptyList()
+                embedTokens.run(mapOf(inName to t))
+            }
+            val decodedBuilder = StringBuilder()
+            textEmbedsResult.use { embOut ->
+                val textEmbTensor = embOut.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor ?: return emptyList()
+                val encInputs = mutableMapOf<String, ai.onnxruntime.OnnxTensor>()
+                for (name in textEncoder.inputInfo.keys) {
+                    when {
+                        name.contains("image", ignoreCase = true) -> encInputs[name] = imageFeatures
+                        name.contains("embed", ignoreCase = true) -> encInputs[name] = textEmbTensor
+                    }
+                }
+                if (encInputs.isEmpty()) return emptyList()
+                textEncoder.run(encInputs).use { encOut ->
+                    val encHidden = encOut.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor ?: return emptyList()
+                    var currentId = bosId
+                    val maxSteps = 48
+                    for (step in 0 until maxSteps) {
+                        val stepTensor = ai.onnxruntime.OnnxTensor.createTensor(
+                            env,
+                            java.nio.LongBuffer.wrap(longArrayOf(currentId)),
+                            longArrayOf(1L, 1L)
+                        )
+                        val stepEmbedRes = stepTensor.use { st ->
+                            val embIn = embedTokens.inputInfo.keys.firstOrNull() ?: return emptyList()
+                            embedTokens.run(mapOf(embIn to st))
+                        }
+                        var nextId = eosId
+                        stepEmbedRes.use { se ->
+                            val stepEmbTensor = se.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor ?: return emptyList()
+                            val decInputs = mutableMapOf<String, ai.onnxruntime.OnnxTensor>()
+                            for ((k, info) in decoder.inputInfo) {
+                                when {
+                                    k.contains("encoder_hidden", ignoreCase = true) -> decInputs[k] = encHidden
+                                    k.contains("inputs_embeds", ignoreCase = true) -> decInputs[k] = stepEmbTensor
+                                    k.contains("use_cache", ignoreCase = true) -> {
+                                        decInputs[k] = ai.onnxruntime.OnnxTensor.createTensor(env, booleanArrayOf(false))
+                                    }
+                                    info.info is ai.onnxruntime.TensorInfo && k.contains("encoder_attention_mask", ignoreCase = true) -> {
+                                        val hiddenShape = (encHidden.info as? ai.onnxruntime.TensorInfo)?.shape
+                                        val seqLen = hiddenShape?.getOrNull(1)?.toInt()?.coerceAtLeast(1) ?: 1
+                                        val ones = LongArray(seqLen) { 1L }
+                                        decInputs[k] = ai.onnxruntime.OnnxTensor.createTensor(
+                                            env,
+                                            java.nio.LongBuffer.wrap(ones),
+                                            longArrayOf(1L, seqLen.toLong())
+                                        )
+                                    }
+                                }
+                            }
+                            if (!decInputs.containsKey("inputs_embeds") || decInputs.size < 2) {
+                                return emptyList()
+                            }
+                            decoder.run(decInputs).use { decOut ->
+                                val logitsTensor = decOut.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor
+                                val logitShape = logitsTensor?.info?.shape
+                                val buf = logitsTensor?.floatBuffer
+                                if (buf != null && logitShape != null && logitShape.size >= 3) {
+                                    val vocabSize = logitShape.last().toInt().coerceAtLeast(1)
+                                    val total = buf.remaining()
+                                    if (total >= vocabSize) {
+                                        val offset = total - vocabSize
+                                        val arrLogits = FloatArray(total).also { buf.get(it) }
+                                        var bestIdx = 0
+                                        var bestVal = Float.NEGATIVE_INFINITY
+                                        for (v in 0 until vocabSize) {
+                                            val lv = arrLogits[offset + v]
+                                            if (lv > bestVal) {
+                                                bestVal = lv
+                                                bestIdx = v
+                                            }
+                                        }
+                                        nextId = bestIdx.toLong()
+                                    }
+                                }
+                            }
+                        }
+                        if (nextId == eosId) break
+                        val tokText = idToToken[nextId].orEmpty().replace("\u0120", " ")
+                        decodedBuilder.append(tokText)
+                        currentId = nextId
+                    }
+                }
+            }
+
+            val parsed = parseFlorence2LocationOutput(decodedBuilder.toString(), targetHint = taskPrompt, defaultConfidence = 0.78f)
+            parsed.map { det ->
+                com.example.visual.VisionElementSignal(
+                    label = det.label,
+                    roleHint = "florence2_grounded",
+                    bounds = det.normalizedBox.toDeviceRect(screenWidth, screenHeight),
+                    confidence = det.confidence,
+                    sourceSignal = com.example.visual.SignalSource.AUX_VISION_MODEL,
+                    sourceModelId = GemmaModelManager.FLORENCE2_MANIFEST.modelId,
+                    sourceModelRevision = GemmaModelManager.FLORENCE2_MANIFEST.pinnedRevision,
+                    isConfidenceCalibrated = true
+                )
+            }
+        } catch (_: Throwable) {
+            emptyList()
         }
     }
 
@@ -750,6 +974,7 @@ class Gemma4E4BEngine private constructor() {
             } catch (_: Throwable) {}
         }
         florenceSessions.clear()
+        florenceBaseDir = null
         florence2Ready = false
         if (_activeLoadedRole == ActiveLoadedRole.FLORENCE2_AUX_VISION) {
             _activeLoadedRole = ActiveLoadedRole.NONE

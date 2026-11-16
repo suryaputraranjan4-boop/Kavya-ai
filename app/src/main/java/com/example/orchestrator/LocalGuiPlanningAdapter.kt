@@ -58,50 +58,48 @@ object LocalGuiPlanningAdapter {
             val a11yElements = KavyaAccessibilityService.instance?.extractInteractiveElements() ?: emptyList()
             val ocrSignals = OnDeviceOcrExtractor.extractSignals(decodedBitmap, a11yElements)
 
-            val auxCandidates = if (florenceHealthy && engine.isFlorence2Ready()) {
-                engine.runFlorence2AuxiliaryPass(decodedBitmap, "<OD>").getOrDefault(emptyList())
-            } else {
-                emptyList()
-            }
-
-            // Ensure SmolVLM2 is active after any auxiliary pass
-            if (!engine.isSmolVlm2Ready()) {
-                engine.loadSmolVlm2GuiEngine(enforceExactSizeAndSha256 = false)
-            }
-
-            val taskMode = if (isVerification) {
-                SmolVlmTaskMode.POST_ACTION_VERIFICATION
-            } else {
-                SmolVlmTaskMode.TARGET_GROUNDING
-            }
-
-            val smolResult = engine.runSmolVlm2GuiGrounding(
-                screenshot = decodedBitmap,
-                userGoal = userCommand,
-                taskMode = taskMode,
-                uiContextHint = request.prompt.take(900)
-            )
-
-            val vlmCandidates = smolResult.getOrElse { err ->
-                val code = err.message?.substringBefore(":")?.trim()?.ifBlank { "LOCAL_VLM_ERROR" } ?: "LOCAL_VLM_ERROR"
-                return ProviderInvocationResult.Failure(
-                    code = code,
-                    message = err.message ?: "Local SmolVLM2 GUI grounding failed."
-                )
-            }
-
             val obs = ScreenObservationCoordinator.latestObservation
             val screenW = obs?.displayWidthPx ?: decodedBitmap.width.coerceAtLeast(1080)
             val screenH = obs?.displayHeightPx ?: decodedBitmap.height.coerceAtLeast(2400)
             val orientation = obs?.orientation ?: 1
+            val effectiveObservation = if (obs != null && (screenshotId.isBlank() || obs.screenshotId == screenshotId)) {
+                obs
+            } else {
+                ScreenObservationRecord(
+                    screenshotId = screenshotId.ifBlank { "scr_local_${System.currentTimeMillis()}" },
+                    capturedAtMs = System.currentTimeMillis(),
+                    displayWidthPx = screenW,
+                    displayHeightPx = screenH,
+                    bitmapWidth = decodedBitmap.width.coerceAtLeast(1),
+                    bitmapHeight = decodedBitmap.height.coerceAtLeast(1),
+                    orientation = orientation,
+                    densityDpi = 420,
+                    foregroundPackage = KavyaAccessibilityService.currentForegroundPackage,
+                    imageBytes = request.imageBytes,
+                    source = "LOCAL_GUI_ADAPTER"
+                )
+            }
 
             if (isVerification) {
+                val smolResult = engine.runSmolVlm2GuiGrounding(
+                    screenshot = decodedBitmap,
+                    userGoal = userCommand,
+                    taskMode = SmolVlmTaskMode.POST_ACTION_VERIFICATION,
+                    uiContextHint = request.prompt.take(900)
+                )
+                val vlmCandidates = smolResult.getOrElse { err ->
+                    val code = err.message?.substringBefore(":")?.trim()?.ifBlank { "LOCAL_VLM_ERROR" } ?: "LOCAL_VLM_ERROR"
+                    return ProviderInvocationResult.Failure(
+                        code = code,
+                        message = err.message ?: "Local SmolVLM2 verification failed."
+                    )
+                }
                 val verJson = JSONObject().apply {
                     put("protocol_version", "1.0")
                     put("task_id", taskId)
                     put("session_id", sessionId)
                     put("screenshot_reference", screenshotId)
-                    put("verified", true)
+                    put("verified", vlmCandidates.isNotEmpty())
                     put("observed_screen_summary", "Verified post-action screen state locally with SmolVLM2 + MultiSignalFusion.")
                     put("mismatch_reason", "")
                     put("is_task_completed", true)
@@ -116,25 +114,76 @@ object LocalGuiPlanningAdapter {
                 )
             }
 
+            // Stage 1 + Consensus Engine (SmolVLM2 + Florence-2 + optional Cloud escalation + Accessibility match)
+            val consensusOutcome = com.example.visual.VisionConsensusCoordinator(context)
+                .resolveTargetWithConsensus(
+                    observation = effectiveObservation,
+                    targetQuery = userCommand,
+                    screenshotBitmap = decodedBitmap
+                )
+
+            if (consensusOutcome.isStale) {
+                return ProviderInvocationResult.Failure(
+                    code = "OBSERVATION_STALE",
+                    message = consensusOutcome.detail
+                )
+            }
+
+            val consensusCandidate = MultiSignalFusionEngine.buildCandidateFromConsensus(
+                outcome = consensusOutcome,
+                screenWidth = screenW,
+                screenHeight = screenH
+            )
+
+            val auxSignals = if (florenceHealthy && consensusOutcome.florence2Result?.hasValidCoordinates == true) {
+                listOfNotNull(
+                    consensusOutcome.florence2Result.normalizedBox?.let { box ->
+                        com.example.visual.VisionElementSignal(
+                            label = consensusOutcome.florence2Result.targetLabel.ifBlank { userCommand },
+                            roleHint = consensusOutcome.florence2Result.targetRole,
+                            bounds = box.toDeviceRect(screenW, screenH),
+                            confidence = consensusOutcome.florence2Result.calibratedConfidence,
+                            sourceSignal = com.example.visual.SignalSource.AUX_VISION_MODEL,
+                            sourceModelId = GemmaModelManager.FLORENCE2_MANIFEST.modelId,
+                            sourceModelRevision = GemmaModelManager.FLORENCE2_MANIFEST.pinnedRevision
+                        )
+                    }
+                )
+            } else emptyList()
+
+            val vlmSignals = if (consensusOutcome.smolVlm2Result?.hasValidCoordinates == true) {
+                listOfNotNull(
+                    consensusOutcome.smolVlm2Result.normalizedBox?.let { box ->
+                        com.example.visual.VisionElementSignal(
+                            label = consensusOutcome.smolVlm2Result.targetLabel.ifBlank { userCommand },
+                            roleHint = consensusOutcome.smolVlm2Result.targetRole,
+                            bounds = box.toDeviceRect(screenW, screenH),
+                            confidence = consensusOutcome.smolVlm2Result.calibratedConfidence,
+                            sourceSignal = com.example.visual.SignalSource.LOCAL_GUI_VLM,
+                            sourceModelId = GemmaModelManager.SMOLVLM2_MANIFEST.modelId,
+                            sourceModelRevision = GemmaModelManager.SMOLVLM2_MANIFEST.pinnedRevision
+                        )
+                    }
+                )
+            } else emptyList()
+
             val fusedElements = MultiSignalFusionEngine.fuseSignals(
                 accessibilityElements = a11yElements,
                 ocrSignals = ocrSignals,
                 visionAction = null,
                 screenWidth = screenW,
                 screenHeight = screenH,
-                localGuiVlmCandidates = vlmCandidates,
-                auxVisionCandidates = auxCandidates,
+                localGuiVlmCandidates = vlmSignals,
+                auxVisionCandidates = auxSignals,
                 screenshotWidth = decodedBitmap.width,
                 screenshotHeight = decodedBitmap.height,
                 frameId = screenshotId.ifBlank { "frame_local" },
-                observationTimestampMs = obs?.capturedAtMs ?: System.currentTimeMillis(),
-                isObservationFresh = true
+                observationTimestampMs = effectiveObservation.capturedAtMs,
+                isObservationFresh = !consensusOutcome.isStale
             )
 
-            val bestTarget = MultiSignalFusionEngine.resolveBestTarget(
-                elements = fusedElements,
-                targetQuery = userCommand
-            ) ?: fusedElements.firstOrNull { it.isClickable && it.confidence >= 0.60f }
+            val bestTarget = consensusCandidate
+                ?: MultiSignalFusionEngine.resolveBestTarget(fusedElements, userCommand)
 
             if (bestTarget == null) {
                 val lowerCmd = userCommand.lowercase(Locale.ROOT)
@@ -156,16 +205,21 @@ object LocalGuiPlanningAdapter {
                         modelId = request.modelId.ifBlank { GemmaModelManager.SMOLVLM2_MAIN_GGUF_FILENAME }
                     )
                 }
+                val failCode = if (consensusOutcome.requiresFreshObservation) {
+                    "REQUIRE_FRESH_OBSERVATION"
+                } else {
+                    StructuredRoutingStatus.TARGET_NOT_FOUND.name
+                }
                 return ProviderInvocationResult.Failure(
-                    code = StructuredRoutingStatus.TARGET_NOT_FOUND.name,
-                    message = "TARGET_NOT_FOUND: Local multi-signal grounding found no authoritative target for '$userCommand'."
+                    code = failCode,
+                    message = "TARGET_NOT_FOUND: ${consensusOutcome.detail}"
                 )
             }
 
-            if (bestTarget.confidence < 0.60f) {
+            if (!bestTarget.isConsensusVerified && bestTarget.confidence < 0.55f) {
                 return ProviderInvocationResult.Failure(
                     code = StructuredRoutingStatus.LOW_CONFIDENCE.name,
-                    message = "LOW_CONFIDENCE: Best local target '${bestTarget.primaryLabel}' confidence (${bestTarget.confidence}) is below 0.60."
+                    message = "LOW_CONFIDENCE: Best local target '${bestTarget.primaryLabel}' confidence (${bestTarget.confidence}) is uncorroborated and below threshold."
                 )
             }
 
@@ -177,7 +231,7 @@ object LocalGuiPlanningAdapter {
                 screenWidth = screenW,
                 screenHeight = screenH,
                 orientation = orientation,
-                targetLabel = bestTarget.primaryLabel,
+                targetLabel = bestTarget.primaryLabel.ifBlank { userCommand },
                 normX = bestTarget.normalizedCenterX.toDouble(),
                 normY = bestTarget.normalizedCenterY.toDouble(),
                 confidence = bestTarget.confidence.toDouble()
@@ -185,7 +239,8 @@ object LocalGuiPlanningAdapter {
             return ProviderInvocationResult.Success(
                 text = planJson,
                 providerId = request.providerId,
-                modelId = request.modelId.ifBlank { GemmaModelManager.SMOLVLM2_MAIN_GGUF_FILENAME }
+                modelId = consensusOutcome.winningCandidate?.providerId
+                    ?: request.modelId.ifBlank { GemmaModelManager.SMOLVLM2_MAIN_GGUF_FILENAME }
             )
         } finally {
             if (!decodedBitmap.isRecycled) {

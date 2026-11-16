@@ -390,6 +390,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
     val ttsClient = remember { com.example.ai.ChatterboxTtsClient(context) }
 
     val activeEngineState = remember { mutableStateOf(voiceEngineManager.getActiveEngine()) }
+    var geminiVoiceName by remember { mutableStateOf(com.example.utils.AppPreferences.getGeminiVoice(context)) }
 
     val indicStatus by indicModelManager.status.collectAsState()
     val indicProgress by indicModelManager.downloadProgress.collectAsState()
@@ -491,7 +492,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
             contentPadding = PaddingValues(top = 12.dp, bottom = 40.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Header: Indic Tiny TTS Hindi Primary Engine
+            // Header: Gemini Voice Default Engine + Optional Offline Voices
             item {
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -504,13 +505,13 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                         Spacer(modifier = Modifier.width(14.dp))
                         Column {
                             Text(
-                                "Indic Tiny TTS Hindi Engine",
+                                "Kavya AI Voice Studio",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                "Primary offline 24 kHz Hindi female voice engine. Fast ONNX CPU inference with lightweight model weights.",
+                                "Gemini Voice is active by default (no downloads required). Optional offline engines Kokoro-82M and Indic Tiny TTS can also be downloaded anytime.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
@@ -558,14 +559,22 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium),
                                             color = if (isSelected) PrimaryLight else TextPrimary
                                         )
-                                        if (engine == com.example.ai.tts.VoiceEngine.INDIC_TINY_TTS) {
+                                        if (engine == com.example.ai.tts.VoiceEngine.GEMINI_VOICE) {
                                             Spacer(modifier = Modifier.width(6.dp))
                                             StatusBadge(text = "DEFAULT • PRIMARY", isActive = true)
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
-                                        if (engine.isOffline) "Offline ONNX Model • 24 kHz Female Voice • Low Latency" else "Cloud/Server Voice Conditioning • Multilingual Hindi",
+                                        when (engine) {
+                                            com.example.ai.tts.VoiceEngine.GEMINI_VOICE ->
+                                                "Natural Gemini Audio ($geminiVoiceName) with built-in System TTS fallback • Ready instantly"
+                                            com.example.ai.tts.VoiceEngine.KOKORO_82M,
+                                            com.example.ai.tts.VoiceEngine.INDIC_TINY_TTS ->
+                                                "Optional Offline ONNX Model • 24 kHz Female Voice"
+                                            com.example.ai.tts.VoiceEngine.CHATTERBOX ->
+                                                "Cloud/Server Voice Conditioning • Multilingual Hindi"
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = TextSecondary
                                     )
@@ -573,7 +582,46 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(6.dp))
+                        // Gemini Prebuilt Voice Selector
+                        Text(
+                            "Gemini Voice Preset",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            com.example.ai.tts.VoiceEngine.GEMINI_PREBUILT_VOICES.take(4).forEach { voiceId ->
+                                FilterChip(
+                                    selected = geminiVoiceName.equals(voiceId, ignoreCase = true),
+                                    onClick = {
+                                        geminiVoiceName = voiceId
+                                        voiceEngineManager.setGeminiVoiceName(voiceId)
+                                        activeEngineState.value = com.example.ai.tts.VoiceEngine.GEMINI_VOICE
+                                    },
+                                    label = { Text(voiceId, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            com.example.ai.tts.VoiceEngine.GEMINI_PREBUILT_VOICES.drop(4).forEach { voiceId ->
+                                FilterChip(
+                                    selected = geminiVoiceName.equals(voiceId, ignoreCase = true),
+                                    onClick = {
+                                        geminiVoiceName = voiceId
+                                        voiceEngineManager.setGeminiVoiceName(voiceId)
+                                        activeEngineState.value = com.example.ai.tts.VoiceEngine.GEMINI_VOICE
+                                    },
+                                    label = { Text(voiceId, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
 
                         if (!lastVoiceError.isNullOrBlank()) {
                             Text(
@@ -853,9 +901,9 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                 }
             }
 
-            // SECTION 2: INDIC TINY TTS HINDI MODEL MANAGEMENT (HUGGING FACE)
+            // SECTION 2: INDIC TINY TTS HINDI MODEL MANAGEMENT (OPTIONAL • HUGGING FACE)
             item {
-                Text("Indic Tiny TTS Hindi Model (Hugging Face)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
+                Text("Indic Tiny TTS Hindi Model (Optional Offline)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = TextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -1278,7 +1326,7 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                     ) {
                         Icon(Icons.Default.VolumeUp, contentDescription = null, tint = Color.White)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("🔊 Test Indic Tiny TTS Hindi Speech")
+                        Text("🔊 Test Active Voice (Hindi Speech)")
                     }
 
                     Button(

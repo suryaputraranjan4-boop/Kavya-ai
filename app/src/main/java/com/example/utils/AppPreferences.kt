@@ -949,7 +949,7 @@ object AppPreferences {
     }
 
     fun getSpeechEngine(context: Context): String {
-        return getPrefs(context).getString(KEY_SPEECH_ENGINE, "INDIC_TINY_TTS") ?: "INDIC_TINY_TTS"
+        return getPrefs(context).getString(KEY_SPEECH_ENGINE, "GEMINI_VOICE") ?: "GEMINI_VOICE"
     }
 
     fun setSpeechEngine(context: Context, engine: String) {

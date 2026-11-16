@@ -58,9 +58,9 @@ class JarvisPreflightAndStabilityTest {
             androidSdkInt = Build.VERSION_CODES.TIRAMISU
         )
 
-        assertEquals(5, allMissing.allRequiredChecks.size)
-        assertEquals(4, allMissing.setupPrerequisiteChecks.size)
-        assertEquals(3, allMissing.optionalChecks.size)
+        assertEquals(4, allMissing.allRequiredChecks.size)
+        assertEquals(3, allMissing.setupPrerequisiteChecks.size)
+        assertEquals(4, allMissing.optionalChecks.size)
         assertEquals(0, allMissing.readySetupCount)
         assertEquals(0, allMissing.readyRequiredCount)
         assertFalse(allMissing.canStartMediaProjection)
@@ -69,8 +69,7 @@ class JarvisPreflightAndStabilityTest {
             setOf(
                 PreflightCheckId.OVERLAY,
                 PreflightCheckId.MICROPHONE,
-                PreflightCheckId.NOTIFICATION,
-                PreflightCheckId.VOICE_MODEL
+                PreflightCheckId.NOTIFICATION
             ),
             allMissing.remainingSetupItems.map { it.id }.toSet()
         )
@@ -79,13 +78,13 @@ class JarvisPreflightAndStabilityTest {
     }
 
     @Test
-    fun preflight_handlesAndroidVersionNotificationRule_andAllowsStartWhenOptionalMissing() {
-        // Below Android 13, notification permission is auto-granted even if raw flag is false
+    fun preflight_handlesAndroidVersionNotificationRule_andAllowsStartWithoutIndicTinyTts() {
+        // Below Android 13, notification permission is auto-granted; Indic Tiny TTS is optional and must NOT block start
         val belowAndroid13 = ScreenSharePreflightEvaluator.evaluate(
             overlayGranted = true,
             micGranted = true,
             notificationGranted = false,
-            voiceModelReady = true,
+            voiceModelReady = false,
             mediaProjectionGranted = false,
             accessibilityGranted = false,
             usageAccessGranted = false,
@@ -93,9 +92,9 @@ class JarvisPreflightAndStabilityTest {
             androidSdkInt = Build.VERSION_CODES.S
         )
 
-        assertTrue("Optional checks must NOT block MediaProjection", belowAndroid13.canStartMediaProjection)
-        assertEquals(4, belowAndroid13.readySetupCount)
-        assertEquals(4, belowAndroid13.readyRequiredCount)
+        assertTrue("Optional checks (including Indic Tiny TTS) must NOT block MediaProjection", belowAndroid13.canStartMediaProjection)
+        assertEquals(3, belowAndroid13.readySetupCount)
+        assertEquals(3, belowAndroid13.readyRequiredCount)
         assertFalse(belowAndroid13.allReadyIncludingProjection)
 
         // On Android 13+, missing notification blocks MediaProjection until granted
@@ -103,7 +102,7 @@ class JarvisPreflightAndStabilityTest {
             overlayGranted = true,
             micGranted = true,
             notificationGranted = false,
-            voiceModelReady = true,
+            voiceModelReady = false,
             mediaProjectionGranted = false,
             accessibilityGranted = true,
             usageAccessGranted = true,
@@ -114,12 +113,12 @@ class JarvisPreflightAndStabilityTest {
         assertFalse(android13MissingNotif.canStartMediaProjection)
         assertEquals(listOf(PreflightCheckId.NOTIFICATION), android13MissingNotif.remainingSetupItems.map { it.id })
 
-        // Once notification + projection are granted, all 5 required checks are satisfied
+        // Once notification + projection are granted, all 4 required checks are satisfied even without Indic Tiny TTS
         val fullyReady = ScreenSharePreflightEvaluator.evaluate(
             overlayGranted = true,
             micGranted = true,
             notificationGranted = true,
-            voiceModelReady = true,
+            voiceModelReady = false,
             mediaProjectionGranted = true,
             accessibilityGranted = false,
             usageAccessGranted = false,
@@ -129,11 +128,11 @@ class JarvisPreflightAndStabilityTest {
 
         assertTrue(fullyReady.canStartMediaProjection)
         assertTrue(fullyReady.allReadyIncludingProjection)
-        assertEquals(5, fullyReady.readyRequiredCount)
+        assertEquals(4, fullyReady.readyRequiredCount)
     }
 
     @Test
-    fun preflight_treatsDownloadingVoiceModelAsInProgressAndBlocksUntilVerified() {
+    fun preflight_tracksOptionalVoiceDownloadWithoutBlockingMediaProjection() {
         val downloading = ScreenSharePreflightEvaluator.evaluate(
             overlayGranted = true,
             micGranted = true,
@@ -149,9 +148,10 @@ class JarvisPreflightAndStabilityTest {
         )
 
         val voiceItem = downloading.items.first { it.id == PreflightCheckId.VOICE_MODEL }
+        assertFalse(voiceItem.isRequired)
         assertEquals(PreflightCheckStatus.IN_PROGRESS, voiceItem.status)
         assertTrue(voiceItem.statusLabel.contains("62%"))
-        assertFalse(downloading.canStartMediaProjection)
+        assertTrue(downloading.canStartMediaProjection)
     }
 
     @Test

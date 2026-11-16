@@ -6,6 +6,7 @@ import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
 import com.example.data.MessageEntity
+import com.example.utils.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -791,30 +792,87 @@ class KavyaAI(private val context: android.content.Context? = null) {
     }
 
     suspend fun generateSpeechAudio(
-        text: String, 
+        text: String,
         voiceName: String = "Kore",
         emotionLabel: String = "Sweet Anime Voice",
         pitchMultiplier: Float = 1.0f,
         speedMultiplier: Float = 1.0f
     ): ByteArray? = withContext(Dispatchers.IO) {
-        // Gemini TTS/audio generation has been removed from the speech generation pipeline.
-        // All speech generation is routed through Chatterbox Hindi via ChatterboxTtsClient.
         if (text.isBlank() || context == null) return@withContext null
-        val client = ChatterboxTtsClient(context)
-        val activeProfile = VoiceProfileManager.getInstance(context).getActiveProfile()
-        when (val result = client.synthesize(
-            text = text,
-            referenceAudioPath = activeProfile.audioFilePath,
-            pitchMultiplier = pitchMultiplier,
-            speedMultiplier = speedMultiplier,
-            emotion = emotionLabel
-        )) {
-            is ChatterboxResult.Success -> result.audioBytes
-            is ChatterboxResult.Error -> {
-                Log.w(TAG, "Chatterbox speech generation failed: ${result.message}")
-                null
+
+        val activeEngine = AppPreferences.getSpeechEngine(context)
+        if (activeEngine.equals("CHATTERBOX_HINDI", ignoreCase = true)) {
+            val client = ChatterboxTtsClient(context)
+            val activeProfile = VoiceProfileManager.getInstance(context).getActiveProfile()
+            return@withContext when (val result = client.synthesize(
+                text = text,
+                referenceAudioPath = activeProfile.audioFilePath,
+                pitchMultiplier = pitchMultiplier,
+                speedMultiplier = speedMultiplier,
+                emotion = emotionLabel
+            )) {
+                is ChatterboxResult.Success -> result.audioBytes
+                is ChatterboxResult.Error -> {
+                    Log.w(TAG, "Chatterbox speech generation failed: ${result.message}")
+                    null
+                }
             }
         }
+
+        val apiKey = AppPreferences.getEffectiveApiKey(context).trim()
+        if (apiKey.isBlank() || AppPreferences.isPlaceholderKey(apiKey) || AppPreferences.isOfflineFallbackEnabled(context)) {
+            return@withContext null
+        }
+
+        val resolvedVoice = voiceName.trim().ifBlank { AppPreferences.getGeminiVoice(context).ifBlank { "Kore" } }
+        val spokenDirective = "Speak naturally with clear pronunciation (emotion=$emotionLabel, rate=${"%.2f".format(speedMultiplier)}x). Read verbatim without extra commentary: $text"
+        val req = GenerateContentRequest(
+            contents = listOf(Content(role = "user", parts = listOf(Part(text = spokenDirective)))),
+            generationConfig = GenerationConfig(
+                temperature = 0.6f,
+                maxOutputTokens = 2048,
+                responseModalities = listOf("AUDIO"),
+                speechConfig = SpeechConfig(
+                    voiceConfig = VoiceConfig(
+                        prebuiltVoiceConfig = PrebuiltVoiceConfig(voiceName = resolvedVoice)
+                    )
+                )
+            )
+        )
+
+        val candidateModels = listOf(
+            "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-flash"
+        ) + GeminiModelRegistry.resolveApiModelFallbackChain(AppPreferences.getGeminiModel(context))
+
+        for (modelId in candidateModels.distinct()) {
+            try {
+                val resp = RetrofitClient.service.generateAudioContent(
+                    model = modelId,
+                    apiKey = apiKey,
+                    request = req
+                )
+                val audioPart = resp.candidates
+                    ?.firstOrNull()
+                    ?.content
+                    ?.parts
+                    ?.firstOrNull { it.inlineData?.data?.isNotBlank() == true }
+                    ?.inlineData
+                val b64 = audioPart?.data ?: continue
+                val decoded = Base64.decode(b64, Base64.DEFAULT)
+                if (decoded.isEmpty()) continue
+                val mime = audioPart.mimeType.orEmpty().lowercase()
+                return@withContext if (mime.contains("wav")) decoded else addWavHeaderToPcm(decoded, sampleRate = 24000)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (http: HttpException) {
+                Log.w(TAG, "Gemini audio generation with $modelId failed (${http.code()})")
+                if (http.code() == 401 || http.code() == 403 || http.code() == 429) break
+            } catch (t: Throwable) {
+                Log.w(TAG, "Gemini audio generation with $modelId error: ${t.message}")
+            }
+        }
+        null
     }
 
     private fun splitTextForTts(text: String, maxLength: Int = 160): List<String> {

@@ -811,7 +811,7 @@ class CeoAiOrchestrator(
             }
 
             val permit = (permitDecision as PermitDecision.Granted).permit
-            val calibratedPoint = if (env.target.coordinates != null && currentObservation != null) {
+            var calibratedPoint = if (env.target.coordinates != null && currentObservation != null) {
                 when (val cal = PrecisionController.calibrateTargetCoordinates(context, env, currentObservation)) {
                     is PrecisionCalibrationResult.Valid -> cal.point
                     is PrecisionCalibrationResult.Rejected -> {
@@ -821,6 +821,48 @@ class CeoAiOrchestrator(
                     }
                 }
             } else null
+
+            val needsVisualConsensusRefinement = currentObservation != null &&
+                currentObservation.hasScreenshotVisualEvidence &&
+                env.action in setOf(
+                    OrchestratorActionType.TAP,
+                    OrchestratorActionType.DOUBLE_TAP,
+                    OrchestratorActionType.LONG_PRESS
+                ) &&
+                (calibratedPoint == null || (
+                    env.confidence < 0.85 &&
+                        com.example.ai.offline.Gemma4E4BEngine.getInstance(context).let {
+                            it.isSmolVlm2Loaded() || it.isFlorence2Loaded()
+                        }
+                    ))
+            if (needsVisualConsensusRefinement && currentObservation != null) {
+                val queryLabel = env.target.description.ifBlank { env.target.selector }.ifBlank { cleanCmd }
+                val consensus = com.example.visual.VisionConsensusCoordinator(context)
+                    .resolveTargetWithConsensus(
+                        observation = currentObservation,
+                        targetQuery = queryLabel
+                    )
+                if (consensus.isStale) {
+                    val staleMsg = "Vision consensus aborted due to stale observation ${currentObservation.screenshotId}."
+                    AiAuthorityGateway.invalidateSession(session.sessionId, staleMsg)
+                    ConversationTaskContextManager.onTaskFinished(false, staleMsg)
+                    TaskOrchestrationStateMachine.transitionTo(OrchestrationLifecycleState.TASK_FAILED, detail = staleMsg, lastError = staleMsg)
+                    return CeoOrchestrationOutcome(false, staleMsg, session.taskId, session.sessionId, stepsExecuted, verifiedSteps, failureCode = "OBSERVATION_STALE")
+                }
+                val winCenter = consensus.winningNormalizedCenter
+                if (winCenter != null) {
+                    val (px, py) = winCenter.toDevicePx(
+                        currentObservation.displayWidthPx,
+                        currentObservation.displayHeightPx
+                    )
+                    calibratedPoint = CalibratedPoint(
+                        xPx = px.coerceIn(1f, (currentObservation.displayWidthPx - 1).coerceAtLeast(1).toFloat()),
+                        yPx = py.coerceIn(1f, (currentObservation.displayHeightPx - 1).coerceAtLeast(1).toFloat()),
+                        sourceSpace = CoordinateSpace.NORMALIZED_0_1,
+                        observationId = currentObservation.screenshotId
+                    )
+                }
+            }
 
             // Step 4: Single Atomic Execution
             TaskOrchestrationStateMachine.transitionTo(

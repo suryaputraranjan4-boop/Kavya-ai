@@ -130,7 +130,8 @@ data class UnifiedUIElement(
     val frameId: String = "",
     val observationTimestampMs: Long = System.currentTimeMillis(),
     val isFresh: Boolean = true,
-    val screenFingerprint: String = ""
+    val screenFingerprint: String = "",
+    val isConsensusVerified: Boolean = false
 ) {
     val primaryLabel: String
         get() = visibleText.ifBlank { contentDescription.ifBlank { hintText.ifBlank { viewIdResourceName.substringAfterLast("/") } } }
@@ -147,7 +148,7 @@ data class UnifiedUIElement(
      * Per Section 2.3 and 6.2, Florence-2 alone is NEVER authoritative for direct tap/type actions.
      */
     val isAuxVisionOnly: Boolean
-        get() = sourceSignals.isNotEmpty() && sourceSignals.all { it == SignalSource.AUX_VISION_MODEL }
+        get() = !isConsensusVerified && sourceSignals.isNotEmpty() && sourceSignals.all { it == SignalSource.AUX_VISION_MODEL }
 }
 
 data class PreActionVerificationResult(
@@ -684,6 +685,53 @@ object MultiSignalFusionEngine {
         return convertedA11y + visionCombined
     }
 
+    fun buildCandidateFromConsensus(
+        outcome: VisionConsensusOutcome,
+        screenWidth: Int = 1080,
+        screenHeight: Int = 2400
+    ): UnifiedUIElement? {
+        val winner = outcome.winningCandidate ?: return null
+        val center = outcome.winningNormalizedCenter ?: winner.effectiveCenter ?: return null
+        val box = outcome.winningNormalizedBox ?: winner.normalizedBox ?: NormalizedBox.fromCenter(center)
+        val rect = box.toDeviceRect(screenWidth.coerceAtLeast(1), screenHeight.coerceAtLeast(1))
+        val signals = buildSet {
+            add(SignalSource.VISION)
+            if (outcome.smolVlm2Result?.hasValidCoordinates == true) add(SignalSource.LOCAL_GUI_VLM)
+            if (outcome.florence2Result?.hasValidCoordinates == true) add(SignalSource.AUX_VISION_MODEL)
+            if (outcome.cloudResult?.hasValidCoordinates == true) add(SignalSource.ONLINE_GEMINI_VISION)
+            if (outcome.accessibilityMatch?.matched == true) add(SignalSource.ACCESSIBILITY)
+        }
+        val a11yMatch = outcome.accessibilityMatch
+        return UnifiedUIElement(
+            elementId = "consensus_${outcome.screenshotId}_${winner.modelId.name.lowercase(Locale.ROOT)}",
+            sourceSignals = signals,
+            packageName = "",
+            className = a11yMatch?.matchedClassName?.ifBlank { "android.view.View" } ?: "android.view.View",
+            viewIdResourceName = a11yMatch?.matchedResourceId.orEmpty(),
+            visibleText = winner.targetLabel.ifBlank { a11yMatch?.matchedLabel.orEmpty() },
+            contentDescription = a11yMatch?.matchedLabel?.ifBlank { winner.targetLabel } ?: winner.targetLabel,
+            bounds = rect,
+            centerPoint = Pair(rect.centerX(), rect.centerY()),
+            isClickable = a11yMatch?.isClickable ?: true,
+            isEditable = a11yMatch?.isEditable ?: false,
+            isScrollable = false,
+            confidence = winner.calibratedConfidence,
+            semanticRole = outcome.decision.name,
+            screenshotWidth = screenWidth.coerceAtLeast(1),
+            screenshotHeight = screenHeight.coerceAtLeast(1),
+            sourceModelId = winner.providerId ?: winner.modelId.displayName,
+            frameId = outcome.screenshotId,
+            isFresh = !outcome.isStale,
+            isConsensusVerified = outcome.decision in setOf(
+                ConsensusDecisionType.USE_OFFLINE_HIGH_AGREEMENT,
+                ConsensusDecisionType.USE_OFFLINE_LOW_CONF_AGREEMENT,
+                ConsensusDecisionType.USE_CLOUD_TWO_OF_THREE_CONSENSUS,
+                ConsensusDecisionType.USE_OFFLINE_TWO_OF_THREE_CONSENSUS,
+                ConsensusDecisionType.FALLBACK_ACCESSIBILITY_ONLY
+            )
+        )
+    }
+
     fun resolveBestTarget(
         elements: List<UnifiedUIElement>,
         targetQuery: String
@@ -702,7 +750,7 @@ object MultiSignalFusionEngine {
         val q = targetQuery.trim().lowercase(Locale.ROOT)
         if (q.isEmpty() || elements.isEmpty()) return null
         return elements
-            .filter { it.isEnabled && !it.isAuxVisionOnly && it.confidence >= 0.55f }
+            .filter { it.isEnabled && !it.isAuxVisionOnly && (it.isConsensusVerified || it.confidence >= 0.55f) }
             .firstOrNull { el ->
                 el.visibleText.equals(q, ignoreCase = true) ||
                     el.contentDescription.equals(q, ignoreCase = true) ||
@@ -866,7 +914,7 @@ object PreActionVerifier {
             )
 
         val (bestElement, bestScore) = best
-        if (bestScore < 0.55f || bestElement.confidence < 0.55f) {
+        if (!bestElement.isConsensusVerified && (bestScore < 0.55f || bestElement.confidence < 0.55f)) {
             return PreActionVerificationResult(
                 approved = false,
                 selectedCandidate = bestElement,

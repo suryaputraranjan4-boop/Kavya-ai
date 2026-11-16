@@ -86,6 +86,7 @@ class AiAuthorityAndOrchestratorRegressionTest {
         obsSeq = 0
         AiAuthorityGateway.resetForTesting()
         TaskOrchestrationStateMachine.resetToIdle()
+        JarvisGuidanceEngine.resetForTesting()
         ScreenObservationCoordinator.clearLatestObservation()
         SelectedProviderClient.testTransport = null
         SelectedProviderClient.testNetworkConnectedOverride = true
@@ -108,6 +109,7 @@ class AiAuthorityAndOrchestratorRegressionTest {
         ScreenObservationCoordinator.setTestProviders(null, null)
         AiAuthorityGateway.resetForTesting()
         TaskOrchestrationStateMachine.resetToIdle()
+        JarvisGuidanceEngine.resetForTesting()
     }
 
     private fun setGeometryAndObservation(

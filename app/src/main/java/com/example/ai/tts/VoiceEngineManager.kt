@@ -21,20 +21,26 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 enum class VoiceEngine(val id: String, val displayName: String, val isOffline: Boolean) {
+    GEMINI_VOICE("GEMINI_VOICE", "Gemini Voice (Default • Natural Multilingual)", false),
     KOKORO_82M("KOKORO_82M", "Kokoro-82M Bilingual (Hindi + English Female)", true),
-    INDIC_TINY_TTS("INDIC_TINY_TTS", "Indic Tiny TTS Hindi (Female Voice)", true),
+    INDIC_TINY_TTS("INDIC_TINY_TTS", "Indic Tiny TTS Hindi (Optional Offline Female)", true),
     CHATTERBOX("CHATTERBOX_HINDI", "Chatterbox Multilingual Hindi", false);
 
     companion object {
+        val GEMINI_PREBUILT_VOICES: List<String> = listOf(
+            "Kore", "Aoede", "Puck", "Charon", "Fenrir", "Leda", "Orus", "Zephyr"
+        )
+
         fun fromId(id: String): VoiceEngine =
-            entries.find { it.id.equals(id, ignoreCase = true) } ?: INDIC_TINY_TTS
+            entries.find { it.id.equals(id, ignoreCase = true) } ?: GEMINI_VOICE
     }
 }
 
 /**
  * Centralized speech routing.
- * Strict Engine Isolation Rule: the selected engine (Kokoro-82M, Indic Tiny TTS, or Chatterbox)
- * is NEVER silently swapped or fallen back to another engine on failure.
+ * Defaults to Gemini Voice (with built-in Android System TTS fallback when offline or unconfigured)
+ * so zero model downloads are required out of the box.
+ * Preserves Strict Engine Isolation when optional local engines (Kokoro-82M / Indic Tiny TTS / Chatterbox) are selected.
  */
 class VoiceEngineManager private constructor(private val appContext: Context) {
     companion object {
@@ -46,10 +52,22 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
 
         @Volatile private var instance: VoiceEngineManager? = null
 
-        fun getInstance(context: Context): VoiceEngineManager =
-            instance ?: synchronized(this) {
-                instance ?: VoiceEngineManager(context.applicationContext).also { instance = it }
+        fun getInstance(context: Context): VoiceEngineManager {
+            val targetCtx = context.applicationContext ?: context
+            val current = instance
+            if (current != null && current.appContext === targetCtx) {
+                return current
             }
+            return synchronized(this) {
+                val again = instance
+                if (again != null && again.appContext === targetCtx) {
+                    again
+                } else {
+                    again?.stop()
+                    VoiceEngineManager(targetCtx).also { instance = it }
+                }
+            }
+        }
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -57,6 +75,9 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     private val indicTinyEngine = IndicTinyTtsEngine(appContext)
     private val chatterboxClient = ChatterboxTtsClient(appContext)
     private val voiceProfileManager = VoiceProfileManager.getInstance(appContext)
+    private val kavyaAiTts by lazy { com.example.ai.KavyaAI(appContext) }
+    @Volatile private var androidSystemTts: android.speech.tts.TextToSpeech? = null
+    @Volatile private var androidSystemTtsReady: Boolean = false
     private val internalPlayer = GeminiAudioPlayer(
         appContext,
         onSpeakingStateChanged = { speaking -> updateSpeakingState(speaking) },
@@ -114,6 +135,15 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         Log.i(TAG, "Active voice engine set to: " + engine.displayName)
     }
 
+    fun getGeminiVoiceName(): String =
+        AppPreferences.getGeminiVoice(appContext).ifBlank { "Kore" }
+
+    fun setGeminiVoiceName(voiceName: String) {
+        val cleaned = voiceName.trim().ifBlank { "Kore" }
+        AppPreferences.setGeminiVoice(appContext, cleaned)
+        setActiveEngine(VoiceEngine.GEMINI_VOICE)
+    }
+
     fun speak(
         text: String,
         enqueue: Boolean = false,
@@ -148,6 +178,30 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                 synthesisMutex.withLock {
                     updateSpeakingState(true)
                     when (engine) {
+                        VoiceEngine.GEMINI_VOICE -> {
+                            val selectedVoice = AppPreferences.getGeminiVoice(appContext).ifBlank { "Kore" }
+                            val audioBytes = kavyaAiTts.generateSpeechAudio(
+                                text = text,
+                                voiceName = selectedVoice,
+                                emotionLabel = emotion,
+                                pitchMultiplier = pitch,
+                                speedMultiplier = speed
+                            )
+                            if (audioBytes != null && audioBytes.isNotEmpty()) {
+                                player.playWav(
+                                    wavBytes = audioBytes,
+                                    text = text,
+                                    enqueue = enqueue,
+                                    onComplete = completion
+                                )
+                                playbackQueued = true
+                            } else if (speakViaAndroidSystemTts(text, speed, pitch, enqueue, completion)) {
+                                playbackQueued = true
+                            } else {
+                                withContext(Dispatchers.Main) { completion?.invoke() }
+                                updateSpeakingState(false)
+                            }
+                        }
                         VoiceEngine.KOKORO_82M -> {
                             // Never silently fall back to Indic Tiny TTS on Kokoro errors.
                             var segmentIdx = 0
@@ -239,9 +293,65 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         speechJob.start()
     }
 
+    private suspend fun speakViaAndroidSystemTts(
+        text: String,
+        speed: Float,
+        pitch: Float,
+        enqueue: Boolean,
+        completion: CompletionOnce?
+    ): Boolean = withContext(Dispatchers.Main) {
+        try {
+            val tts = androidSystemTts ?: kotlinx.coroutines.suspendCancellableCoroutine<android.speech.tts.TextToSpeech?> { cont ->
+                var created: android.speech.tts.TextToSpeech? = null
+                created = android.speech.tts.TextToSpeech(appContext) { status ->
+                    androidSystemTtsReady = (status == android.speech.tts.TextToSpeech.SUCCESS)
+                    if (cont.isActive) {
+                        cont.resumeWith(Result.success(if (androidSystemTtsReady) created else null))
+                    }
+                }
+                androidSystemTts = created
+            } ?: return@withContext false
+
+            if (!androidSystemTtsReady) return@withContext false
+
+            val hasDevanagari = text.any { it in '\u0900'..'\u097F' }
+            tts.language = if (hasDevanagari) java.util.Locale("hi", "IN") else java.util.Locale.US
+            tts.setSpeechRate(speed.coerceIn(0.6f, 2.0f))
+            tts.setPitch(pitch.coerceIn(0.6f, 1.5f))
+
+            val utteranceId = "kavya_tts_${System.nanoTime()}"
+            tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                override fun onStart(id: String?) {
+                    updateSpeakingState(true)
+                }
+
+                override fun onDone(id: String?) {
+                    updateSpeakingState(false)
+                    scope.launch(Dispatchers.Main) { completion?.invoke() }
+                }
+
+                @Deprecated("Deprecated in API 21")
+                override fun onError(id: String?) {
+                    updateSpeakingState(false)
+                    scope.launch(Dispatchers.Main) { completion?.invoke() }
+                }
+            })
+
+            val queueMode = if (enqueue) android.speech.tts.TextToSpeech.QUEUE_ADD else android.speech.tts.TextToSpeech.QUEUE_FLUSH
+            val res = tts.speak(text, queueMode, null, utteranceId)
+            res == android.speech.tts.TextToSpeech.SUCCESS
+        } catch (t: Throwable) {
+            Log.w(TAG, "Android system TTS fallback unavailable: ${t.message}")
+            false
+        }
+    }
+
     fun previewEngine(
         engine: VoiceEngine,
-        sampleText: String = if (engine == VoiceEngine.KOKORO_82M) PREVIEW_SAMPLE_BILINGUAL else PREVIEW_SAMPLE_HINDI,
+        sampleText: String = when (engine) {
+            VoiceEngine.KOKORO_82M, VoiceEngine.GEMINI_VOICE -> PREVIEW_SAMPLE_BILINGUAL
+            else -> PREVIEW_SAMPLE_HINDI
+        },
         onComplete: (() -> Unit)? = null
     ) {
         speakUsingEngine(sampleText, engine, enqueue = false, onComplete = onComplete, speed = 1.0f, pitch = 1.0f, emotion = "natural")
@@ -252,6 +362,9 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         jobs.forEach { it.cancel() }
         activeSpeechJob = null
         player.stop()
+        try {
+            androidSystemTts?.stop()
+        } catch (_: Throwable) {}
         val callbacks = synchronized(pendingCompletions) { pendingCompletions.toList() }
         callbacks.forEach { completion ->
             scope.launch(Dispatchers.Main) { completion.invoke() }
