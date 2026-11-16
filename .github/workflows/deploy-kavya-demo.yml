@@ -1,0 +1,41 @@
+name: Deploy Kavya in Action demo
+
+on:
+  push:
+    branches:
+      - kavya-in-action-demo
+    paths:
+      - "kavya-in-action/**"
+      - ".github/workflows/deploy-kavya-demo.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "kavya-demo-pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: \${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate demo entry point
+        run: test -s kavya-in-action/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: kavya-in-action
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
