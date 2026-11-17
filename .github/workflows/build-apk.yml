@@ -58,9 +58,12 @@ jobs:
         run: gradle :app:testDebugUnitTest --stacktrace
 
       - name: Build debug APK
+        id: build_apk
+        if: always()
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Upload APK
+        if: always() && steps.build_apk.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
           name: kavya-debug-apk
