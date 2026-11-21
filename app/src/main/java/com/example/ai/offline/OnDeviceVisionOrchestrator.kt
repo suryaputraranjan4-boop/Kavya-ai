@@ -29,6 +29,7 @@ import kotlin.math.min
 enum class VisionModelDiagnosticStage {
     CONFIGURED,
     DOWNLOADED,
+    STRUCTURALLY_VALID,
     VERIFIED,
     LOADED,
     EXECUTED
@@ -178,7 +179,10 @@ class OnDeviceVisionOrchestrator private constructor(private val appContext: Con
             f.isFile && f.length() > 0L
         }
         val coordinator = ModelDownloadCoordinator.getInstance(appContext)
-        val verified = downloaded && coordinator.isModelInstalledAndValid(baseDir, desc.manifest, verifySha256 = false)
+        val structurallyValid = downloaded && coordinator.isModelInstalledAndValid(baseDir, desc.manifest, verifySha256 = false)
+        val hasPinnedSha = desc.manifest.artifacts.any { it.expectedSha256.isNotBlank() }
+        val checksumVerified = structurallyValid && hasPinnedSha &&
+            coordinator.isModelInstalledAndValid(baseDir, desc.manifest, verifySha256 = true)
         val engine = Gemma4E4BEngine.getInstance(appContext)
         val loaded = when (modelId) {
             GemmaModelManager.SMOLVLM2_MANIFEST.modelId -> engine.isSmolVlm2Loaded()
@@ -190,7 +194,8 @@ class OnDeviceVisionOrchestrator private constructor(private val appContext: Con
         val highestStage = when {
             executed -> VisionModelDiagnosticStage.EXECUTED
             loaded -> VisionModelDiagnosticStage.LOADED
-            verified -> VisionModelDiagnosticStage.VERIFIED
+            checksumVerified -> VisionModelDiagnosticStage.VERIFIED
+            structurallyValid -> VisionModelDiagnosticStage.STRUCTURALLY_VALID
             downloaded -> VisionModelDiagnosticStage.DOWNLOADED
             else -> VisionModelDiagnosticStage.CONFIGURED
         }
@@ -200,11 +205,11 @@ class OnDeviceVisionOrchestrator private constructor(private val appContext: Con
             stage = highestStage,
             isConfigured = true,
             isDownloaded = downloaded,
-            isVerified = verified,
+            isVerified = checksumVerified,
             isLoaded = loaded,
             isExecuted = executed,
             lastExecutedAtMs = lastExec,
-            detail = "Stage=${highestStage.name} (downloaded=$downloaded, verified=$verified, loaded=$loaded, executed=$executed)"
+            detail = "Stage=${highestStage.name} (downloaded=$downloaded, structurallyValid=$structurallyValid, checksumVerified=$checksumVerified, loaded=$loaded, executed=$executed)"
         )
     }
 

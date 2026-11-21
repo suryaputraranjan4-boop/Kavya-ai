@@ -37,12 +37,15 @@ class ChatterboxTtsClient(private val context: Context) {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 
-    private val httpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .readTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .writeTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
+    private val httpClient: OkHttpClient = OfflinePrivacyGuard.registerCloudClient(
+        OkHttpClient.Builder()
+            .connectTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .readTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .writeTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .addInterceptor(StrictOfflineInterceptor(context, operationTag = "ChatterboxTtsClient"))
+            .retryOnConnectionFailure(true)
+            .build()
+    )
 
     /**
      * Checks the health and readiness of the configured Chatterbox backend.

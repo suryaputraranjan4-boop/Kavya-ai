@@ -45,6 +45,7 @@ class GoogleMapsScraperClient(private val context: Context) {
             .connectTimeout(connectTimeoutSec, TimeUnit.SECONDS)
             .readTimeout(readTimeoutSec, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor(com.example.ai.StrictOfflineInterceptor(context, operationTag = "GoogleMapsScraperClient"))
 
         // Configure optional proxy if set in preferences
         val proxyHost = AppPreferences.getMapsScraperProxyHost(context)
@@ -58,7 +59,7 @@ class GoogleMapsScraperClient(private val context: Context) {
             }
         }
 
-        return builder.build()
+        return com.example.ai.OfflinePrivacyGuard.registerCloudClient(builder.build())
     }
 
     fun getServiceUrl(): String {

@@ -351,11 +351,14 @@ class RestApiRuntime(
     }
 
     companion object {
-        fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(25, TimeUnit.SECONDS)
-            .followRedirects(false) // Strict SSRF guard against redirect bypasses
-            .build()
+        fun defaultHttpClient(): OkHttpClient = com.example.ai.OfflinePrivacyGuard.registerCloudClient(
+            OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(25, TimeUnit.SECONDS)
+                .addInterceptor(com.example.ai.StrictOfflineInterceptor(operationTag = "KucpProtocolRuntime"))
+                .followRedirects(false) // Strict SSRF guard against redirect bypasses
+                .build()
+        )
     }
 }
 
@@ -988,6 +991,11 @@ class WebhookWebSocketA2aGrpcRuntime(
     }
 
     private fun openWebSocket(context: Context, connector: ConnectorDefinition, wsUrl: String): WebSocket {
+        com.example.ai.OfflinePrivacyGuard.checkOutboundAllowed(
+            context = context,
+            operation = "kucp_websocket:${connector.id}",
+            host = runCatching { java.net.URI(wsUrl).host.orEmpty() }.getOrDefault("")
+        )
         val sb = StringBuilder(wsUrl)
         val rb = Request.Builder().url(wsUrl)
         AuthHeaderInjector.applyAuth(context, connector, sb, rb)
@@ -1000,11 +1008,14 @@ class WebhookWebSocketA2aGrpcRuntime(
             }
         })
         activeSockets[connector.id] = ws
+        com.example.ai.OfflinePrivacyGuard.registerActiveWebSocket(ws)
         return ws
     }
 
     fun closeWebSocket(connectorId: String) {
-        activeSockets.remove(connectorId)?.close(1000, "Closed by KUCP")
+        val removed = activeSockets.remove(connectorId)
+        com.example.ai.OfflinePrivacyGuard.unregisterWebSocket(removed)
+        removed?.close(1000, "Closed by KUCP")
     }
 
     override suspend fun healthCheck(context: Context, connector: ConnectorDefinition): Result<Long> {

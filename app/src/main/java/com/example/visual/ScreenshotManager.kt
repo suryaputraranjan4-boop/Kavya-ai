@@ -114,25 +114,21 @@ class ScreenshotManager(private val context: Context) {
             scaledBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, baos)
             val base64String = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
 
-            val isSharedPipelineFrame = bitmap === VisionPipeline.getLatestFrame() ||
-                bitmap === com.example.services.ScreenShareManager.latestFrameBitmap
-            val finalRetainedBitmap = if (retainBitmap || AppPreferences.isScreenAwarenessEnabled(context) || isSharedPipelineFrame) {
-                if (scaledBitmap !== bitmap && !isSharedPipelineFrame && !bitmap.isRecycled) {
-                    bitmap.recycle()
-                }
+            val finalRetainedBitmap = if (retainBitmap || AppPreferences.isScreenAwarenessEnabled(context)) {
                 scaledBitmap
             } else {
+                // Only recycle the internally allocated scaled copy; never recycle a caller-owned bitmap.
                 if (scaledBitmap !== bitmap && !scaledBitmap.isRecycled) {
                     scaledBitmap.recycle()
-                }
-                if (!isSharedPipelineFrame && !bitmap.isRecycled) {
-                    bitmap.recycle()
                 }
                 null
             }
 
             return Pair(base64String, finalRetainedBitmap)
         } catch (e: Exception) {
+            if (scaledBitmap !== bitmap && !scaledBitmap.isRecycled) {
+                scaledBitmap.recycle()
+            }
             Log.e(TAG, "Failed to encode screenshot: ${e.message}", e)
             return Pair("", null)
         }

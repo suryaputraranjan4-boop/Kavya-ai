@@ -845,9 +845,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                 chatDao.insertChat(ChatEntity(id = id, title = "Voice Message", timestamp = System.currentTimeMillis()))
             }
             val safeDuration = durationSec.coerceAtLeast(1)
-            val transcript = if (pcmData != null && pcmData.isNotEmpty() && !_isOfflineMode.value && !aiClient.isOfflineMode()) {
+            val isOfflineNow = _isOfflineMode.value ||
+                aiClient.isOfflineMode() ||
+                com.example.ai.OfflinePrivacyGuard.isStrictOfflineMode(getApplication<Application>())
+            val kavyaAi = KavyaAI(getApplication<Application>())
+            val transcript = if (pcmData != null && pcmData.isNotEmpty()) {
                 try {
-                    val rawTr = KavyaAI(getApplication<Application>()).transcribeAudio(pcmData, 16000)
+                    val rawTr = kavyaAi.transcribeAudio(pcmData, 16000)
                     com.example.utils.SpeechSanitizer.sanitize(rawTr)
                 } catch (_: Exception) {
                     ""
@@ -855,12 +859,13 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 ""
             }
+            val asrDiagnostic = kavyaAi.lastTranscriptionStatusMessage
 
             val voiceTag = "[VOICE_MESSAGE:${audioFile.absolutePath}|${safeDuration}s]"
             val userBubbleText = if (transcript.isNotBlank()) {
                 "$voiceTag\n🎤 Voice Note (${safeDuration}s): \"$transcript\""
-            } else if (_isOfflineMode.value || aiClient.isOfflineMode()) {
-                "$voiceTag\n🎤 Voice Note (${safeDuration}s) [Saved locally — Offline Mode active]"
+            } else if (isOfflineNow) {
+                "$voiceTag\n🎤 Voice Note (${safeDuration}s) [Saved locally — Offline Mode]"
             } else {
                 "$voiceTag\n🎤 Voice Note (${safeDuration}s)"
             }
@@ -877,8 +882,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     recursionDepth = 0
                 )
             } else {
-                val replyText = if (_isOfflineMode.value || aiClient.isOfflineMode()) {
-                    "Your ${safeDuration}-second voice message has been saved locally. You can replay it anytime in chat. Switch to Online Mode if you want cloud speech transcription."
+                val replyText = if (isOfflineNow) {
+                    val detail = asrDiagnostic?.takeIf { it.isNotBlank() }
+                        ?: "Local offline speech model (Whisper Tiny Multilingual ONNX) is not installed or detected no clear speech."
+                    "Your ${safeDuration}-second voice message has been saved locally. $detail"
                 } else {
                     "Your ${safeDuration}-second voice message has been saved to chat, but no clear speech transcript was detected. You can replay it above or record again."
                 }
@@ -891,13 +898,10 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Renders each page of a selected PDF and analyzes its actual visual content.
+     * Works both online (cloud multimodal) and in strict offline mode (local SmolVLM2 / Florence-2 / ML Kit OCR).
      * Limits page count and render dimensions to keep memory use bounded.
      */
     fun analyzePdf(file: java.io.File, displayName: String = file.name) {
-        if (_isOfflineMode.value || aiClient.isOfflineMode()) {
-            sendMessage("PDF visual analysis is not available in Offline Mode. Switch to Online Mode to analyze this PDF.")
-            return
-        }
         if (!file.isFile || file.length() <= 0L) {
             sendMessage("The selected PDF could not be read.")
             return

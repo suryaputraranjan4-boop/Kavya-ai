@@ -157,21 +157,24 @@ object RetrofitClient {
     private const val BASE_URL = "https://generativelanguage.googleapis.com/"
     private const val OPENROUTER_BASE_URL = "https://openrouter.ai/"
     
-    val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .addInterceptor { chain ->
-            val original = chain.request()
-            val url = original.url
-            val key = url.queryParameter("key")
-            val builder = original.newBuilder()
-            if (!key.isNullOrBlank() && original.header("x-goog-api-key").isNullOrBlank()) {
-                builder.header("x-goog-api-key", key)
+    val okHttpClient: OkHttpClient = OfflinePrivacyGuard.registerCloudClient(
+        OkHttpClient.Builder()
+            .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .addInterceptor(StrictOfflineInterceptor(operationTag = "RetrofitClient"))
+            .addInterceptor { chain ->
+                val original = chain.request()
+                val url = original.url
+                val key = url.queryParameter("key")
+                val builder = original.newBuilder()
+                if (!key.isNullOrBlank() && original.header("x-goog-api-key").isNullOrBlank()) {
+                    builder.header("x-goog-api-key", key)
+                }
+                chain.proceed(builder.build())
             }
-            chain.proceed(builder.build())
-        }
-        .build()
+            .build()
+    )
 
     private val json = Json { 
         ignoreUnknownKeys = true 
@@ -199,6 +202,14 @@ object RetrofitClient {
 }
 
 class KavyaAI(private val context: android.content.Context? = null) {
+    init {
+        OfflinePrivacyGuard.bindApplicationContext(context)
+    }
+
+    @Volatile
+    var lastTranscriptionStatusMessage: String? = null
+        private set
+
     fun isApiKeyConfigured(): Boolean {
         val ctx = context ?: return BuildConfig.GEMINI_API_KEY.isNotBlank()
         return com.example.utils.AppPreferences.hasConfiguredApiKey(ctx)
@@ -228,14 +239,41 @@ class KavyaAI(private val context: android.content.Context? = null) {
     }
 
     fun isStrictOfflineMode(): Boolean {
-        val ctx = context ?: return false
-        return com.example.utils.AppPreferences.getAiProvider(ctx) == "GEMMA_OFFLINE" ||
-            com.example.utils.AppPreferences.isOfflineFallbackEnabled(ctx)
+        return OfflinePrivacyGuard.isStrictOfflineMode(context)
     }
 
     suspend fun analyzeVisualUI(bitmap: android.graphics.Bitmap, prompt: String): String {
         if (isStrictOfflineMode()) {
-            return "Offline Mode is active: Cloud visual analysis is disabled to guarantee zero network usage."
+            val ctx = context
+                ?: return "LOCAL OFFLINE VISION ERROR: Context unavailable for offline visual analysis."
+            val localVision = com.example.ai.offline.OfflineVisionContextBuilder.analyzeBitmap(
+                context = ctx,
+                bitmap = bitmap,
+                userPrompt = prompt
+            )
+            if (!localVision.succeeded) {
+                return localVision.errorReason
+                    ?: "LOCAL OFFLINE VISION ERROR: Local vision model/OCR unavailable for this screenshot."
+            }
+            if (!localVision.directVlmAnswer.isNullOrBlank()) {
+                return localVision.directVlmAnswer
+            }
+            val localLlm = com.example.ai.offline.Gemma4E4BEngine.getInstance()
+            if (localLlm.isReady()) {
+                val combinedPrompt = buildString {
+                    appendLine(localVision.contextSummary)
+                    appendLine()
+                    appendLine("USER VISUAL REQUEST: $prompt")
+                }
+                val generated = localLlm.generate(
+                    combinedPrompt,
+                    SystemPrompt.buildSystemPrompt(localVision.contextSummary, "", false)
+                )
+                if (generated.isSuccess && !generated.getOrNull().isNullOrBlank()) {
+                    return generated.getOrThrow()
+                }
+            }
+            return localVision.contextSummary
         }
         try {
             val key = if (context != null) {
@@ -946,6 +984,11 @@ class KavyaAI(private val context: android.content.Context? = null) {
     ): ByteArray? = withContext(Dispatchers.IO) {
         if (text.isBlank() || context == null) return@withContext null
 
+        if (isStrictOfflineMode()) {
+            Log.i(TAG, "Strict Offline Mode active: blocking cloud speech audio generation.")
+            return@withContext null
+        }
+
         val activeEngine = AppPreferences.getSpeechEngine(context)
         if (activeEngine.equals("CHATTERBOX_HINDI", ignoreCase = true)) {
             val client = ChatterboxTtsClient(context)
@@ -966,7 +1009,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
         }
 
         val apiKey = AppPreferences.getEffectiveApiKey(context).trim()
-        if (apiKey.isBlank() || AppPreferences.isPlaceholderKey(apiKey) || AppPreferences.isOfflineFallbackEnabled(context)) {
+        if (apiKey.isBlank() || AppPreferences.isPlaceholderKey(apiKey)) {
             return@withContext null
         }
 
@@ -1320,12 +1363,17 @@ class KavyaAI(private val context: android.content.Context? = null) {
         }
     }.flowOn(kotlinx.coroutines.Dispatchers.IO)
 
-    suspend fun transcribeAudio(pcmData: ByteArray, sampleRate: Int = 16000): String = withContext(Dispatchers.IO) {
+    suspend fun transcribeAudio(
+        pcmData: ByteArray,
+        sampleRate: Int = 16000,
+        languageHint: String? = null
+    ): String = withContext(Dispatchers.IO) {
         if (pcmData.size < sampleRate / 2) { // < 250ms of 16-bit mono PCM
+            lastTranscriptionStatusMessage = "Audio clip too short for speech recognition."
             AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.NO_SPEECH_RECOGNIZED)
             return@withContext ""
         }
-        // Pre-gate pure silence or near-zero mic audio before making any cloud STT call
+        // Pre-gate pure silence or near-zero mic audio before running local or cloud STT
         var sumSq = 0.0
         val samples = pcmData.size / 2
         val bbCheck = java.nio.ByteBuffer.wrap(pcmData, 0, samples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -1335,15 +1383,74 @@ class KavyaAI(private val context: android.content.Context? = null) {
         }
         val utteranceRms = kotlin.math.sqrt(sumSq / samples.coerceAtLeast(1))
         if (utteranceRms < 180.0) {
-            Log.d(TAG, "Skipped cloud STT for silent/low-energy PCM (RMS=${"%.1f".format(utteranceRms)})")
+            Log.d(TAG, "Skipped STT for silent/low-energy PCM (RMS=${"%.1f".format(utteranceRms)})")
+            lastTranscriptionStatusMessage = "No human speech detected in audio capture."
             AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.NO_SPEECH_RECOGNIZED)
             return@withContext ""
         }
+
         if (isStrictOfflineMode()) {
-            Log.i(TAG, "Strict Offline Mode active: skipping cloud audio transcription.")
-            AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.RECOGNITION_SERVICE_UNAVAILABLE)
+            val ctx = context
+            if (ctx == null) {
+                lastTranscriptionStatusMessage = "Offline speech recognition requires an application context."
+                AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.RECOGNITION_SERVICE_UNAVAILABLE)
+                return@withContext ""
+            }
+            Log.i(TAG, "Strict Offline Mode active: routing audio transcription strictly to local Whisper ONNX ASR.")
+            val offlineAsr = com.example.ai.asr.OfflineSpeechRecognizer.getInstance(ctx)
+            return@withContext when (val localRes = offlineAsr.transcribePcm(pcmData, sampleRate, languageHint)) {
+                is com.example.ai.asr.OfflineAsrResult.Success -> {
+                    val clean = com.example.utils.SpeechSanitizer.sanitize(localRes.transcript)
+                    if (clean.isNotBlank()) {
+                        lastTranscriptionStatusMessage = "Transcribed offline via ${localRes.engineName} (${localRes.languageTag})"
+                        clean
+                    } else {
+                        lastTranscriptionStatusMessage = "Offline speech recognizer did not detect intelligible words."
+                        AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.EMPTY_TRANSCRIPTION)
+                        ""
+                    }
+                }
+                is com.example.ai.asr.OfflineAsrResult.Unavailable -> {
+                    lastTranscriptionStatusMessage = localRes.reason
+                    AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.RECOGNITION_SERVICE_UNAVAILABLE)
+                    ""
+                }
+                is com.example.ai.asr.OfflineAsrResult.Error -> {
+                    lastTranscriptionStatusMessage = localRes.reason
+                    AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.TRANSCRIPTION_SERVICE_ERROR)
+                    ""
+                }
+            }
+        }
+
+        // If online mode has no validated internet or no Gemini key, try local Whisper ASR if installed
+        val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
+        val isOnlineValidated = context == null || com.example.utils.NetworkConnectivityMonitor.isValidatedOnline(context)
+        if (apiKey.isBlank() || !isOnlineValidated) {
+            if (context != null) {
+                val offlineAsr = com.example.ai.asr.OfflineSpeechRecognizer.getInstance(context)
+                if (offlineAsr.isWhisperModelInstalled() || offlineAsr.testCustomPcmTranscriber != null) {
+                    val localRes = offlineAsr.transcribePcm(pcmData, sampleRate, languageHint)
+                    if (localRes is com.example.ai.asr.OfflineAsrResult.Success) {
+                        val clean = com.example.utils.SpeechSanitizer.sanitize(localRes.transcript)
+                        if (clean.isNotBlank()) {
+                            lastTranscriptionStatusMessage = "Transcribed locally via ${localRes.engineName} (network/key fallback)"
+                            return@withContext clean
+                        }
+                    }
+                }
+            }
+            if (apiKey.isBlank()) {
+                lastTranscriptionStatusMessage = "Gemini API key is missing and local Whisper offline speech model is not installed."
+                AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.MISSING_API_KEY))
+                AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.TRANSCRIPTION_SERVICE_ERROR)
+            } else {
+                lastTranscriptionStatusMessage = "No validated internet connection and local Whisper offline speech model is not installed."
+                AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.RECOGNITION_NETWORK_FAILURE)
+            }
             return@withContext ""
         }
+
         val wavBytes = createWavBytes(pcmData, sampleRate)
         val base64Wav = Base64.encodeToString(wavBytes, Base64.NO_WRAP)
         val request = GenerateContentRequest(
@@ -1358,12 +1465,6 @@ class KavyaAI(private val context: android.content.Context? = null) {
             ),
             generationConfig = GenerationConfig(temperature = 0.0f)
         )
-        val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
-        if (apiKey.isBlank()) {
-            AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.MISSING_API_KEY))
-            AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.TRANSCRIPTION_SERVICE_ERROR)
-            return@withContext ""
-        }
         for (model in getAvailableModels()) {
             try {
                 val response = RetrofitClient.service.generateContent(
@@ -1374,6 +1475,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 val rawTranscript = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
                 val cleanTranscript = com.example.utils.SpeechSanitizer.sanitize(rawTranscript)
                 if (cleanTranscript.isNotBlank()) {
+                    OfflinePrivacyGuard.recordEngineAttribution("CLOUD_ASR:$model")
+                    lastTranscriptionStatusMessage = "Transcribed online via $model"
                     return@withContext cleanTranscript
                 } else {
                     AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.EMPTY_TRANSCRIPTION)
@@ -1390,6 +1493,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     else ->
                         AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.TRANSCRIPTION_SERVICE_ERROR)
                 }
+                lastTranscriptionStatusMessage = "Cloud transcription error: ${classified.redactedLogSummary}"
                 Log.w("KavyaAI", "Error transcribing audio on $model: ${classified.redactedLogSummary}")
                 if (!classified.isRetryable) break
             }

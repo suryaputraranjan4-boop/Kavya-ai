@@ -117,6 +117,11 @@ class ScreenCaptureService : Service(), ComponentCallbacks2 {
         backgroundHandler = Handler(thread.looper)
 
         createNotificationChannel()
+        ScreenShareManager.onPauseStateChanged = { _ ->
+            if (activeSessionId.isNotBlank()) {
+                updateNotificationOnly()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -529,6 +534,7 @@ class ScreenCaptureService : Service(), ComponentCallbacks2 {
     }
 
     override fun onDestroy() {
+        ScreenShareManager.onPauseStateChanged = null
         stopCapture()
         backgroundThread?.quitSafely()
         backgroundThread = null

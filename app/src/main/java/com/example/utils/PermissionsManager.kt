@@ -1,6 +1,7 @@
 package com.example.utils
 
 import android.Manifest
+import android.app.AlarmManager
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
@@ -14,7 +15,11 @@ import android.view.accessibility.AccessibilityManager
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 
+/**
+ * Centralized runtime and special-access permission utilities compatible with Android API 24–36.
+ */
 object PermissionsManager {
+
     fun isAccessibilityServiceEnabled(context: Context, service: Class<*>): Boolean {
         val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
         val enabledServices = Settings.Secure.getString(
@@ -44,6 +49,87 @@ object PermissionsManager {
             context,
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasCameraPermission(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasCallPhonePermission(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CALL_PHONE
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasReadContactsPermission(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasAccessNetworkStatePermission(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_NETWORK_STATE
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasPostNotificationsPermission(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    fun canScheduleExactAlarms(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
+            am.canScheduleExactAlarms()
+        } else {
+            true
+        }
+    }
+
+    fun requestExactAlarmPermission(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                openAppSettings(context)
+            }
+        }
+    }
+
+    fun getPermissionRationale(permission: String): String {
+        return when (permission) {
+            Manifest.permission.RECORD_AUDIO ->
+                "Microphone access is required for hands-free voice commands and offline speech recognition."
+            Manifest.permission.POST_NOTIFICATIONS ->
+                "Notification permission is required for reminders, alarms, and active voice/screen-share status controls."
+            Manifest.permission.CAMERA ->
+                "Camera access is only used when you capture a photo or visual query for the assistant."
+            Manifest.permission.CALL_PHONE ->
+                "Phone call permission is only used when you explicitly ask the assistant to place a call."
+            Manifest.permission.READ_CONTACTS ->
+                "Contacts permission is only used when you ask the assistant to look up or call a saved contact."
+            Manifest.permission.SCHEDULE_EXACT_ALARM ->
+                "Exact alarm access allows scheduled reminders and alarms to fire at the exact time you requested."
+            else ->
+                "This permission is requested only to support the specific assistant action you initiated."
+        }
     }
 
     fun canDrawOverlays(context: Context): Boolean {

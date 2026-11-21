@@ -16,8 +16,22 @@ enum class ModelLifecycleState(val label: String) {
     UNSUPPORTED_DEVICE("Unsupported device")
 }
 
+/**
+ * Explicit model integrity & verification progression so UI and diagnostics never conflate
+ * "downloaded bytes exist" with "cryptographically SHA-256 verified" or "runtime executed".
+ */
+enum class ModelVerificationStage(val label: String) {
+    NOT_DOWNLOADED("Not downloaded"),
+    DOWNLOADED("Downloaded (unverified)"),
+    STRUCTURALLY_VALID("Structurally valid"),
+    CHECKSUM_VERIFIED("SHA-256 checksum verified"),
+    LOADED("Runtime loaded"),
+    EXECUTED("Inference verified")
+}
+
 enum class ModelCatalogGroup(val title: String) {
     VOICE("Voice Synthesis"),
+    SPEECH_RECOGNITION("Offline Speech Recognition"),
     LIGHTWEIGHT_VISION("Lightweight Vision"),
     ADVANCED_VISION("Advanced Vision")
 }
@@ -45,23 +59,25 @@ data class ManagedModelDescriptor(
 /**
  * Authoritative catalog of verified Hugging Face open-weight models supported by this app.
  * Every SHA-256 included here is a verified LFS SHA-256 from Hugging Face; dynamically resolved
- * artifacts leave expectedSha256 blank until queried from Hugging Face `/api/models/.../tree/main`
+ * artifacts leave expectedSha256 blank until queried from Hugging Face `/api/models/.../tree/<rev>`
  * or `X-Linked-Etag` during download—zero synthetic or fabricated hashes.
  */
 object ModelCatalog {
+
+    const val KOKORO_PINNED_REVISION = "5d1501f"
 
     val KOKORO_GPU_MANIFEST = OfflineModelManifest(
         modelId = "kokoro-82m-gpu-fp16",
         sourceRepoId = "hexgrad/Kokoro-82M",
         runtimeRepoId = "litert-community/Kokoro-82M",
-        pinnedRevision = "main",
+        pinnedRevision = KOKORO_PINNED_REVISION,
         license = "Apache-2.0",
         minimumProfile = OfflineStorageProfile.STRICT_2GB,
         artifacts = listOf(
             OfflineArtifactSpec(
                 fileName = "kokoro_int8_gpu_fp16.litertlm",
-                relativePath = "kokoro/main/kokoro_int8_gpu_fp16.litertlm",
-                downloadUrl = "https://huggingface.co/litert-community/Kokoro-82M/resolve/main/kokoro_int8_gpu_fp16.litertlm",
+                relativePath = "kokoro/$KOKORO_PINNED_REVISION/kokoro_int8_gpu_fp16.litertlm",
+                downloadUrl = "https://huggingface.co/litert-community/Kokoro-82M/resolve/$KOKORO_PINNED_REVISION/kokoro_int8_gpu_fp16.litertlm",
                 expectedSizeBytes = 294_750_530L,
                 expectedSha256 = "1ef178b127ec48c737daf17eabb4cea5f6b3ffbc510aced270fe5c267bbeac52",
                 format = GemmaModelFormat.LITERT_LM,
@@ -75,19 +91,75 @@ object ModelCatalog {
         modelId = "kokoro-82m-cpu-fp16",
         sourceRepoId = "hexgrad/Kokoro-82M",
         runtimeRepoId = "litert-community/Kokoro-82M",
-        pinnedRevision = "main",
+        pinnedRevision = KOKORO_PINNED_REVISION,
         license = "Apache-2.0",
         minimumProfile = OfflineStorageProfile.STRICT_2GB,
         artifacts = listOf(
             OfflineArtifactSpec(
                 fileName = "kokoro_int8_fp16.litertlm",
-                relativePath = "kokoro/main/kokoro_int8_fp16.litertlm",
-                downloadUrl = "https://huggingface.co/litert-community/Kokoro-82M/resolve/main/kokoro_int8_fp16.litertlm",
+                relativePath = "kokoro/$KOKORO_PINNED_REVISION/kokoro_int8_fp16.litertlm",
+                downloadUrl = "https://huggingface.co/litert-community/Kokoro-82M/resolve/$KOKORO_PINNED_REVISION/kokoro_int8_fp16.litertlm",
                 expectedSizeBytes = 294_783_298L,
                 expectedSha256 = "e7b931ee5d4b7104012a838c9eee240d19ea69cb3ca269041a3274f83dbb7fa1",
                 format = GemmaModelFormat.LITERT_LM,
                 isMandatory = true,
                 role = "kokoro_litert_cpu"
+            )
+        )
+    )
+
+    /**
+     * Genuine multilingual offline speech recognition model (Hindi, English, Hinglish)
+     * powered by ONNX Runtime (`onnx-community/whisper-tiny`, MIT/Apache-2.0).
+     * Checksums are resolved dynamically from Hugging Face `X-Linked-Etag` / LFS metadata — never fabricated.
+     */
+    val WHISPER_TINY_ASR_MANIFEST = OfflineModelManifest(
+        modelId = "whisper-tiny-multilingual-onnx",
+        sourceRepoId = "openai/whisper-tiny",
+        runtimeRepoId = "onnx-community/whisper-tiny",
+        pinnedRevision = "main",
+        license = "MIT",
+        minimumProfile = OfflineStorageProfile.STRICT_2GB,
+        artifacts = listOf(
+            OfflineArtifactSpec(
+                fileName = "encoder_model.onnx",
+                relativePath = "whisper_tiny_onnx/encoder_model.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/whisper-tiny/resolve/main/onnx/encoder_model.onnx",
+                expectedSizeBytes = 32_900_000L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.ONNX,
+                isMandatory = true,
+                role = "asr_encoder_onnx"
+            ),
+            OfflineArtifactSpec(
+                fileName = "decoder_model_merged.onnx",
+                relativePath = "whisper_tiny_onnx/decoder_model_merged.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/whisper-tiny/resolve/main/onnx/decoder_model_merged.onnx",
+                expectedSizeBytes = 115_000_000L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.ONNX,
+                isMandatory = true,
+                role = "asr_decoder_onnx"
+            ),
+            OfflineArtifactSpec(
+                fileName = "tokenizer.json",
+                relativePath = "whisper_tiny_onnx/tokenizer.json",
+                downloadUrl = "https://huggingface.co/onnx-community/whisper-tiny/resolve/main/tokenizer.json",
+                expectedSizeBytes = 2_480_000L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.UNKNOWN,
+                isMandatory = true,
+                role = "asr_tokenizer_json"
+            ),
+            OfflineArtifactSpec(
+                fileName = "config.json",
+                relativePath = "whisper_tiny_onnx/config.json",
+                downloadUrl = "https://huggingface.co/onnx-community/whisper-tiny/resolve/main/config.json",
+                expectedSizeBytes = 1_980L,
+                expectedSha256 = "",
+                format = GemmaModelFormat.UNKNOWN,
+                isMandatory = true,
+                role = "asr_config_json"
             )
         )
     )
@@ -174,6 +246,18 @@ object ModelCatalog {
         )
     )
 
+    fun getSpeechRecognitionDescriptors(): List<ManagedModelDescriptor> = listOf(
+        ManagedModelDescriptor(
+            manifest = WHISPER_TINY_ASR_MANIFEST,
+            displayName = "Whisper Tiny Multilingual ASR (ONNX)",
+            group = ModelCatalogGroup.SPEECH_RECOGNITION,
+            purposeSummary = "Real on-device Hindi, English & Hinglish speech-to-text via ONNX Runtime (~150 MB)",
+            estimatedSizeBytes = 151_000_000L,
+            minApiLevel = 24,
+            recommendedDefault = true
+        )
+    )
+
     fun getAdvancedVisionDescriptors(): List<ManagedModelDescriptor> = listOf(
         ManagedModelDescriptor(
             manifest = GemmaModelManager.SMOLVLM2_MANIFEST,
@@ -195,7 +279,10 @@ object ModelCatalog {
     )
 
     fun allDescriptors(): List<ManagedModelDescriptor> =
-        getVoiceDescriptors() + LIGHTWEIGHT_VISION_DESCRIPTORS + getAdvancedVisionDescriptors()
+        getVoiceDescriptors() +
+            getSpeechRecognitionDescriptors() +
+            LIGHTWEIGHT_VISION_DESCRIPTORS +
+            getAdvancedVisionDescriptors()
 
     fun findById(modelId: String): ManagedModelDescriptor? =
         allDescriptors().firstOrNull { it.manifest.modelId == modelId }

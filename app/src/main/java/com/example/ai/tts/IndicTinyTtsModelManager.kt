@@ -67,11 +67,14 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .callTimeout(0, TimeUnit.MILLISECONDS)
-        .build()
+    private val client = com.example.ai.OfflinePrivacyGuard.registerCloudClient(
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .addInterceptor(com.example.ai.StrictOfflineInterceptor(appContext, operationTag = "IndicTinyTtsModelManager"))
+            .build()
+    )
     private val _status = MutableStateFlow(ModelDownloadStatus.NOT_DOWNLOADED)
     val status: StateFlow<ModelDownloadStatus> = _status.asStateFlow()
     private val _downloadProgress = MutableStateFlow(0f)

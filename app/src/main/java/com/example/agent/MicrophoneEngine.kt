@@ -97,6 +97,12 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
     private val _lastVoiceError = MutableStateFlow<com.example.ai.VoiceInputErrorCategory?>(null)
     val lastVoiceError: StateFlow<com.example.ai.VoiceInputErrorCategory?> = _lastVoiceError.asStateFlow()
 
+    private val _lastAsrDiagnosticMessage = MutableStateFlow<String?>(null)
+    val lastAsrDiagnosticMessage: StateFlow<String?> = _lastAsrDiagnosticMessage.asStateFlow()
+
+    @Volatile
+    private var sessionLanguageHint: String? = null
+
     private val _assistantState = MutableStateFlow(WakeWordAssistantState.OFF)
     val assistantState: StateFlow<WakeWordAssistantState> = _assistantState.asStateFlow()
 
@@ -208,6 +214,10 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
     fun setVoiceErrorListener(listener: ((com.example.ai.VoiceInputErrorCategory) -> Unit)?) {
         this.voiceErrorListener = listener
+    }
+
+    fun setSessionLanguageHint(languageTag: String?) {
+        sessionLanguageHint = languageTag?.trim()?.takeIf { it.isNotBlank() }
     }
 
     private fun reportVoiceError(category: com.example.ai.VoiceInputErrorCategory) {
@@ -697,10 +707,16 @@ class MicrophoneEngine private constructor(private val appContext: Context) {
 
             try {
                 Log.d(TAG, "Transcribing captured utterance (${pcmData.size} bytes, conf=${"%.2f".format(acousticConfidence)})...")
-                val transcript = kavyaAI.transcribeAudio(pcmData, SAMPLE_RATE)
+                val transcript = kavyaAI.transcribeAudio(
+                    pcmData = pcmData,
+                    sampleRate = SAMPLE_RATE,
+                    languageHint = sessionLanguageHint
+                )
+                _lastAsrDiagnosticMessage.value = kavyaAI.lastTranscriptionStatusMessage
                 processRecognizedTranscript(transcript, confidence = acousticConfidence)
             } catch (e: Exception) {
                 _assistantState.value = WakeWordAssistantState.ERROR_RECOVERY
+                _lastAsrDiagnosticMessage.value = e.localizedMessage ?: "Speech recognition error"
                 reportVoiceError(com.example.ai.VoiceInputErrorCategory.TRANSCRIPTION_SERVICE_ERROR)
                 Log.e(TAG, "Error processing utterance transcript", e)
             } finally {

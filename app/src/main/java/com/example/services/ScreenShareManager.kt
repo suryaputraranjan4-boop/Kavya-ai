@@ -168,6 +168,9 @@ object ScreenShareManager {
     @Volatile
     private var isProtectedSurface: Boolean = false
 
+    @Volatile
+    var onPauseStateChanged: ((Boolean) -> Unit)? = null
+
     private val managerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var heartbeatJob: Job? = null
 
@@ -407,6 +410,8 @@ object ScreenShareManager {
         isSystemVisibilityPaused = !isVisible
         val res = activeResolution ?: Pair(720, 1280)
         if (!isVisible) {
+            _latestFrame.value = null
+            com.example.visual.VisionPipeline.clearCachedFrameForPrivacy("captured content hidden")
             updateState(ScreenShareState.Paused(res.first, res.second, currentSessionId))
         } else if (!isUserPaused && (_state.value is ScreenShareState.Paused || _state.value is ScreenShareState.StaleFrame)) {
             val now = System.currentTimeMillis()
@@ -430,11 +435,15 @@ object ScreenShareManager {
      * User-controlled Privacy Shield Pause / Resume.
      */
     fun setUserPaused(paused: Boolean) {
+        isUserPaused = paused
+        if (paused) {
+            _latestFrame.value = null
+            com.example.visual.VisionPipeline.clearCachedFrameForPrivacy("user privacy pause")
+        }
         if (currentSessionId.isBlank()) {
-            isUserPaused = paused
+            onPauseStateChanged?.invoke(paused)
             return
         }
-        isUserPaused = paused
         val res = activeResolution ?: Pair(720, 1280)
         if (paused) {
             updateState(ScreenShareState.Paused(res.first, res.second, currentSessionId))
@@ -456,6 +465,7 @@ object ScreenShareManager {
         } else {
             syncTelemetryFromState(_state.value)
         }
+        onPauseStateChanged?.invoke(paused)
     }
 
     fun toggleUserPause(): Boolean {
@@ -466,10 +476,14 @@ object ScreenShareManager {
 
     /**
      * Updates protected surface detection state (`FLAG_SECURE` / Chrome Incognito / DRM content)
-     * without terminating the capture session.
+     * without terminating the capture session, clearing any previously cached frame immediately.
      */
     fun updateProtectedSurfaceStatus(isProtected: Boolean, sessionId: String = currentSessionId) {
         if (sessionId.isNotBlank() && sessionId != currentSessionId) return
+        if (isProtected) {
+            _latestFrame.value = null
+            com.example.visual.VisionPipeline.clearCachedFrameForPrivacy("FLAG_SECURE protected window")
+        }
         if (isProtectedSurface == isProtected) return
         isProtectedSurface = isProtected
         val current = _state.value
@@ -684,5 +698,6 @@ object ScreenShareManager {
         isProtectedSurface = false
         activeResolution = null
         _latestFrame.value = null
+        com.example.visual.VisionPipeline.clearCachedFrameForPrivacy("screen share cleanup")
     }
 }

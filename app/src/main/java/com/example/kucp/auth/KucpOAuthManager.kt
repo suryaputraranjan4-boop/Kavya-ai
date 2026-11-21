@@ -41,10 +41,13 @@ data class OAuthTokenResult(
  * Tokens are stored strictly inside AES-256-GCM KucpCredentialVault (never Room DB or plaintext logs).
  */
 class KucpOAuthManager(
-    private val httpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .build()
+    private val httpClient: OkHttpClient = com.example.ai.OfflinePrivacyGuard.registerCloudClient(
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor(com.example.ai.StrictOfflineInterceptor(operationTag = "KucpOAuthManager"))
+            .build()
+    )
 ) {
     private val pendingSessions = ConcurrentHashMap<String, PkceSession>()
     private val secureRandom = SecureRandom()

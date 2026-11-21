@@ -94,15 +94,47 @@ class KokoroTtsEngine(private val context: Context) {
         val pref = KokoroVariantPreference.fromId(AppPreferences.getKokoroVariant(appContext))
         val gpuSpec = ModelCatalog.KOKORO_GPU_MANIFEST.artifacts.first()
         val cpuSpec = ModelCatalog.KOKORO_CPU_MANIFEST.artifacts.first()
-        val gpuFile = File(baseDir, gpuSpec.relativePath)
-        val cpuFile = File(baseDir, cpuSpec.relativePath)
+        val gpuFile = File(baseDir, gpuSpec.relativePath).takeIf { it.isFile }
+            ?: File(baseDir, "kokoro/main/${gpuSpec.fileName}")
+        val cpuFile = File(baseDir, cpuSpec.relativePath).takeIf { it.isFile }
+            ?: File(baseDir, "kokoro/main/${cpuSpec.fileName}")
 
         val candidates: List<Pair<String, File>> = when (pref) {
             KokoroVariantPreference.GPU_FP16 -> listOf("GPU_FP16" to gpuFile)
             KokoroVariantPreference.CPU_FP16 -> listOf("CPU_FP16" to cpuFile)
             KokoroVariantPreference.AUTO -> listOf("GPU_FP16" to gpuFile, "CPU_FP16" to cpuFile)
         }
-        return candidates.firstOrNull { (_, f) -> f.isFile && f.length() > 1_000_000L }
+        return candidates.firstOrNull { (_, f) -> f.isFile && f.length() > 0L }
+    }
+
+    internal fun verifyKokoroArtifactIntegrity(variantName: String, modelFile: File): Result<Unit> {
+        val spec = if (variantName == "GPU_FP16") {
+            ModelCatalog.KOKORO_GPU_MANIFEST.artifacts.first()
+        } else {
+            ModelCatalog.KOKORO_CPU_MANIFEST.artifacts.first()
+        }
+        if (!modelFile.isFile) {
+            return Result.failure(IllegalStateException("MODEL_NOT_INSTALLED: Kokoro artifact missing (${modelFile.name})."))
+        }
+        val actualSize = modelFile.length()
+        if (spec.expectedSizeBytes > 0L && actualSize != spec.expectedSizeBytes) {
+            return Result.failure(
+                IllegalStateException(
+                    "MODEL_CORRUPT: Kokoro artifact size mismatch (${modelFile.name}: actual=$actualSize bytes, expected=${spec.expectedSizeBytes} bytes). Re-download Kokoro-82M."
+                )
+            )
+        }
+        if (spec.expectedSha256.isNotBlank()) {
+            val actualSha = GemmaModelManager.computeSha256(modelFile)
+            if (!actualSha.equals(spec.expectedSha256, ignoreCase = true)) {
+                return Result.failure(
+                    IllegalStateException(
+                        "MODEL_CORRUPT: Kokoro SHA-256 verification failed for ${modelFile.name}. Re-download Kokoro-82M."
+                    )
+                )
+            }
+        }
+        return Result.success(Unit)
     }
 
     suspend fun ensureLoadedAndWarmedUp(): Result<String> = runtimeMutex.withLock {
@@ -119,6 +151,13 @@ class KokoroTtsEngine(private val context: Context) {
                 )
 
             val (variantName, modelFile) = artifact
+            val integrity = verifyKokoroArtifactIntegrity(variantName, modelFile)
+            if (integrity.isFailure) {
+                val err = integrity.exceptionOrNull()?.message ?: "Kokoro artifact integrity check failed."
+                lastError = err
+                return@withContext Result.failure(IllegalStateException(err, integrity.exceptionOrNull()))
+            }
+
             val requestedDelegate = if (variantName == "GPU_FP16") Delegate.GPU else Delegate.CPU
 
             if (ttsInstance != null && loadedModelPath == modelFile.absolutePath && warmupPassed) {

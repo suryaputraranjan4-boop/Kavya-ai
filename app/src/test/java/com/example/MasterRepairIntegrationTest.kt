@@ -188,9 +188,9 @@ class MasterRepairIntegrationTest {
         }
         val verifiedReport = orchestrator.inspectModelDiagnostics(GemmaModelManager.FLORENCE2_MANIFEST.modelId, baseDir)
         assertNotNull(verifiedReport)
-        assertEquals(VisionModelDiagnosticStage.VERIFIED, verifiedReport.stage)
+        assertEquals(VisionModelDiagnosticStage.STRUCTURALLY_VALID, verifiedReport.stage)
         assertTrue(verifiedReport.isDownloaded)
-        assertTrue(verifiedReport.isVerified)
+        assertFalse(verifiedReport.isVerified)
         assertFalse(verifiedReport.isExecuted)
 
         // Record execution and verify stage advances to EXECUTED

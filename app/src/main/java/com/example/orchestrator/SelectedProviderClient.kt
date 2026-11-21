@@ -11,6 +11,7 @@ import com.example.ai.GeminiModelRegistry
 import com.example.ai.GenerateContentRequest
 import com.example.ai.GenerationConfig
 import com.example.ai.InlineData
+import com.example.ai.OfflinePrivacyGuard
 import com.example.ai.Part
 import com.example.ai.RetrofitClient
 import com.example.ai.StructuredRoutingStatus
@@ -18,6 +19,7 @@ import com.example.ai.TaskRouter
 import com.example.ai.offline.Gemma4E4BEngine
 import com.example.ai.offline.GemmaModelManager
 import com.example.utils.AppPreferences
+import com.example.utils.NetworkConnectivityMonitor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -76,15 +78,8 @@ object SelectedProviderClient {
 
     fun isNetworkConnected(context: Context): Boolean {
         testNetworkConnectedOverride?.let { return it }
-        return try {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                ?: return true
-            val network = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(network) ?: return false
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } catch (_: Exception) {
-            true
-        }
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) return false
+        return NetworkConnectivityMonitor.isValidatedOnline(context)
     }
 
     fun resolveSelectedProviderAndModel(context: Context): Pair<String, String> {
@@ -214,7 +209,7 @@ object SelectedProviderClient {
         imageBytes: ByteArray?,
         preferredProviderId: String? = null
     ): ProviderInvocationResult = withContext(Dispatchers.IO) {
-        if (AppPreferences.isOfflineFallbackEnabled(context)) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
             return@withContext ProviderInvocationResult.Failure(
                 code = "CLOUD_PROVIDER_UNAVAILABLE",
                 message = "Strict offline mode is enabled; cloud vision escalation disabled."
@@ -289,7 +284,7 @@ object SelectedProviderClient {
         val capabilities = resolveCapabilities(providerId, modelId)
         val apiKey = resolveApiKey(context, providerId)
         val online = isNetworkConnected(context)
-        val strictOffline = AppPreferences.isOfflineFallbackEnabled(context)
+        val strictOffline = OfflinePrivacyGuard.isStrictOfflineMode(context)
         val engine = Gemma4E4BEngine.getInstance(context)
 
         // 1. Strict Privacy / Offline Mode: NEVER touch the network (Section 3.3)

@@ -182,15 +182,21 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                     updateSpeakingState(true)
                     when (engine) {
                         VoiceEngine.GEMINI_VOICE -> {
-                            val selectedVoice = AppPreferences.getGeminiVoice(appContext).ifBlank { "Kore" }
-                            val audioBytes = kavyaAiTts.generateSpeechAudio(
-                                text = text,
-                                voiceName = selectedVoice,
-                                emotionLabel = emotion,
-                                pitchMultiplier = pitch,
-                                speedMultiplier = speed
-                            )
+                            val isStrictOffline = com.example.ai.OfflinePrivacyGuard.isStrictOfflineMode(appContext)
+                            val audioBytes = if (isStrictOffline) {
+                                null
+                            } else {
+                                val selectedVoice = AppPreferences.getGeminiVoice(appContext).ifBlank { "Kore" }
+                                kavyaAiTts.generateSpeechAudio(
+                                    text = text,
+                                    voiceName = selectedVoice,
+                                    emotionLabel = emotion,
+                                    pitchMultiplier = pitch,
+                                    speedMultiplier = speed
+                                )
+                            }
                             if (audioBytes != null && audioBytes.isNotEmpty()) {
+                                com.example.ai.OfflinePrivacyGuard.recordEngineAttribution("CLOUD_TTS:GEMINI_VOICE")
                                 player.playWav(
                                     wavBytes = audioBytes,
                                     text = text,
@@ -199,14 +205,18 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                                 )
                                 playbackQueued = true
                             } else if (speakViaAndroidSystemTts(text, speed, pitch, enqueue, completion)) {
+                                com.example.ai.OfflinePrivacyGuard.recordEngineAttribution("LOCAL_TTS:ANDROID_SYSTEM_TTS")
                                 playbackQueued = true
                             } else {
-                                withContext(Dispatchers.Main) { completion?.invoke() }
+                                withContext(Dispatchers.Main) {
+                                    onSpeechError?.invoke("Offline Android System TTS is unavailable or missing required language voice data.")
+                                    completion?.invoke()
+                                }
                                 updateSpeakingState(false)
                             }
                         }
                         VoiceEngine.KOKORO_82M -> {
-                            // Never silently fall back to Indic Tiny TTS on Kokoro errors.
+                            // Never silently fall back to Indic Tiny TTS or cloud TTS on Kokoro errors.
                             var segmentIdx = 0
                             val res = kokoroEngine.synthesizeSegmented(
                                 text = text,
@@ -226,6 +236,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                             if (res.isFailure) {
                                 throw (res.exceptionOrNull() ?: IllegalStateException("Kokoro-82M synthesis failed"))
                             }
+                            com.example.ai.OfflinePrivacyGuard.recordEngineAttribution("LOCAL_TTS:KOKORO_82M")
                             if (playbackQueued && completion != null) {
                                 player.playPcm(
                                     pcmBytes = ByteArray(2),
@@ -243,6 +254,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                             if (pcm.isEmpty()) {
                                 throw IllegalStateException("Indic Tiny TTS returned empty audio.")
                             }
+                            com.example.ai.OfflinePrivacyGuard.recordEngineAttribution("LOCAL_TTS:INDIC_TINY_TTS")
                             player.playPcm(
                                 pcmBytes = pcm,
                                 sampleRate = IndicTinyTtsEngine.SAMPLE_RATE,
@@ -253,6 +265,12 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                             playbackQueued = true
                         }
                         VoiceEngine.CHATTERBOX -> {
+                            if (com.example.ai.OfflinePrivacyGuard.isStrictOfflineMode(appContext)) {
+                                throw com.example.ai.StrictOfflineBlockedException(
+                                    operation = "tts:chatterbox",
+                                    message = "Chatterbox TTS requires a remote backend and is blocked while Strict Offline Mode is enabled. Switch to Kokoro-82M or Offline System TTS."
+                                )
+                            }
                             val activeProfile = voiceProfileManager.getActiveProfile()
                             when (val result = chatterboxClient.synthesize(
                                 text = text,
@@ -262,6 +280,7 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                                 emotion = emotion
                             )) {
                                 is ChatterboxResult.Success -> {
+                                    com.example.ai.OfflinePrivacyGuard.recordEngineAttribution("CLOUD_TTS:CHATTERBOX")
                                     player.playWav(
                                         wavBytes = result.audioBytes,
                                         text = text,
@@ -327,22 +346,26 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                     }
 
                     override fun onDone(id: String?) {
-                        if (id != null) activeSystemTtsUtterances.remove(id)
-                        val cb = id?.let { systemTtsCompletions.remove(it) }
-                        if (activeSystemTtsUtterances.isEmpty() && !player.isSpeaking()) {
-                            updateSpeakingState(false)
-                        }
-                        if (cb != null) {
-                            scope.launch(Dispatchers.Main) { cb.invoke() }
-                        }
+                        handleSystemTtsTerminal(id, errorCode = null)
                     }
 
                     @Deprecated("Deprecated in API 21")
                     override fun onError(id: String?) {
+                        handleSystemTtsTerminal(id, errorCode = android.speech.tts.TextToSpeech.ERROR)
+                    }
+
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        handleSystemTtsTerminal(utteranceId, errorCode = errorCode)
+                    }
+
+                    private fun handleSystemTtsTerminal(id: String?, errorCode: Int?) {
                         if (id != null) activeSystemTtsUtterances.remove(id)
                         val cb = id?.let { systemTtsCompletions.remove(it) }
                         if (activeSystemTtsUtterances.isEmpty() && !player.isSpeaking()) {
                             updateSpeakingState(false)
+                        }
+                        if (errorCode != null) {
+                            Log.w(TAG, "Android System TTS utterance failed (id=$id, code=$errorCode)")
                         }
                         if (cb != null) {
                             scope.launch(Dispatchers.Main) { cb.invoke() }
@@ -359,26 +382,62 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
                 flushed.forEach { cb -> scope.launch(Dispatchers.Main) { cb.invoke() } }
             }
 
-            val hasDevanagari = text.any { it in '\u0900'..'\u097F' }
-            tts.language = if (hasDevanagari) java.util.Locale("hi", "IN") else java.util.Locale.US
             tts.setSpeechRate(speed.coerceIn(0.6f, 2.0f))
             tts.setPitch(pitch.coerceIn(0.6f, 1.5f))
 
-            val utteranceId = "kavya_tts_${System.nanoTime()}"
-            activeSystemTtsUtterances.add(utteranceId)
-            if (completion != null) {
-                systemTtsCompletions[utteranceId] = completion
+            val segments = KokoroLanguageSegmenter.segmentText(
+                rawText = text,
+                languageMode = KokoroLanguageMode.AUTO_HINDI_ENGLISH,
+                hindiVoiceId = AppPreferences.getKokoroHindiVoice(appContext),
+                englishVoiceId = AppPreferences.getKokoroEnglishVoice(appContext)
+            ).ifEmpty {
+                listOf(
+                    KokoroSpeechSegment(
+                        text = text.trim(),
+                        voiceId = AppPreferences.getKokoroEnglishVoice(appContext),
+                        locale = if (text.any { it in '\u0900'..'\u097F' }) "hi-IN" else "en-US",
+                        script = if (text.any { it in '\u0900'..'\u097F' }) KokoroSpeechScript.HINDI_DEVANAGARI else KokoroSpeechScript.ENGLISH_LATIN
+                    )
+                )
             }
 
-            val queueMode = if (enqueue) android.speech.tts.TextToSpeech.QUEUE_ADD else android.speech.tts.TextToSpeech.QUEUE_FLUSH
-            val res = tts.speak(text, queueMode, null, utteranceId)
-            if (res != android.speech.tts.TextToSpeech.SUCCESS) {
-                activeSystemTtsUtterances.remove(utteranceId)
-                systemTtsCompletions.remove(utteranceId)
-                false
-            } else {
-                true
+            var queuedAny = false
+            segments.forEachIndexed { idx, seg ->
+                val targetLocale = if (seg.script == KokoroSpeechScript.HINDI_DEVANAGARI) {
+                    java.util.Locale("hi", "IN")
+                } else {
+                    java.util.Locale.US
+                }
+                val langStatus = tts.isLanguageAvailable(targetLocale)
+                if (langStatus >= android.speech.tts.TextToSpeech.LANG_AVAILABLE) {
+                    tts.language = targetLocale
+                } else {
+                    val fallbackLocale = java.util.Locale.US
+                    if (tts.isLanguageAvailable(fallbackLocale) >= android.speech.tts.TextToSpeech.LANG_AVAILABLE) {
+                        tts.language = fallbackLocale
+                    }
+                }
+
+                val isLast = idx == segments.lastIndex
+                val utteranceId = "kavya_tts_${System.nanoTime()}_$idx"
+                activeSystemTtsUtterances.add(utteranceId)
+                if (isLast && completion != null) {
+                    systemTtsCompletions[utteranceId] = completion
+                }
+                val queueMode = if (enqueue || idx > 0) {
+                    android.speech.tts.TextToSpeech.QUEUE_ADD
+                } else {
+                    android.speech.tts.TextToSpeech.QUEUE_FLUSH
+                }
+                val res = tts.speak(seg.text, queueMode, null, utteranceId)
+                if (res != android.speech.tts.TextToSpeech.SUCCESS) {
+                    activeSystemTtsUtterances.remove(utteranceId)
+                    systemTtsCompletions.remove(utteranceId)
+                } else {
+                    queuedAny = true
+                }
             }
+            queuedAny
         } catch (t: Throwable) {
             Log.w(TAG, "Android system TTS fallback unavailable: ${t.message}")
             false

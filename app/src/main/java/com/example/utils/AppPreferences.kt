@@ -160,7 +160,11 @@ object AppPreferences {
     }
 
     fun setOfflineFallbackEnabled(context: Context, enabled: Boolean) {
+        com.example.ai.OfflinePrivacyGuard.bindApplicationContext(context)
         getPrefs(context).edit().putBoolean(KEY_OFFLINE_FALLBACK, enabled).apply()
+        if (enabled) {
+            com.example.ai.OfflinePrivacyGuard.cancelAllActiveCloudRequests("Offline fallback enabled")
+        }
     }
 
     fun isOfflineModeEnabled(context: Context): Boolean = isOfflineFallbackEnabled(context)
@@ -259,8 +263,12 @@ object AppPreferences {
     }
 
     fun setAiProvider(context: Context, provider: String) {
+        com.example.ai.OfflinePrivacyGuard.bindApplicationContext(context)
         val normalized = provider.trim().uppercase(java.util.Locale.ROOT)
         getPrefs(context).edit().putString(KEY_AI_PROVIDER, normalized).apply()
+        if (normalized == "GEMMA_OFFLINE") {
+            com.example.ai.OfflinePrivacyGuard.cancelAllActiveCloudRequests("Provider switched to GEMMA_OFFLINE")
+        }
         com.example.orchestrator.AiAuthorityGateway.onProviderSwitched(normalized)
     }
 

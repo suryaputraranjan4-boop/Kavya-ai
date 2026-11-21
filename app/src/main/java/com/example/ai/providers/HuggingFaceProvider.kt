@@ -2,6 +2,7 @@ package com.example.ai.providers
 
 import android.content.Context
 import android.util.Log
+import com.example.ai.OfflinePrivacyGuard
 import com.example.ai.RetrofitClient
 import com.example.security.SecureStorage
 import com.example.utils.AppPreferences
@@ -131,6 +132,9 @@ class HuggingFaceProvider : AIProvider {
      * Sends real HTTPS GET request to https://huggingface.co/api/whoami-v2.
      */
     override suspend fun validateCredentials(context: Context): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            return@withContext Pair(false, "Strict Offline Mode is active. Hugging Face token validation is blocked.")
+        }
         val token = getToken(context)
         return@withContext validateTokenWithKey(token)
     }
@@ -189,6 +193,7 @@ class HuggingFaceProvider : AIProvider {
      * This avoids presenting masked-language or vision-only models as conversational LLMs.
      */
     override suspend fun getModels(context: Context): List<ProviderModelInfo> = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) return@withContext cachedChatModels.toList()
         val token = getToken(context)
         if (token.isBlank()) return@withContext cachedChatModels.toList()
 
@@ -235,6 +240,7 @@ class HuggingFaceProvider : AIProvider {
     }
 
     suspend fun discoverModels(pipelineTag: String? = null, context: Context): List<ProviderModelInfo> = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) return@withContext cachedDiscoveredModels.toList()
         val token = getToken(context)
         val tagParam = if (!pipelineTag.isNullOrBlank()) "&pipeline_tag=$pipelineTag" else ""
         val url = "$HUB_API_BASE/models?inference_provider=hf-inference&limit=25&sort=downloads&direction=-1$tagParam"
@@ -296,6 +302,13 @@ class HuggingFaceProvider : AIProvider {
         context: Context,
         parameters: Map<String, Any>? = null
     ): HfInferenceResult = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            return@withContext HfInferenceResult(
+                success = false,
+                text = "Strict Offline Mode is active. Hugging Face cloud inference is blocked.",
+                error = "STRICT_OFFLINE_BLOCKED"
+            )
+        }
         val token = getToken(context)
         if (token.isBlank()) {
             return@withContext HfInferenceResult(
@@ -599,8 +612,17 @@ class HuggingFaceProvider : AIProvider {
         systemInstruction: String?,
         context: Context
     ): AIProviderResult = withContext(Dispatchers.IO) {
-        val token = getToken(context)
         val model = selectedChatModel(context)
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            return@withContext AIProviderResult(
+                success = false,
+                text = "Strict Offline Mode is active. Hugging Face chat requests are blocked.",
+                providerId = providerId,
+                model = model,
+                error = "STRICT_OFFLINE_BLOCKED"
+            )
+        }
+        val token = getToken(context)
         if (token.isBlank()) {
             return@withContext AIProviderResult(
                 success = false,
@@ -681,6 +703,10 @@ class HuggingFaceProvider : AIProvider {
         context: Context,
         modelOverride: String?
     ): Flow<String> = flow {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            emit("Strict Offline Mode is active. Hugging Face streaming is blocked.")
+            return@flow
+        }
         val token = getToken(context)
         if (token.isBlank()) {
             emit("This provider is not configured. Missing Hugging Face token.")

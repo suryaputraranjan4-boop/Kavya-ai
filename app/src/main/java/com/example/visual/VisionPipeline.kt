@@ -38,6 +38,7 @@ object VisionPipeline {
     )
 
     private const val MEAN_DIFF_CHANGE_THRESHOLD = 4.5f
+    const val DEFAULT_FRESH_FRAME_MAX_AGE_MS = 5_000L
 
     private val _perceptionState = MutableStateFlow(VisualPerceptionState())
     val perceptionState: StateFlow<VisualPerceptionState> = _perceptionState.asStateFlow()
@@ -114,16 +115,44 @@ object VisionPipeline {
     }
 
     /**
-     * Compresses the latest captured frame for Gemini Vision multimodal analysis
-     * only when semantic visual reasoning is genuinely required.
+     * Returns the latest captured frame ONLY if it is non-recycled and younger than [maxAgeMs].
+     * Prevents stale or privacy-paused frames from being sent to local or cloud vision models.
+     */
+    fun getFreshFrame(maxAgeMs: Long = DEFAULT_FRESH_FRAME_MAX_AGE_MS): Bitmap? {
+        val frame = getLatestFrame() ?: return null
+        val ts = lastProcessTimestamp
+        if (ts <= 0L) return null
+        val ageMs = (System.currentTimeMillis() - ts).coerceAtLeast(0L)
+        if (ageMs > maxAgeMs) {
+            Log.w(TAG, "Rejected stale cached frame (age=${ageMs}ms > maxAgeMs=${maxAgeMs}ms)")
+            return null
+        }
+        return frame
+    }
+
+    /**
+     * Compresses the latest captured frame for visual analysis.
+     * Uses [getFreshFrame] when [maxAgeMs] > 0 to avoid sending stale screenshots.
      */
     fun getCompressedJpegFrame(
         maxDimension: Int = PerformanceProfileManager.snapshot.value.jpegMaxDimension,
-        quality: Int = PerformanceProfileManager.snapshot.value.jpegQuality
+        quality: Int = PerformanceProfileManager.snapshot.value.jpegQuality,
+        maxAgeMs: Long = DEFAULT_FRESH_FRAME_MAX_AGE_MS
     ): ByteArray? {
-        val frame = getLatestFrame() ?: return null
+        val frame = if (maxAgeMs > 0L) getFreshFrame(maxAgeMs) else getLatestFrame()
+        frame ?: return null
         return compressBitmapToJpeg(frame, maxDimension, quality)
     }
+
+    fun getFreshCompressedJpegFrame(
+        maxAgeMs: Long = DEFAULT_FRESH_FRAME_MAX_AGE_MS,
+        maxDimension: Int = PerformanceProfileManager.snapshot.value.jpegMaxDimension,
+        quality: Int = PerformanceProfileManager.snapshot.value.jpegQuality
+    ): ByteArray? = getCompressedJpegFrame(
+        maxDimension = maxDimension,
+        quality = quality,
+        maxAgeMs = maxAgeMs
+    )
 
     /**
      * Crops a normalized region [0f..1f] from the captured frame (inspired by Circle-to-Share
@@ -265,6 +294,16 @@ object VisionPipeline {
         if (bitmap.isRecycled) return false
         val (_, delta) = peekPerceptualDelta(bitmap)
         return previousFrameHash.isEmpty() || delta >= MEAN_DIFF_CHANGE_THRESHOLD
+    }
+
+    fun clearCachedFrameForPrivacy(reason: String) {
+        cachedLatestFrame = null
+        lastProcessTimestamp = 0L
+        previousFrameHash = ""
+        synchronized(hashSampleLock) {
+            previousLuminanceGrid = null
+        }
+        Log.i(TAG, "Cleared cached sensitive frame ($reason)")
     }
 
     fun clearFrame() {

@@ -54,6 +54,11 @@ class GeminiLiveClient(
      * to the single physical [MicrophoneEngine] session.
      */
     fun startLiveSession(apiKey: String, model: String = GeminiModelRegistry.LIVE_STREAM_MODEL) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            Log.w(TAG, "Strict Offline Mode active: refusing Gemini Live WebSocket connection.")
+            _connectionState.value = false
+            return
+        }
         if (apiKey.isBlank()) {
             Log.e(TAG, "Cannot start Gemini Live session: API key is blank.")
             return
@@ -82,11 +87,13 @@ class GeminiLiveClient(
             }
         }
 
-        val client = RetrofitClient.okHttpClient.newBuilder()
-            .readTimeout(0, TimeUnit.MILLISECONDS)
-            .writeTimeout(10, TimeUnit.SECONDS)
-            .pingInterval(15, TimeUnit.SECONDS)
-            .build()
+        val client = OfflinePrivacyGuard.registerCloudClient(
+            RetrofitClient.okHttpClient.newBuilder()
+                .readTimeout(0, TimeUnit.MILLISECONDS)
+                .writeTimeout(10, TimeUnit.SECONDS)
+                .pingInterval(15, TimeUnit.SECONDS)
+                .build()
+        )
         okHttpClient = client
 
         val request = Request.Builder()
@@ -94,7 +101,7 @@ class GeminiLiveClient(
             .addHeader("x-goog-api-key", apiKey.trim())
             .build()
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+        val ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.i(TAG, "Gemini Live WebSocket connection established. Sending setup payload...")
                 _connectionState.value = true
@@ -138,6 +145,8 @@ class GeminiLiveClient(
                 cleanup()
             }
         })
+        webSocket = ws
+        OfflinePrivacyGuard.registerActiveWebSocket(ws)
     }
 
     /**
@@ -163,8 +172,10 @@ class GeminiLiveClient(
 
         screenStreamJob?.cancel()
         screenStreamJob = null
+        val closingWs = webSocket
+        OfflinePrivacyGuard.unregisterWebSocket(closingWs)
         try {
-            webSocket?.close(1000, "Client disconnect requested")
+            closingWs?.close(1000, "Client disconnect requested")
         } catch (_: Exception) {}
         webSocket = null
         okHttpClient = null
@@ -205,6 +216,10 @@ class GeminiLiveClient(
 
     private fun sendAudioFrame(pcmData: ByteArray) {
         if (!isConnected.get() || pcmData.isEmpty()) return
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            cleanup()
+            return
+        }
         val currentWs = webSocket ?: return
 
         try {

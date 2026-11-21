@@ -128,6 +128,11 @@ object DefaultHttpUrlConnectionTransport : ResumableHttpTransport {
         url: String,
         startByteOffset: Long
     ): ResumableHttpTransport.HttpStreamResponse {
+        val host = runCatching { URL(url).host.orEmpty() }.getOrDefault("")
+        com.example.ai.OfflinePrivacyGuard.checkOutboundAllowed(
+            operation = "model_range_download",
+            host = host
+        )
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 30_000
@@ -141,7 +146,7 @@ object DefaultHttpUrlConnectionTransport : ResumableHttpTransport {
         val code = conn.responseCode
         val contentRange = conn.getHeaderField("Content-Range")
         val contentLen = conn.contentLengthLong
-        val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: InputStream.nullInputStream())
+        val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: java.io.ByteArrayInputStream(ByteArray(0)))
         return ResumableHttpTransport.HttpStreamResponse(
             statusCode = code,
             contentRangeHeader = contentRange,
@@ -208,20 +213,22 @@ object GemmaModelManager {
 
     /**
      * Auxiliary offline vision/OCR/region-proposal bundle:
-     * onnx-community/Florence-2-base-ft (Q4F16 ONNX on Hugging Face main).
+     * onnx-community/Florence-2-base-ft (Q4F16 ONNX pinned at revision 8d389ee).
      */
+    const val FLORENCE2_PINNED_REVISION = "8d389ee"
+
     val FLORENCE2_MANIFEST = OfflineModelManifest(
         modelId = "florence-2-base-ft-q4f16-onnx",
         sourceRepoId = "microsoft/Florence-2-base-ft",
         runtimeRepoId = "onnx-community/Florence-2-base-ft",
-        pinnedRevision = "main",
+        pinnedRevision = FLORENCE2_PINNED_REVISION,
         license = "MIT",
         minimumProfile = OfflineStorageProfile.STRICT_2GB,
         artifacts = listOf(
             OfflineArtifactSpec(
                 fileName = "vision_encoder_q4f16.onnx",
-                relativePath = "florence2/main/onnx/vision_encoder_q4f16.onnx",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/vision_encoder_q4f16.onnx",
+                relativePath = "florence2/$FLORENCE2_PINNED_REVISION/onnx/vision_encoder_q4f16.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/$FLORENCE2_PINNED_REVISION/onnx/vision_encoder_q4f16.onnx",
                 expectedSizeBytes = 0L,
                 expectedSha256 = "",
                 format = GemmaModelFormat.ONNX,
@@ -230,8 +237,8 @@ object GemmaModelManager {
             ),
             OfflineArtifactSpec(
                 fileName = "encoder_model_q4f16.onnx",
-                relativePath = "florence2/main/onnx/encoder_model_q4f16.onnx",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/encoder_model_q4f16.onnx",
+                relativePath = "florence2/$FLORENCE2_PINNED_REVISION/onnx/encoder_model_q4f16.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/$FLORENCE2_PINNED_REVISION/onnx/encoder_model_q4f16.onnx",
                 expectedSizeBytes = 0L,
                 expectedSha256 = "",
                 format = GemmaModelFormat.ONNX,
@@ -240,8 +247,8 @@ object GemmaModelManager {
             ),
             OfflineArtifactSpec(
                 fileName = "decoder_model_merged_q4f16.onnx",
-                relativePath = "florence2/main/onnx/decoder_model_merged_q4f16.onnx",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/decoder_model_merged_q4f16.onnx",
+                relativePath = "florence2/$FLORENCE2_PINNED_REVISION/onnx/decoder_model_merged_q4f16.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/$FLORENCE2_PINNED_REVISION/onnx/decoder_model_merged_q4f16.onnx",
                 expectedSizeBytes = 0L,
                 expectedSha256 = "",
                 format = GemmaModelFormat.ONNX,
@@ -250,8 +257,8 @@ object GemmaModelManager {
             ),
             OfflineArtifactSpec(
                 fileName = "embed_tokens_q4f16.onnx",
-                relativePath = "florence2/main/onnx/embed_tokens_q4f16.onnx",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/embed_tokens_q4f16.onnx",
+                relativePath = "florence2/$FLORENCE2_PINNED_REVISION/onnx/embed_tokens_q4f16.onnx",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/$FLORENCE2_PINNED_REVISION/onnx/embed_tokens_q4f16.onnx",
                 expectedSizeBytes = 0L,
                 expectedSha256 = "",
                 format = GemmaModelFormat.ONNX,
@@ -260,8 +267,8 @@ object GemmaModelManager {
             ),
             OfflineArtifactSpec(
                 fileName = "config.json",
-                relativePath = "florence2/main/config.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/config.json",
+                relativePath = "florence2/$FLORENCE2_PINNED_REVISION/config.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/$FLORENCE2_PINNED_REVISION/config.json",
                 expectedSizeBytes = 0L,
                 expectedSha256 = "",
                 format = GemmaModelFormat.UNKNOWN,
@@ -270,8 +277,8 @@ object GemmaModelManager {
             ),
             OfflineArtifactSpec(
                 fileName = "preprocessor_config.json",
-                relativePath = "florence2/main/preprocessor_config.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/preprocessor_config.json",
+                relativePath = "florence2/$FLORENCE2_PINNED_REVISION/preprocessor_config.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/$FLORENCE2_PINNED_REVISION/preprocessor_config.json",
                 expectedSizeBytes = 0L,
                 expectedSha256 = "",
                 format = GemmaModelFormat.UNKNOWN,
@@ -280,8 +287,8 @@ object GemmaModelManager {
             ),
             OfflineArtifactSpec(
                 fileName = "tokenizer.json",
-                relativePath = "florence2/main/tokenizer.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/tokenizer.json",
+                relativePath = "florence2/$FLORENCE2_PINNED_REVISION/tokenizer.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/$FLORENCE2_PINNED_REVISION/tokenizer.json",
                 expectedSizeBytes = 0L,
                 expectedSha256 = "",
                 format = GemmaModelFormat.UNKNOWN,
@@ -290,8 +297,8 @@ object GemmaModelManager {
             ),
             OfflineArtifactSpec(
                 fileName = "tokenizer_config.json",
-                relativePath = "florence2/main/tokenizer_config.json",
-                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/tokenizer_config.json",
+                relativePath = "florence2/$FLORENCE2_PINNED_REVISION/tokenizer_config.json",
+                downloadUrl = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/$FLORENCE2_PINNED_REVISION/tokenizer_config.json",
                 expectedSizeBytes = 0L,
                 expectedSha256 = "",
                 format = GemmaModelFormat.UNKNOWN,

@@ -18,11 +18,14 @@ import java.util.concurrent.TimeUnit
 class ApiExecutor {
     companion object {
         private const val TAG = "ApiExecutor"
-        private val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .callTimeout(30, TimeUnit.SECONDS)
-            .build()
+        private val client = com.example.ai.OfflinePrivacyGuard.registerCloudClient(
+            OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .callTimeout(30, TimeUnit.SECONDS)
+                .addInterceptor(com.example.ai.StrictOfflineInterceptor(operationTag = "ApiExecutor"))
+                .build()
+        )
     }
 
     suspend fun execute(api: ApiMetadata, params: Map<String, String>): String? = withContext(Dispatchers.IO) {

@@ -97,14 +97,8 @@ object SmartVisionRouter {
             false
         }
 
-        val isOnline = try {
-            val cm = appCtx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            val net = cm?.activeNetwork
-            val caps = if (net != null) cm.getNetworkCapabilities(net) else null
-            caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-        } catch (_: Throwable) {
-            true
-        }
+        val isOnline = !com.example.ai.OfflinePrivacyGuard.isStrictOfflineMode(appCtx) &&
+            com.example.utils.NetworkConnectivityMonitor.isValidatedOnline(appCtx)
 
         val hasCloudKey = runCatching {
             AppPreferences.getEffectiveApiKey(appCtx).isNotBlank() ||

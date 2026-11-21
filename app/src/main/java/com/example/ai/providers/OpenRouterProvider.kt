@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 
 import android.content.Context
 import android.util.Log
+import com.example.ai.OfflinePrivacyGuard
 import com.example.ai.OpenRouterMessage
 import com.example.ai.OpenRouterRequest
 import com.example.ai.RetrofitClient
@@ -128,6 +129,9 @@ class OpenRouterProvider : AIProvider {
      * Sends a real HTTPS request to OpenRouter's auth key endpoint or chat completions endpoint.
      */
     override suspend fun validateCredentials(context: Context): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            return@withContext Pair(false, "Strict Offline Mode is active. OpenRouter validation is blocked.")
+        }
         val apiKey = getApiKey(context)
         return@withContext validateCredentialsWithKey(apiKey)
     }
@@ -202,6 +206,9 @@ class OpenRouterProvider : AIProvider {
      * Retrieves real model catalogue from OpenRouter /api/v1/models.
      */
     override suspend fun getModels(context: Context): List<ProviderModelInfo> = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            return@withContext cachedModels.toList()
+        }
         val apiKey = getApiKey(context)
         val url = "$BASE_URL/models"
         val requestBuilder = Request.Builder()
@@ -282,6 +289,15 @@ class OpenRouterProvider : AIProvider {
         context: Context,
         temperature: Float = 0.7f
     ): AIProviderResult = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            return@withContext AIProviderResult(
+                success = false,
+                text = "Strict Offline Mode is active. OpenRouter cloud requests are blocked.",
+                providerId = providerId,
+                model = model,
+                error = "STRICT_OFFLINE_BLOCKED"
+            )
+        }
         val apiKey = getApiKey(context)
         if (apiKey.isBlank()) {
             return@withContext AIProviderResult(
@@ -383,6 +399,10 @@ class OpenRouterProvider : AIProvider {
         model: String,
         context: Context
     ): Flow<String> = flow {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            emit("Strict Offline Mode is active. OpenRouter streaming is blocked.")
+            return@flow
+        }
         val apiKey = getApiKey(context)
         if (apiKey.isBlank()) {
             emit("This provider is not configured. Missing OpenRouter API key.")

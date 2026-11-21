@@ -109,11 +109,14 @@ class ChatterboxModelManager private constructor(private val context: Context) {
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
+    private val httpClient = OfflinePrivacyGuard.registerCloudClient(
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .addInterceptor(StrictOfflineInterceptor(context, operationTag = "ChatterboxModelManager"))
+            .retryOnConnectionFailure(true)
+            .build()
+    )
 
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val _fileProgressMap = MutableStateFlow<Map<String, FileDownloadProgress>>(emptyMap())

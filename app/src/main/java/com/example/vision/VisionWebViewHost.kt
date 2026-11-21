@@ -118,57 +118,12 @@ fun VisionWebViewHost(
             .build()
     }
 
-    val bridge = remember(context) {
-        val techDownloadManager = VisionTechnologyDownloadManager.getInstance(context)
-        object {
-            @JavascriptInterface
-            fun onEngineReady(techId: String, info: String) {
-                VisionTechId.fromWireId(techId)?.let { id ->
-                    techDownloadManager.recordLiveWebViewVerification(id, true, "WebView engine verified: $info")
-                    controller.webView?.post {
-                        currentOnEvent(VisionJsEvent.EngineReady(id, info))
-                    }
-                }
-            }
-
-            @JavascriptInterface
-            fun onRenderComplete(techId: String, metricsJson: String) {
-                VisionTechId.fromWireId(techId)?.let { id ->
-                    techDownloadManager.recordLiveWebViewVerification(id, true, "Live WebView render verified")
-                    controller.webView?.post {
-                        currentOnEvent(VisionJsEvent.RenderComplete(id, metricsJson))
-                    }
-                }
-            }
-
-            @JavascriptInterface
-            fun onError(techId: String, code: String, message: String) {
-                VisionTechId.fromWireId(techId)?.let { id ->
-                    techDownloadManager.recordLiveWebViewVerification(id, false, "$code: $message")
-                    controller.webView?.post {
-                        currentOnEvent(VisionJsEvent.RenderError(id, code, message))
-                    }
-                }
-            }
-
-            @JavascriptInterface
-            fun onStateMutated(techId: String, payloadJson: String, label: String) {
-                VisionTechId.fromWireId(techId)?.let { id ->
-                    controller.webView?.post {
-                        currentOnEvent(VisionJsEvent.StateMutated(id, payloadJson, label))
-                    }
-                }
-            }
-
-            @JavascriptInterface
-            fun onExportResult(techId: String, formatName: String, data: String, isBase64: Boolean) {
-                val id = VisionTechId.fromWireId(techId) ?: return
-                val fmt = runCatching { VisualizationExportFormat.valueOf(formatName) }.getOrNull() ?: return
-                controller.webView?.post {
-                    currentOnEvent(VisionJsEvent.ExportReady(id, fmt, data, isBase64))
-                }
-            }
-        }
+    val bridge = remember(context, controller) {
+        VisionJsBridge(
+            techDownloadManager = VisionTechnologyDownloadManager.getInstance(context),
+            controller = controller,
+            onEventProvider = { currentOnEvent }
+        )
     }
 
     LaunchedEffect(
@@ -294,3 +249,58 @@ fun VisionWebViewHost(
         }
     }
 }
+
+private class VisionJsBridge(
+    private val techDownloadManager: VisionTechnologyDownloadManager,
+    private val controller: VisionWebViewController,
+    private val onEventProvider: () -> (VisionJsEvent) -> Unit
+) {
+    @JavascriptInterface
+    fun onEngineReady(techId: String, info: String) {
+        VisionTechId.fromWireId(techId)?.let { id ->
+            techDownloadManager.recordLiveWebViewVerification(id, true, "WebView engine verified: $info")
+            controller.webView?.post {
+                onEventProvider().invoke(VisionJsEvent.EngineReady(id, info))
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun onRenderComplete(techId: String, metricsJson: String) {
+        VisionTechId.fromWireId(techId)?.let { id ->
+            techDownloadManager.recordLiveWebViewVerification(id, true, "Live WebView render verified")
+            controller.webView?.post {
+                onEventProvider().invoke(VisionJsEvent.RenderComplete(id, metricsJson))
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun onError(techId: String, code: String, message: String) {
+        VisionTechId.fromWireId(techId)?.let { id ->
+            techDownloadManager.recordLiveWebViewVerification(id, false, "$code: $message")
+            controller.webView?.post {
+                onEventProvider().invoke(VisionJsEvent.RenderError(id, code, message))
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun onStateMutated(techId: String, payloadJson: String, label: String) {
+        VisionTechId.fromWireId(techId)?.let { id ->
+            controller.webView?.post {
+                onEventProvider().invoke(VisionJsEvent.StateMutated(id, payloadJson, label))
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun onExportResult(techId: String, formatName: String, data: String, isBase64: Boolean) {
+        val id = VisionTechId.fromWireId(techId) ?: return
+        val fmt = runCatching { VisualizationExportFormat.valueOf(formatName) }.getOrNull() ?: return
+        controller.webView?.post {
+            onEventProvider().invoke(VisionJsEvent.ExportReady(id, fmt, data, isBase64))
+        }
+    }
+}
+

@@ -67,6 +67,9 @@ class GeminiProvider : AIProvider {
     }
 
     override suspend fun validateCredentials(context: Context): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            return@withContext Pair(false, "Strict Offline Mode is active. Cloud credential validation is blocked.")
+        }
         val key = getApiKey(context)
         if (key.isBlank()) {
             return@withContext Pair(false, "Gemini API key is not configured. Please enter your API key.")
@@ -83,6 +86,15 @@ class GeminiProvider : AIProvider {
         systemInstruction: String?,
         context: Context
     ): AIProviderResult = withContext(Dispatchers.IO) {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            return@withContext AIProviderResult(
+                success = false,
+                text = "Strict Offline Mode is active. Cloud Gemini requests are blocked.",
+                providerId = providerId,
+                model = GeminiModelRegistry.DEFAULT_AGENT_MODEL,
+                error = "STRICT_OFFLINE_BLOCKED"
+            )
+        }
         val apiKey = getApiKey(context)
         if (apiKey.isBlank()) {
             return@withContext AIProviderResult(
@@ -160,6 +172,10 @@ class GeminiProvider : AIProvider {
         context: Context,
         modelOverride: String?
     ): Flow<String> = flow {
+        if (OfflinePrivacyGuard.isStrictOfflineMode(context)) {
+            emit("Strict Offline Mode is active. Cloud Gemini streaming is blocked.")
+            return@flow
+        }
         val apiKey = getApiKey(context)
         if (apiKey.isBlank()) {
             emit("This provider is not configured. Missing Gemini API key.")

@@ -152,14 +152,17 @@ class ModelDownloadCoordinator private constructor(private val appContext: Conte
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .retryOnConnectionFailure(true)
-        .build()
+    private val httpClient = com.example.ai.OfflinePrivacyGuard.registerCloudClient(
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor(com.example.ai.StrictOfflineInterceptor(appContext, operationTag = "ModelDownloadCoordinator"))
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
+    )
 
     private val _states = MutableStateFlow<Map<String, ModelDownloadProgressState>>(emptyMap())
     val states: StateFlow<Map<String, ModelDownloadProgressState>> = _states.asStateFlow()
@@ -206,20 +209,25 @@ class ModelDownloadCoordinator private constructor(private val appContext: Conte
             }
 
             val installedBytes = computeInstalledOrPartialBytes(baseDir, desc.manifest)
-            val isVerified = isModelInstalledAndValid(baseDir, desc.manifest, verifySha256 = false)
+            val isStructurallyValid = isModelInstalledAndValid(baseDir, desc.manifest, verifySha256 = false)
+            val hasPinnedChecksums = desc.manifest.artifacts.any { it.expectedSha256.isNotBlank() }
             val hasPartFiles = desc.manifest.artifacts.any {
                 File(baseDir, "${it.relativePath}.part").exists() ||
                     File(baseDir, "${it.relativePath}.zip.part").exists()
             }
 
             updated[id] = when {
-                isVerified -> ModelDownloadProgressState(
+                isStructurallyValid -> ModelDownloadProgressState(
                     modelId = id,
                     state = existing?.state?.takeIf { it == ModelLifecycleState.READY } ?: ModelLifecycleState.READY,
                     bytesDownloaded = installedBytes,
                     totalBytes = installedBytes.coerceAtLeast(desc.estimatedSizeBytes),
                     progress = 1f,
-                    statusMessage = "Installed & verified (${installedBytes / (1024 * 1024)} MB)"
+                    statusMessage = if (hasPinnedChecksums) {
+                        "Installed & structurally valid (SHA-256 pinned, ${installedBytes / (1024 * 1024)} MB)"
+                    } else {
+                        "Installed & structurally valid (${installedBytes / (1024 * 1024)} MB)"
+                    }
                 )
                 hasPartFiles -> ModelDownloadProgressState(
                     modelId = id,
@@ -329,6 +337,24 @@ class ModelDownloadCoordinator private constructor(private val appContext: Conte
     }
 
     fun startOrResumeBatch(modelIds: List<String>) {
+        val offlineCheck = com.example.ai.OfflinePrivacyGuard.checkModelDownloadAllowed(
+            context = appContext,
+            modelId = modelIds.joinToString(",")
+        )
+        if (offlineCheck.isFailure) {
+            val msg = offlineCheck.exceptionOrNull()?.message
+                ?: "Strict Offline Mode is active; disable Offline Mode to download models."
+            modelIds.forEach { id ->
+                updateModelState(id) {
+                    it.copy(
+                        state = ModelLifecycleState.ERROR,
+                        errorMessage = msg,
+                        statusMessage = msg
+                    )
+                }
+            }
+            return
+        }
         val preview = previewBatchBudget(modelIds)
         if (!preview.fitsBudget) {
             modelIds.forEach { id ->
