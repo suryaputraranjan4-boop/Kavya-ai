@@ -1,5 +1,6 @@
 package com.example.services
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,11 +8,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.agent.MicrophoneEngine
 import com.example.utils.AppPreferences
@@ -36,39 +39,59 @@ class KavyaVoiceService : Service() {
         const val ACTION_TOGGLE = "com.example.action.TOGGLE_MIC"
 
         fun startService(context: Context) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "Refusing to start KavyaVoiceService: RECORD_AUDIO permission not granted.")
+                AppPreferences.setMicEnabled(context, false)
+                AppPreferences.setKavyaState(context, "OFF")
+                return
+            }
             AppPreferences.setMicEnabled(context, true)
             AppPreferences.setKavyaState(context, "ACTIVE")
             val intent = Intent(context, KavyaVoiceService::class.java).apply {
                 action = ACTION_START
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start KavyaVoiceService: ${e.message}")
+                AppPreferences.setMicEnabled(context, false)
+                AppPreferences.setKavyaState(context, "OFF")
             }
         }
 
         fun stopService(context: Context) {
             AppPreferences.setMicEnabled(context, false)
             AppPreferences.setKavyaState(context, "OFF")
-            val intent = Intent(context, KavyaVoiceService::class.java).apply {
-                action = ACTION_STOP
+            try {
+                MicrophoneEngine.getInstance(context).stopListening()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error stopping MicrophoneEngine directly: ${e.message}")
             }
-            context.startService(intent)
+            try {
+                context.stopService(Intent(context, KavyaVoiceService::class.java))
+            } catch (e: Exception) {
+                Log.w(TAG, "Error stopping KavyaVoiceService: ${e.message}")
+            }
         }
 
         fun sleep(context: Context) {
-            val intent = Intent(context, KavyaVoiceService::class.java).apply {
-                action = ACTION_SLEEP
+            try {
+                MicrophoneEngine.getInstance(context).setSleeping(true)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error putting MicrophoneEngine to sleep: ${e.message}")
             }
-            context.startService(intent)
         }
 
         fun wake(context: Context) {
-            val intent = Intent(context, KavyaVoiceService::class.java).apply {
-                action = ACTION_WAKE
+            try {
+                MicrophoneEngine.getInstance(context).setSleeping(false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error waking MicrophoneEngine: ${e.message}")
             }
-            context.startService(intent)
         }
     }
 
@@ -81,11 +104,34 @@ class KavyaVoiceService : Service() {
         val action = intent?.action ?: ACTION_START
         Log.d(TAG, "onStartCommand received action: $action")
 
+        if (action == ACTION_STOP) {
+            MicrophoneEngine.getInstance(this).stopListening()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "RECORD_AUDIO missing in onStartCommand — refusing microphone FGS start to avoid Android 14+ SecurityException.")
+            AppPreferences.setMicEnabled(this, false)
+            AppPreferences.setKavyaState(this, "OFF")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (se: SecurityException) {
+            Log.e(TAG, "SecurityException starting microphone foreground service: ${se.message}")
+            AppPreferences.setMicEnabled(this, false)
+            AppPreferences.setKavyaState(this, "OFF")
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
 
         val micEngine = MicrophoneEngine.getInstance(this)
@@ -97,7 +143,7 @@ class KavyaVoiceService : Service() {
                     Log.e(TAG, "Microphone failed to start; stopping foreground service instead of leaving a false listening state.")
                     AppPreferences.setMicEnabled(this, false)
                     AppPreferences.setKavyaState(this, "OFF")
-                    stopForeground(true)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                     return START_NOT_STICKY
                 }
@@ -107,6 +153,7 @@ class KavyaVoiceService : Service() {
             }
             ACTION_STOP -> {
                 micEngine.stopListening()
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
             ACTION_TOGGLE -> {
@@ -127,7 +174,7 @@ class KavyaVoiceService : Service() {
             }
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -145,7 +192,7 @@ class KavyaVoiceService : Service() {
                 "Kavya Voice Assistant Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Keeps Kavya AI active for continuous voice interaction and wake word detection."
+                description = "Visible microphone indicator while Kavya AI voice listening is active."
                 setShowBadge(false)
             }
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -160,11 +207,20 @@ class KavyaVoiceService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val stopIntent = Intent(this, KavyaVoiceService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 1, stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Kavya AI Listening")
-            .setContentText("Continuous voice assistant active • Say 'Hey Kavya'")
+            .setContentTitle("Kavya AI Microphone Active")
+            .setContentText("Voice listening active • Tap Stop anytime")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Listening", stopPendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()

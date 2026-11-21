@@ -38,10 +38,14 @@ import java.io.FileOutputStream
 fun VisionWorkspaceContent(
     accentColor: Color,
     reducedMotion: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    requestedTechId: VisionTechId? = null,
+    onRequestedTechConsumed: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
+    val techDownloadManager = remember { VisionTechnologyDownloadManager.getInstance(context) }
+    val techDownloadStates by techDownloadManager.states.collectAsState()
     val diagnosticsMap by VisionPackageManager.diagnostics.collectAsState()
     val savedArtifacts by VisualizationStorageRepository.artifacts.collectAsState()
     val activeArtifactState by VisualizationOrchestrator.activeArtifact.collectAsState()
@@ -53,6 +57,21 @@ fun VisionWorkspaceContent(
     var searchQuery by remember { mutableStateOf("") }
     var selectedTechId by remember(activeArtifactState?.techIdWire) {
         mutableStateOf(activeArtifactState?.techId ?: VisionTechId.THREE_JS)
+    }
+
+    LaunchedEffect(requestedTechId) {
+        if (requestedTechId != null) {
+            selectedTechId = requestedTechId
+            val existing = VisualizationStorageRepository.artifacts.value.firstOrNull { it.techId == requestedTechId }
+            if (existing != null) {
+                VisualizationOrchestrator.selectArtifact(existing)
+            } else {
+                val tpl = VisionTechRegistry.defaultTemplates().firstOrNull { it.techId == requestedTechId }
+                    ?: VisionTechRegistry.defaultTemplates().first()
+                VisualizationOrchestrator.openTemplate(context, tpl, VisualizationEntrySource.HAMBURGER_VISION)
+            }
+            onRequestedTechConsumed()
+        }
     }
     var promptInput by remember { mutableStateOf("") }
     var telemetryText by remember { mutableStateOf<String?>(null) }
@@ -132,11 +151,13 @@ fun VisionWorkspaceContent(
     }
 
     val filteredTechs = remember(selectedCategory, searchQuery) {
-        val base = VisionTechRegistry.byCategory(selectedCategory)
+        val base = VisionTechRegistry.core12ByCategory(selectedCategory)
         if (searchQuery.isBlank()) base
         else base.filter {
             it.displayName.contains(searchQuery, ignoreCase = true) ||
                 it.shortTagline.contains(searchQuery, ignoreCase = true) ||
+                it.visualizationRole.contains(searchQuery, ignoreCase = true) ||
+                it.packageName.contains(searchQuery, ignoreCase = true) ||
                 it.category.displayName.contains(searchQuery, ignoreCase = true)
         }
     }
@@ -173,7 +194,10 @@ fun VisionWorkspaceContent(
             diagnostics = diagnosticsMap[showInfoDialogFor!!.id],
             accentColor = accentColor,
             onDismiss = { showInfoDialogFor = null },
-            onDiagnosticsUpdated = { VisionPackageManager.refreshAllDiagnostics(context) }
+            onDiagnosticsUpdated = {
+                VisionPackageManager.refreshAllDiagnostics(context)
+                techDownloadManager.refreshAllStates()
+            }
         )
     }
 
@@ -307,7 +331,7 @@ fun VisionWorkspaceContent(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search 16 engines (Three.js, Mermaid, Manim...)", fontSize = 11.5.sp) },
+                    placeholder = { Text("Search 12 technologies (Three.js, Mermaid, Manim...)", fontSize = 11.5.sp) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
                     singleLine = true,
                     modifier = Modifier.weight(1f).testTag("vision_engine_search"),
@@ -333,7 +357,7 @@ fun VisionWorkspaceContent(
                     FilterChip(
                         selected = selectedCategory == null,
                         onClick = { selectedCategory = null },
-                        label = { Text("All (16)", fontSize = 11.sp) }
+                        label = { Text("All (12)", fontSize = 11.sp) }
                     )
                 }
                 items(VisionCategory.entries) { cat ->
@@ -346,7 +370,7 @@ fun VisionWorkspaceContent(
             }
         }
 
-        // 2. 16 Technologies Selector Strip
+        // 2. 12 Visualization Technologies Selector Strip
         item {
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -354,18 +378,22 @@ fun VisionWorkspaceContent(
             ) {
                 items(filteredTechs, key = { it.id.wireId }) { spec ->
                     val isSelected = activeArtifact.techId == spec.id
+                    val dlState = techDownloadStates[spec.id]
                     val diag = diagnosticsMap[spec.id]
-                    val statusColor = when (diag?.availabilityStatus) {
-                        VisionAvailabilityStatus.INSTALLED_VERIFIED,
-                        VisionAvailabilityStatus.BACKEND_READY -> Color(0xFF10B981)
-                        VisionAvailabilityStatus.BACKEND_REQUIRED -> Color(0xFFF59E0B)
-                        else -> Color(0xFF64748B)
+                    val statusColor = when (dlState?.stage) {
+                        TechnologyInstallStage.FUNCTIONAL -> Color(0xFF10B981)
+                        TechnologyInstallStage.INSTALLED,
+                        TechnologyInstallStage.DOWNLOADED -> Color(0xFF38BDF8)
+                        TechnologyInstallStage.CONFIGURED,
+                        TechnologyInstallStage.PAUSED -> Color(0xFFF59E0B)
+                        TechnologyInstallStage.ERROR -> Color(0xFFFF5252)
+                        else -> if (diag?.availabilityStatus == VisionAvailabilityStatus.INSTALLED_VERIFIED) Color(0xFF38BDF8) else Color(0xFF64748B)
                     }
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = if (isSelected) accentColor.copy(alpha = 0.18f) else Color(0xFF101724),
                         modifier = Modifier
-                            .widthIn(min = 132.dp)
+                            .widthIn(min = 138.dp)
                             .border(
                                 width = if (isSelected) 1.5.dp else 0.8.dp,
                                 color = if (isSelected) accentColor else Color.White.copy(alpha = 0.14f),
@@ -395,7 +423,7 @@ fun VisionWorkspaceContent(
                                 )
                             }
                             Text(
-                                text = "${spec.category.badgeLabel} • ${diag?.availabilityStatus?.label ?: spec.licenseName}",
+                                text = "${spec.category.badgeLabel} • ${dlState?.stage?.label ?: diag?.availabilityStatus?.label ?: spec.licenseName}",
                                 color = Color.White.copy(alpha = 0.65f),
                                 fontSize = 9.5.sp,
                                 maxLines = 1,

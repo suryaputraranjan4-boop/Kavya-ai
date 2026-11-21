@@ -243,11 +243,15 @@ fun JarvisFloatingOrb(
 
     if (isMinimized) {
         Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = Color(0xEE070D17),
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xEB121723),
             modifier = modifier
                 .scale(transientScale)
-                .border(1.2.dp, corePrimaryColor, RoundedCornerShape(22.dp))
+                .border(
+                    width = 1.dp,
+                    brush = Brush.verticalGradient(listOf(Color(0x52FFFFFF), Color(0x1CFFFFFF))),
+                    shape = RoundedCornerShape(24.dp)
+                )
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDrag = { change, dragAmount ->
@@ -276,17 +280,16 @@ fun JarvisFloatingOrb(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(10.dp)
+                            .size(9.dp)
                             .clip(CircleShape)
                             .background(corePrimaryColor)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "JARVIS",
-                        color = corePrimaryColor,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
+                        color = Color(0xFFF5F7FA),
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
                 if (onCloseOrb != null) {
@@ -438,35 +441,55 @@ fun JarvisFloatingOrb(
                 }
             }
 
-            // Main Glassmorphic Orb Body
+            // Main Apple Liquid Glass Orb Body (density-correct specular lighting)
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .size(baseSize)
-                    .shadow(elevation = 12.dp, shape = CircleShape)
+                    .shadow(elevation = 14.dp, shape = CircleShape, spotColor = Color(0x88000000))
                     .clip(CircleShape)
                     .background(
-                        Brush.radialGradient(
+                        Brush.verticalGradient(
                             colors = listOf(
-                                theme.surfaceColor.copy(alpha = config.transparency),
-                                Color(0xFF04070D).copy(alpha = config.transparency)
-                            ),
-                            center = Offset(baseSize.value * 0.4f, baseSize.value * 0.4f),
-                            radius = baseSize.value * 1.3f
+                                theme.surfaceColor.copy(alpha = (config.transparency * 0.96f).coerceIn(0.6f, 0.96f)),
+                                Color(0xFF0A0E17).copy(alpha = config.transparency.coerceIn(0.65f, 0.98f))
+                            )
                         )
                     )
                     .border(
-                        width = 1.8.dp,
-                        brush = Brush.linearGradient(
+                        width = 1.5.dp,
+                        brush = Brush.verticalGradient(
                             listOf(
-                                corePrimaryColor.copy(alpha = 0.95f),
-                                theme.secondaryColor.copy(alpha = 0.45f),
-                                Color.White.copy(alpha = 0.22f)
+                                Color(0x78FFFFFF),
+                                corePrimaryColor.copy(alpha = 0.72f),
+                                Color(0x1EFFFFFF)
                             )
                         ),
                         shape = CircleShape
                     )
             ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val w = size.width
+                    val h = size.height
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                corePrimaryColor.copy(alpha = 0.24f),
+                                Color.Transparent
+                            ),
+                            center = Offset(w * 0.35f, h * 0.32f),
+                            radius = w * 0.75f
+                        )
+                    )
+                    // Specular top-left Apple glass highlight
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Color(0x45FFFFFF), Color.Transparent),
+                            center = Offset(w * 0.32f, h * 0.22f),
+                            radius = w * 0.40f
+                        )
+                    )
+                }
                 when (state) {
                     JarvisOrbState.SPEAKING -> {
                         Row(
@@ -608,39 +631,43 @@ fun JarvisFloatingOrb(
                 }
             }
 
-            // State Badge Label at bottom of orb
+            // State Badge Label at bottom of orb (Frosted Glass Pill)
             if (config.showStateBadge) {
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color.Black.copy(alpha = 0.88f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xE8111622),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .border(0.8.dp, corePrimaryColor.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                        .border(0.8.dp, Color(0x40FFFFFF), RoundedCornerShape(10.dp))
                 ) {
                     Text(
                         text = state.name.replace("_", " "),
-                        color = corePrimaryColor,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        color = Color(0xFFF5F7FA),
+                        fontSize = 8.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                     )
                 }
             }
         }
 
-        // Expandable Quick Action Bar when tapped in overlay mode
+        // Expandable Apple Liquid Glass Quick Action Bar when tapped in overlay mode
         AnimatedVisibility(
             visible = isWindowOverlay && showQuickActions,
             enter = fadeIn() + expandVertically(),
             exit = fadeOut() + shrinkVertically()
         ) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color(0xF5080E18),
+                shape = RoundedCornerShape(20.dp),
+                color = Color(0xEE121723),
+                shadowElevation = 16.dp,
                 modifier = Modifier
-                    .padding(top = 4.dp)
-                    .border(1.dp, corePrimaryColor.copy(alpha = 0.75f), RoundedCornerShape(16.dp))
+                    .padding(top = 6.dp)
+                    .border(
+                        width = 1.dp,
+                        brush = Brush.verticalGradient(listOf(Color(0x52FFFFFF), Color(0x1CFFFFFF))),
+                        shape = RoundedCornerShape(20.dp)
+                    )
                     .testTag("jarvis_orb_quick_menu")
             ) {
                 Row(

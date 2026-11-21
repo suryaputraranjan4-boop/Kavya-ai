@@ -170,6 +170,7 @@ class KokoroTtsEngine(private val context: Context) {
                 coordinator.refreshAllStates()
                 Result.success("$variantName ($modelId)")
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 Log.e(TAG, "Kokoro initialization failed for $variantName: ${t.message}", t)
                 closeInternal()
                 // Clean retry on CPU variant ONLY if AUTO and CPU file also exists
@@ -209,6 +210,7 @@ class KokoroTtsEngine(private val context: Context) {
                             }
                             cpuCreated.close()
                         } catch (cpuErr: Throwable) {
+                            if (cpuErr is CancellationException) throw cpuErr
                             Log.e(TAG, "Kokoro CPU fallback init also failed", cpuErr)
                         }
                     }

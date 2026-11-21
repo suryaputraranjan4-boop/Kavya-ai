@@ -378,12 +378,8 @@ object JarvisOverlayController {
         _transientMotion.value = OrbTransientMotion.NONE
 
         val appCtx = context.applicationContext
-        val intent = Intent(appCtx, JarvisOverlayService::class.java).apply {
-            action = JarvisOverlayService.ACTION_STOP_OVERLAY
-        }
         try {
             appCtx.stopService(Intent(appCtx, JarvisOverlayService::class.java))
-            appCtx.startService(intent)
         } catch (e: Exception) {
             Log.w(TAG, "Error stopping JarvisOverlayService: ${e.message}")
         }
@@ -391,7 +387,7 @@ object JarvisOverlayController {
         _activeWindowCount.value = 0
         _attachmentState.value = OverlayAttachmentState.STOPPED
         _lastOverlayError.value = null
-        Log.i(TAG, "JarvisOverlayService stop request sent")
+        Log.i(TAG, "JarvisOverlayService stopped cleanly")
     }
 
     /**
@@ -577,10 +573,12 @@ object JarvisOverlayController {
         // do NOT call ExplanationStepController.clear() because clear() invokes onStopSpeaking and kills
         // the active voice narration! Instead only clear step pointers without stopping speech.
         val validInstructions = plan.instructions.filter { it.bounds != null && it.bounds.width() > 0 && it.bounds.height() > 0 }
+        val isGuidanceMode = plan.mode == JarvisMode.SHOWS_YOU_HOW
         if (validInstructions.isNotEmpty()) {
             val steps = validInstructions.mapIndexed { idx, inst ->
                 val b = inst.bounds!!
-                val stepTitle = inst.label.ifBlank { plan.title.ifBlank { "Step ${idx + 1}" } }
+                val defaultTitle = if (isGuidanceMode) "Step ${idx + 1}" else "Section ${idx + 1}"
+                val stepTitle = inst.label.ifBlank { plan.title.ifBlank { defaultTitle } }
                 val calloutLabel = when (plan.mode) {
                     JarvisMode.SHOWS_YOU_HOW -> if (inst.label.lowercase().startsWith("tap")) inst.label else "Tap here: ${inst.label}"
                     else -> inst.label.ifBlank { stepTitle }
@@ -590,6 +588,10 @@ object JarvisOverlayController {
                         ?: plan.cards.firstOrNull()?.summary
                         ?: calloutLabel
                 }
+                val clampedClick = ScreenAnnotationManager.coordinateMapper.clampPointInsideBounds(
+                    point = inst.clickPoint ?: Pair(b.centerX(), b.centerY()),
+                    bounds = b
+                )
                 ScreenAnnotationStep(
                     stepNumber = idx + 1,
                     totalSteps = validInstructions.size,
@@ -597,20 +599,29 @@ object JarvisOverlayController {
                     label = calloutLabel,
                     spokenExplanation = spoken,
                     bounds = b,
-                    clickPoint = inst.clickPoint ?: Pair(b.centerX(), b.centerY()),
-                    showArrow = true,
-                    showPointer = true,
-                    dimUnrelatedAreas = true
+                    clickPoint = clampedClick,
+                    showArrow = isGuidanceMode || validInstructions.size == 1,
+                    showPointer = isGuidanceMode,
+                    dimUnrelatedAreas = isGuidanceMode
                 )
             }
             ExplanationStepController.startSequence(steps, autoAdvance = autoAdvanceSteps)
-            com.example.services.ScreenShareManager.setUnifiedStage(
-                com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Guiding(
-                    stepNumber = 1,
-                    totalSteps = steps.size,
-                    title = plan.title
+            if (isGuidanceMode) {
+                com.example.services.ScreenShareManager.setUnifiedStage(
+                    com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Guiding(
+                        stepNumber = 1,
+                        totalSteps = steps.size,
+                        title = plan.title
+                    )
                 )
-            )
+            } else {
+                com.example.services.ScreenShareManager.setUnifiedStage(
+                    com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Explaining(
+                        level = _activeExplanationLevel.value,
+                        title = plan.title
+                    )
+                )
+            }
         } else {
             com.example.services.ScreenShareManager.setUnifiedStage(
                 com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Explaining(

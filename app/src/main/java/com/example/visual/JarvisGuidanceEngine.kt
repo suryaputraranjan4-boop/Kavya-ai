@@ -95,20 +95,24 @@ object JarvisGuidanceEngine {
         val resolved = UIElementResolver.resolveTargetElement(freshScreen, targetDescription)
 
         if (resolved != null && resolved.bounds.width() > 0 && resolved.bounds.height() > 0) {
+            val clampedPoint = ScreenAnnotationManager.coordinateMapper.clampPointInsideBounds(
+                point = resolved.clickPoint,
+                bounds = resolved.bounds
+            )
             val spokenPrompt = customPrompt ?: "Tap here to open ${resolved.targetText}"
             _guidanceState.value = JarvisGuidanceState(
                 isActive = true,
                 targetQuery = targetDescription,
                 targetLabel = resolved.targetText,
                 targetBounds = resolved.bounds,
-                clickPoint = resolved.clickPoint,
+                clickPoint = clampedPoint,
                 instructionText = spokenPrompt,
                 confidence = resolved.confidence
             )
             JarvisOverlayController.highlightElement(
                 bounds = resolved.bounds,
                 label = resolved.targetText,
-                clickPoint = resolved.clickPoint,
+                clickPoint = clampedPoint,
                 prompt = spokenPrompt
             )
             Log.i(TAG, "Highlighted '${resolved.targetText}' at bounds: ${resolved.bounds}")
@@ -117,6 +121,32 @@ object JarvisGuidanceEngine {
 
         Log.w(TAG, "Could not resolve element for '$targetDescription' on active screen.")
         return false
+    }
+
+    /**
+     * Distinguishes Step-by-Step Guidance requests ("how do I...", "where do I tap...", "guide me...")
+     * from general Screen Explanation requests ("Explain this screen", "what is on my screen", "ye screen kya hai").
+     */
+    fun isStepByStepGuidanceQuery(query: String): Boolean {
+        val q = query.lowercase(java.util.Locale.ROOT).trim()
+        val explainGeneralPatterns = listOf(
+            "explain this screen", "explain screen", "what is on my screen", "what's on my screen",
+            "describe this screen", "summarize this screen", "ye screen kya hai", "yeh screen par kya hai",
+            "screen samjhao", "screen explain karo", "what is this screen"
+        )
+        if (explainGeneralPatterns.any { q == it || (q.contains(it) && !q.contains("step by step") && !q.contains("how do i")) }) {
+            return false
+        }
+        return q.contains("step by step") ||
+            q.contains("guide me") ||
+            q.contains("how do i") ||
+            q.contains("how to ") ||
+            q.contains("where do i tap") ||
+            q.contains("where should i tap") ||
+            q.contains("show me where") ||
+            q.contains("kaise") ||
+            q.contains("sikhao") ||
+            q.contains("कैसे")
     }
 
     /**
@@ -192,31 +222,101 @@ object JarvisGuidanceEngine {
     }
 
     /**
-     * Infers the presentation/explanation depth (`BASIC`, `STANDARD`, `ADVANCED`) from natural
-     * Hindi, Hinglish, or English voice/text commands (Phase 5).
-     * Defaults to `STANDARD` if the user does not specify a level.
+     * Infers explicit explanation depth (`BASIC`, `STANDARD`, `ADVANCED`) from natural
+     * Hindi, Hinglish, or English voice/text commands.
+     * Returns `null` when the user did not specify an explicit depth (allowing automatic selection).
      */
-    fun inferExplanationLevelFromQuery(
-        query: String,
-        fallback: ScreenSharePresentationLevel = ScreenSharePresentationLevel.STANDARD
-    ): ScreenSharePresentationLevel {
+    fun detectExplicitExplanationLevel(query: String): ScreenSharePresentationLevel? {
         val lower = query.lowercase(java.util.Locale.ROOT).trim()
         val basicKeywords = listOf(
-            "basic", "simple", "short", "quick", "brief", "beginner", "easy",
-            "aasan", "saral", "chhota", "sankshipt", "आसान", "सरल", "संक्षेप", "छोटा"
+            "explain simply", "simply", "basic", "simple", "short", "quick", "brief", "beginner", "easy",
+            "like i'm 5", "eli5", "aasan", "saral", "chhota", "sankshipt", "आसान", "सरल", "संक्षेप", "छोटा"
         )
         val advancedKeywords = listOf(
-            "advanced", "detailed", "in detail", "deep", "technical", "complete detail",
-            "full detail", "expert", "vistar", "poori jankari", "gहराई", "विस्तार", "टेक्निकल", "पूरी जानकारी"
+            "explain technically", "technically", "technical", "advanced", "deep dive", "deeply", "expert",
+            "architecture", "full detail", "complete detail", "in depth", "internally",
+            "vistar", "poori jankari", "गहराई", "विस्तार", "टेक्निकल", "पूरी जानकारी"
         )
         val standardKeywords = listOf(
-            "standard", "normal", "medium", "regular", "balanced"
+            "explain in detail", "in detail", "detailed", "standard", "normal", "medium", "regular", "balanced"
         )
         return when {
             advancedKeywords.any { lower.contains(it) } -> ScreenSharePresentationLevel.ADVANCED
             basicKeywords.any { lower.contains(it) } -> ScreenSharePresentationLevel.BASIC
             standardKeywords.any { lower.contains(it) } -> ScreenSharePresentationLevel.STANDARD
-            else -> fallback
+            else -> null
+        }
+    }
+
+    /**
+     * Infers the presentation/explanation depth (`BASIC`, `STANDARD`, `ADVANCED`) from natural
+     * Hindi, Hinglish, or English voice/text commands.
+     */
+    fun inferExplanationLevelFromQuery(
+        query: String,
+        fallback: ScreenSharePresentationLevel = ScreenSharePresentationLevel.STANDARD
+    ): ScreenSharePresentationLevel {
+        return detectExplicitExplanationLevel(query) ?: fallback
+    }
+
+    /**
+     * Automatically selects `BASIC`, `STANDARD`, or `ADVANCED` explanation depth from:
+     * 1. Explicit user phrasing ("Explain simply", "Explain in detail", "Explain technically")
+     * 2. Visible screen/UI complexity (element density, OCR text length)
+     * 3. Technical subject markers (code, API, settings, metrics, network, stacktrace, financial/scientific charts)
+     * 4. Conversation context (follow-up requests escalate depth naturally)
+     */
+    fun selectAutomaticExplanationLevel(
+        query: String,
+        uiElementCount: Int = 0,
+        ocrTextSample: String = "",
+        foregroundPackage: String = "",
+        recentConversationContext: String = ""
+    ): ScreenSharePresentationLevel {
+        // 1. Honor explicit user requests first
+        detectExplicitExplanationLevel(query)?.let { return it }
+
+        val combined = "$query $ocrTextSample $foregroundPackage".lowercase(java.util.Locale.ROOT)
+        var complexityScore = 0
+
+        // Technical / developer / data / complex settings markers
+        val technicalSignals = listOf(
+            "api", "json", "http", "https", "oauth", "token", "onnx", "model", "sdk", "gradle",
+            "exception", "error", "stacktrace", "debug", "logcat", "terminal", "ssh", "dns", "vpn",
+            "proxy", "cpu", "ram", "latency", "benchmark", "shader", "algorithm", "sql", "schema",
+            "graph", "chart", "analytics", "formula", "equation", "circuit", "developer options",
+            "permissions", "encryption", "certificate", "webhook", "graphql", "mcp"
+        )
+        val technicalHits = technicalSignals.count { combined.contains(it) }
+        if (technicalHits >= 2) complexityScore += 3
+        else if (technicalHits == 1) complexityScore += 1
+
+        // Query complexity
+        val queryWords = query.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (queryWords.size >= 10) complexityScore += 1
+        if (combined.contains("why ") || combined.contains("how does ") || combined.contains("compare") || combined.contains("difference")) {
+            complexityScore += 1
+        }
+
+        // Screen content density
+        if (uiElementCount >= 18 || ocrTextSample.length >= 600) {
+            complexityScore += 2
+        } else if (uiElementCount >= 7 || ocrTextSample.length >= 160) {
+            complexityScore += 1
+        }
+
+        // Follow-up conversation escalation
+        val lowerContext = recentConversationContext.lowercase(java.util.Locale.ROOT)
+        if (lowerContext.contains("follow up") || lowerContext.contains("more about") ||
+            query.lowercase(java.util.Locale.ROOT).let { it.contains("tell me more") || it.contains("elaborate") || it.contains("what about") }
+        ) {
+            complexityScore += 2
+        }
+
+        return when {
+            complexityScore >= 4 -> ScreenSharePresentationLevel.ADVANCED
+            complexityScore <= 1 -> ScreenSharePresentationLevel.BASIC
+            else -> ScreenSharePresentationLevel.STANDARD
         }
     }
 
@@ -335,8 +435,8 @@ object JarvisGuidanceEngine {
         lastAppContext = appCtx
         ScreenAnnotationManager.coordinateMapper.refreshGeometry(appCtx)
 
-        val resolvedLevel = preferredLevel ?: inferExplanationLevelFromQuery(query, ScreenSharePresentationLevel.STANDARD)
-        JarvisOverlayController.setExplanationLevel(resolvedLevel)
+        val initialLevel = preferredLevel ?: detectExplicitExplanationLevel(query) ?: ScreenSharePresentationLevel.STANDARD
+        JarvisOverlayController.setExplanationLevel(initialLevel)
         com.example.services.ScreenShareManager.setUnifiedStage(
             com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Analyzing(query = query)
         )
@@ -401,7 +501,7 @@ object JarvisGuidanceEngine {
                 )
 
                 if ((jpegBytes == null || jpegBytes.isEmpty()) && fusedElements.isEmpty()) {
-                    val errMsg = "Unable to capture a valid screen image or UI hierarchy. Enable Screen Share or Accessibility Service and try again."
+                    val errMsg = "Unable to capture a valid screen image or UI hierarchy. Enable Screen Share or Accessibility Service (or note that protected apps with FLAG_SECURE block screen capture) and try again."
                     JarvisOverlayController.showInlineOverlayError("Screen Capture Required", errMsg)
                     com.example.services.ScreenShareManager.setUnifiedStage(
                         com.example.services.ScreenShareManager.UnifiedJarvisSessionState.Error(errMsg)
@@ -410,18 +510,26 @@ object JarvisGuidanceEngine {
                     return@launch
                 }
 
-                val isStepByStepRequest = query.lowercase(java.util.Locale.ROOT).let { q ->
-                    q.contains("step by step") || q.contains("guide me") || q.contains("how do i") ||
-                    q.contains("kaise") || q.contains("sikhao") || q.contains("कैसे") || q.contains("dikhao")
-                }
+                val activePkg = observation?.foregroundPackage?.ifBlank { initialMap.packageName }.orEmpty()
+                val ocrJoinedSample = ocrSignals.take(24).joinToString(" ") { it.text }
+                val resolvedLevel = preferredLevel ?: selectAutomaticExplanationLevel(
+                    query = query,
+                    uiElementCount = fusedElements.size.coerceAtLeast(initialMap.elements.size),
+                    ocrTextSample = ocrJoinedSample,
+                    foregroundPackage = activePkg,
+                    recentConversationContext = _activeExplanation.value?.oneLineSummary.orEmpty()
+                )
+                JarvisOverlayController.setExplanationLevel(resolvedLevel)
+
+                val isStepByStepRequest = isStepByStepGuidanceQuery(query)
 
                 val levelInstruction = when (resolvedLevel) {
                     ScreenSharePresentationLevel.BASIC ->
-                        "EXPLANATION LEVEL: BASIC. Explain in 2-3 very short, simple, beginner-friendly sentences without technical jargon."
+                        "EXPLANATION LEVEL: BASIC (auto-selected for simplicity). Explain in 2-3 very short, plain-language sentences without jargon. Never fabricate details if any part of the screen is unclear."
                     ScreenSharePresentationLevel.STANDARD ->
-                        "EXPLANATION LEVEL: STANDARD. Provide a clear, balanced explanation of the current screen, main visible options, and practical next steps."
+                        "EXPLANATION LEVEL: STANDARD (auto-selected balanced depth). Clearly explain the active app, purpose of this screen, visible controls/sections, how they relate, and useful next actions. If something is unclear or blocked, state that honestly."
                     ScreenSharePresentationLevel.ADVANCED ->
-                        "EXPLANATION LEVEL: ADVANCED. Provide a comprehensive, detailed technical & functional breakdown of all visible sections, controls, settings, and workflows."
+                        "EXPLANATION LEVEL: ADVANCED (auto-selected technical depth). Provide a structured, detailed technical and functional breakdown of the visible content, controls, data/settings, relationships, and implications. Explicitly state any uncertainty rather than guessing."
                 }
 
                 val hierarchySummary = initialMap.elements.take(20).joinToString("\n") {
@@ -441,10 +549,15 @@ object JarvisGuidanceEngine {
                         }
                     }
                 }
+                val modeInstruction = if (isStepByStepRequest) {
+                    "MODE: STEP-BY-STEP GUIDANCE. Format your response as clear numbered steps (1., 2., 3.) so the user can follow step by step."
+                } else {
+                    "MODE: SCREEN EXPLANATION. Explain what is currently visible on the screen naturally: identify the active app, explain the purpose of the screen, summarize the main sections and controls, and describe the current state. Do NOT format as a numbered step-by-step action tutorial unless the user asked how to perform an action."
+                }
                 val visionPrompt = """
                     User request: $query
                     $levelInstruction
-                    ${if (isStepByStepRequest) "Format your response as clear numbered steps (1., 2., 3.) so the user can follow step by step." else ""}
+                    $modeInstruction
                     Current foreground app: ${observation?.foregroundPackage?.ifBlank { initialMap.packageName }.orEmpty().ifBlank { "Current Screen" }}
                     UI hierarchy context:
                     ${hierarchySummary.ifBlank { "(none)" }}
@@ -484,6 +597,9 @@ object JarvisGuidanceEngine {
                         } else null
 
                         if (offlineSmolRes != null && offlineSmolRes.isSuccess) {
+                            OnDeviceVisionOrchestrator.getInstance(appCtx).recordModelExecuted(
+                                com.example.ai.offline.GemmaModelManager.SMOLVLM2_MANIFEST.modelId
+                            )
                             val smolSignals = offlineSmolRes.getOrThrow()
                             val summary = buildString {
                                 append("Offline SmolVLM2 analysis: ")
@@ -502,11 +618,15 @@ object JarvisGuidanceEngine {
                                 openFullScreenExplainer = openFullScreenExplainer,
                                 activeFingerprint = activeFingerprint,
                                 instructionsOverride = smolSignals.mapIndexed { idx, sig ->
+                                    val clampedPt = ScreenAnnotationManager.coordinateMapper.clampPointInsideBounds(
+                                        point = Pair(sig.bounds.centerX(), sig.bounds.centerY()),
+                                        bounds = sig.bounds
+                                    )
                                     VisualInstruction(
                                         type = VisualInstructionType.HIGHLIGHT_BOX,
                                         bounds = sig.bounds,
-                                        clickPoint = Pair(sig.bounds.centerX(), sig.bounds.centerY()),
-                                        label = "Target ${idx + 1}: ${sig.label.take(32)}",
+                                        clickPoint = clampedPt,
+                                        label = if (isStepByStepRequest) "Step ${idx + 1}: ${sig.label.take(32)}" else "Region: ${sig.label.take(32)}",
                                         text = summary
                                     )
                                 }
@@ -630,10 +750,14 @@ object JarvisGuidanceEngine {
             .take(5)
         val instructions = instructionsOverride ?: if (isStepByStep && interactiveTargets.isNotEmpty()) {
             interactiveTargets.mapIndexed { idx, el ->
+                val clampedPt = ScreenAnnotationManager.coordinateMapper.clampPointInsideBounds(
+                    point = Pair(el.bounds.centerX(), el.bounds.centerY()),
+                    bounds = el.bounds
+                )
                 VisualInstruction(
                     type = VisualInstructionType.HIGHLIGHT_BOX,
                     bounds = el.bounds,
-                    clickPoint = Pair(el.bounds.centerX(), el.bounds.centerY()),
+                    clickPoint = clampedPt,
                     label = "Step ${idx + 1}: ${el.displayLabel.take(36)}",
                     text = bullets.getOrElse(idx) { "Tap ${el.displayLabel}" }
                 )

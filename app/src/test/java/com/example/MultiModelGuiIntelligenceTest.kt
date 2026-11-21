@@ -221,7 +221,7 @@ class MultiModelGuiIntelligenceTest {
         val florence = GemmaModelManager.FLORENCE2_MANIFEST
         assertEquals("onnx-community/Florence-2-base-ft", florence.runtimeRepoId)
         assertEquals("main", florence.pinnedRevision)
-        assertEquals(OfflineStorageProfile.EXPANDED, florence.minimumProfile)
+        assertEquals(Long.MAX_VALUE, florence.minimumProfile.maxTotalBytes)
 
         val fastVlm = GemmaModelManager.FASTVLM_EXCLUSION_RECORD
         assertEquals("apple/FastVLM-0.5B", fastVlm.modelId)
@@ -230,28 +230,25 @@ class MultiModelGuiIntelligenceTest {
     }
 
     @Test
-    fun modelManager_storageProfiles_blockFlorence2InStrict2GbAndAllowInExpanded() {
-        val (strictAllowed, strictReason) = GemmaModelManager.canInstallManifestUnderProfile(
+    fun modelManager_storageProfiles_allowMultiModelInstallWithoutArtificialCapAndEnforceRealFreeSpace() {
+        // Artificial 2GB / 4GB caps are removed; Florence-2 and SmolVLM2 can both be installed when disk space is sufficient
+        val (allowedWhenDiskAvailable, _) = GemmaModelManager.canInstallManifestUnderProfile(
             manifest = GemmaModelManager.FLORENCE2_MANIFEST,
-            activeProfile = OfflineStorageProfile.STRICT_2GB
+            activeProfile = OfflineStorageProfile.STRICT_2GB,
+            alreadyInstalledBytes = GemmaModelManager.SMOLVLM2_MANIFEST.totalExpectedBytes,
+            availableFreeDiskBytes = 8L * 1024L * 1024L * 1024L
         )
-        assertFalse(strictAllowed)
-        assertTrue(strictReason.contains("STORAGE_INSUFFICIENT"))
+        assertTrue("Florence-2 must not be blocked by an artificial 2 GB cap when real disk space is available", allowedWhenDiskAvailable)
 
-        // Rejects setting EXPANDED without explicit user approval
-        assertFalse(GemmaModelManager.setStorageProfile(context, OfflineStorageProfile.EXPANDED, userApprovedExpanded = false))
-        assertEquals(OfflineStorageProfile.STRICT_2GB, GemmaModelManager.getStorageProfile(context))
-
-        // Accepts EXPANDED with explicit user approval
-        assertTrue(GemmaModelManager.setStorageProfile(context, OfflineStorageProfile.EXPANDED, userApprovedExpanded = true))
-        assertEquals(OfflineStorageProfile.EXPANDED, GemmaModelManager.getStorageProfile(context))
-
-        val (expandedAllowed, _) = GemmaModelManager.canInstallManifestUnderProfile(
+        // Still blocks when real device free disk space is insufficient for manifest + 256 MB safety headroom
+        val (allowedWhenDiskLow, lowDiskReason) = GemmaModelManager.canInstallManifestUnderProfile(
             manifest = GemmaModelManager.FLORENCE2_MANIFEST,
             activeProfile = OfflineStorageProfile.EXPANDED,
-            alreadyInstalledBytes = GemmaModelManager.SMOLVLM2_MANIFEST.totalExpectedBytes
+            alreadyInstalledBytes = GemmaModelManager.SMOLVLM2_MANIFEST.totalExpectedBytes,
+            availableFreeDiskBytes = 100L * 1024L * 1024L
         )
-        assertTrue(expandedAllowed)
+        assertFalse("Must block installation when real available disk space is insufficient", allowedWhenDiskLow)
+        assertTrue(lowDiskReason.contains("STORAGE_INSUFFICIENT"))
     }
 
     @Test

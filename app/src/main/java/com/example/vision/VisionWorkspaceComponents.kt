@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
-import java.io.File
 
 @Composable
 fun VisionTechInfoAndSetupDialog(
@@ -90,22 +89,22 @@ fun VisionTechInfoAndSetupDialog(
                     Text(spec.description, color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
                 }
 
-                // Official Repo & Docs links (always opened cleanly in external system browser)
+                // Official Source / Installation & Docs links (always opened cleanly in external system browser)
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
                             onClick = {
                                 runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(spec.officialRepoUrl)).apply {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(spec.officialSourceUrl)).apply {
                                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     })
                                 }
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Default.Code, contentDescription = "GitHub Repo", tint = accentColor, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Code, contentDescription = "Official Source / Installation", tint = accentColor, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("GitHub Repo", fontSize = 11.sp, color = Color.White)
+                            Text("Source / Install", fontSize = 11.sp, color = Color.White)
                         }
                         OutlinedButton(
                             onClick = {
@@ -129,6 +128,7 @@ fun VisionTechInfoAndSetupDialog(
                     val statusColor = when (diagnostics?.availabilityStatus) {
                         VisionAvailabilityStatus.INSTALLED_VERIFIED,
                         VisionAvailabilityStatus.BACKEND_READY -> Color(0xFF10B981)
+                        VisionAvailabilityStatus.CONFIGURED_UNTESTED,
                         VisionAvailabilityStatus.BACKEND_REQUIRED -> Color(0xFFF59E0B)
                         else -> Color(0xFFFF5252)
                     }
@@ -168,6 +168,7 @@ fun VisionTechInfoAndSetupDialog(
                                     scope.launch {
                                         val map = VisionPackageManager.verifyAllAsync(context)
                                         val d = map[spec.id]
+                                        VisionTechnologyDownloadManager.getInstance(context).refreshAllStates()
                                         verificationResultText = if (d?.sha256Verified == true) {
                                             "Verified ${spec.displayName} SHA-256 (${d.verifiedBytes / 1024} KB)."
                                         } else {
@@ -180,6 +181,7 @@ fun VisionTechInfoAndSetupDialog(
                                 }
                                 TextButton(onClick = {
                                     val freed = VisionPackageManager.clearPackageCache(context) + VisualizationStorageRepository.clearAllSavedExports(context)
+                                    VisionTechnologyDownloadManager.getInstance(context).refreshAllStates()
                                     verificationResultText = "Cleared ${freed / 1024} KB local exports & cache."
                                     onDiagnosticsUpdated()
                                 }) {
@@ -193,7 +195,7 @@ fun VisionTechInfoAndSetupDialog(
                     }
                 }
 
-                // Remote Worker Configuration (shown cleanly for TripoSR & Manim) or Cesium Ion token
+                // Remote Worker Configuration (shown cleanly for TripoSR & Manim Community) or Cesium Ion token
                 if (spec.id == VisionTechId.TRIPO_SR || spec.id == VisionTechId.MANIM || spec.id == VisionTechId.CESIUM_JS) {
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -252,6 +254,7 @@ fun VisionTechInfoAndSetupDialog(
                                             VisionTechId.CESIUM_JS -> VisionPackageManager.setCesiumIonToken(context, cesiumToken)
                                             else -> {}
                                         }
+                                        VisionTechnologyDownloadManager.getInstance(context).refreshAllStates()
                                         onDiagnosticsUpdated()
                                         Toast.makeText(context, "Saved securely", Toast.LENGTH_SHORT).show()
                                     },
@@ -270,6 +273,7 @@ fun VisionTechInfoAndSetupDialog(
                                             isTestingHealth = true
                                             scope.launch {
                                                 val status = TripoSrAndManimWorkers.testWorkerHealth(context, spec.id)
+                                                VisionTechnologyDownloadManager.getInstance(context).refreshAllStates()
                                                 verificationResultText = status.detailMessage
                                                 isTestingHealth = false
                                                 onDiagnosticsUpdated()
@@ -319,6 +323,7 @@ fun VisionTemplatesAndSavedSheet(
     var innerTab by remember { mutableIntStateOf(0) }
     var renameTarget by remember { mutableStateOf<VisualizationArtifact?>(null) }
     var renameText by remember { mutableStateOf("") }
+    val templates = remember { VisionTechRegistry.defaultTemplates() }
 
     if (renameTarget != null) {
         AlertDialog(
@@ -346,12 +351,11 @@ fun VisionTemplatesAndSavedSheet(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         TabRow(selectedTabIndex = innerTab, containerColor = Color(0xFF0E1522), contentColor = accentColor) {
-            Tab(selected = innerTab == 0, onClick = { innerTab = 0 }, text = { Text("16 Starter Templates") })
+            Tab(selected = innerTab == 0, onClick = { innerTab = 0 }, text = { Text("Starter Templates (${templates.size})") })
             Tab(selected = innerTab == 1, onClick = { innerTab = 1 }, text = { Text("Saved Vault (${savedArtifacts.size})") })
         }
 
         if (innerTab == 0) {
-            val templates = remember { VisionTechRegistry.defaultTemplates() }
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.heightIn(max = 460.dp)

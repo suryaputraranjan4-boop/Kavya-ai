@@ -44,15 +44,41 @@ class KavyaMicrophoneEngine private constructor(private val appContext: Context)
         private val partialFlow = MutableStateFlow("")
         private val amplitudeFlow = MutableStateFlow(0f)
         private val mutedFlow = MutableStateFlow(false)
+        private val assistantStateFlow = MutableStateFlow(MicrophoneEngine.WakeWordAssistantState.OFF)
+        private val assistantPopupVisibleFlow = MutableStateFlow(false)
+        private val lastVoiceErrorFlow = MutableStateFlow<com.example.ai.VoiceInputErrorCategory?>(null)
 
         val engineState: StateFlow<EngineState> = stateFlow.asStateFlow()
         val partialText: StateFlow<String> = partialFlow.asStateFlow()
         val amplitude: StateFlow<Float> = amplitudeFlow.asStateFlow()
         val isMuted: StateFlow<Boolean> = mutedFlow.asStateFlow()
+        val assistantState: StateFlow<MicrophoneEngine.WakeWordAssistantState> = assistantStateFlow.asStateFlow()
+        val isAssistantPopupVisible: StateFlow<Boolean> = assistantPopupVisibleFlow.asStateFlow()
+        val lastVoiceError: StateFlow<com.example.ai.VoiceInputErrorCategory?> = lastVoiceErrorFlow.asStateFlow()
 
         @Volatile private var instance: KavyaMicrophoneEngine? = null
         private var pendingListener: ((String) -> Unit)? = null
         @Volatile private var isInitialized = false
+
+        fun openDefaultAssistantSettings(context: Context) {
+            try {
+                val intent = android.content.Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS).apply {
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                try {
+                    val fallback = android.content.Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS).apply {
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(fallback)
+                } catch (_: Exception) {}
+            }
+        }
+
+        fun dismissAssistantPopup(context: Context) {
+            MicrophoneEngine.getInstance(context).dismissAssistantPopup()
+        }
 
         fun init(context: Context) {
             if (isInitialized && instance != null) return
@@ -86,6 +112,18 @@ class KavyaMicrophoneEngine private constructor(private val appContext: Context)
                 }
 
                 scope.launch {
+                    mic.assistantState.collect { st ->
+                        assistantStateFlow.value = st
+                    }
+                }
+
+                scope.launch {
+                    mic.isAssistantPopupVisible.collect { visible ->
+                        assistantPopupVisibleFlow.value = visible
+                    }
+                }
+
+                scope.launch {
                     mic.amplitude.collect { amp ->
                         amplitudeFlow.value = amp
                     }
@@ -94,6 +132,12 @@ class KavyaMicrophoneEngine private constructor(private val appContext: Context)
                 scope.launch {
                     mic.lastTranscript.collect { txt ->
                         partialFlow.value = txt
+                    }
+                }
+
+                scope.launch {
+                    mic.lastVoiceError.collect { err ->
+                        lastVoiceErrorFlow.value = err
                     }
                 }
 

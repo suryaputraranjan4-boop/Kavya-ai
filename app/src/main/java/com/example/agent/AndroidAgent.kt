@@ -50,6 +50,8 @@ class AndroidAgent(
 
     companion object {
         private const val TAG = "KavyaAndroidAgent"
+        @Volatile
+        var pendingConfirmationBridge: (suspend (title: String, description: String) -> Boolean)? = null
     }
 
     private val failureDao: AutomationFailureDao = AppDatabase.getDatabase(context).automationFailureDao()
@@ -119,7 +121,8 @@ class AndroidAgent(
      */
     suspend fun executeTaskPlan(
         plan: TaskPlan,
-        onSpeakProgress: (suspend (String) -> Unit)? = null
+        onSpeakProgress: (suspend (String) -> Unit)? = null,
+        onRequestConfirmation: (suspend (TaskStep) -> Boolean)? = null
     ): TaskExecutionOutcome = withContext(Dispatchers.IO) {
         if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
             val blocked = "Automation blocked: TaskPlan execution requires an active AI authorization permit."
@@ -141,6 +144,7 @@ class AndroidAgent(
         val recoveryBudget = RecoveryBudget()
         val recoveryHistory = mutableListOf<RecoveryAttempt>()
         val executionState = TaskPlanExecutionState()
+        val confirmedStepsInPlan = mutableSetOf<String>()
         var completedSteps = 0
 
         for (step in plan.steps) {
@@ -182,7 +186,7 @@ class AndroidAgent(
                 }
             }
 
-            // User Confirmation Gating (Section 3 & 10): Consequential action protection
+            // User Confirmation Gating (Section 3 & 10): Suspend until user explicitly approves consequential action
             if (step.requiresUserConfirmation || step.actionType == UniversalActionType.CONFIRM_ACTION) {
                 step.status = StepStatus.NEEDS_USER_INPUT
                 DiagnosticEngine.updateLiveState(AgentLiveState.WAITING_FOR_USER, "User confirmation needed: ${step.actionDescription}", plan.targetAppName)
@@ -190,6 +194,55 @@ class AndroidAgent(
                 if (onSpeakProgress != null) {
                     onSpeakProgress("Confirmation required before proceeding: ${step.actionDescription}")
                 }
+                val bridge = pendingConfirmationBridge
+                val handler: (suspend (TaskStep) -> Boolean)? = when {
+                    onRequestConfirmation != null -> onRequestConfirmation
+                    bridge != null -> { s ->
+                        bridge(
+                            "Confirm Action",
+                            s.actionDescription.ifBlank { "Allow ${s.actionType.name}?" }
+                        )
+                    }
+                    else -> null
+                }
+                if (handler == null) {
+                    step.status = StepStatus.BLOCKED
+                    executionState.failedStepIds.add(step.stepId)
+                    DiagnosticEngine.updateLiveState(AgentLiveState.FAILED, "Confirmation prompt unavailable", plan.targetAppName)
+                    KavyaStateManager.updateTaskState(TaskState.NEEDS_USER, "Confirmation prompt unavailable for ${step.actionDescription}")
+                    return@withContext TaskExecutionOutcome(
+                        success = false,
+                        finalSpokenMessage = "Confirmation is required before '${step.actionDescription}', but no confirmation prompt is attached.",
+                        completedStepsCount = completedSteps,
+                        totalStepsCount = plan.steps.size,
+                        failureReason = "CONFIRMATION_HANDLER_UNAVAILABLE",
+                        diagnostics = completedDiagnostics,
+                        debugLogs = debugLogs
+                    )
+                }
+                val approved = try {
+                    handler(step)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
+                }
+                if (!approved) {
+                    step.status = StepStatus.CANCELLED
+                    executionState.failedStepIds.add(step.stepId)
+                    DiagnosticEngine.updateLiveState(AgentLiveState.FAILED, "User declined confirmation", plan.targetAppName)
+                    KavyaStateManager.updateTaskState(TaskState.CANCELLED, "Action declined by user")
+                    return@withContext TaskExecutionOutcome(
+                        success = false,
+                        finalSpokenMessage = "Action cancelled by user before '${step.actionDescription}'.",
+                        completedStepsCount = completedSteps,
+                        totalStepsCount = plan.steps.size,
+                        failureReason = "USER_DECLINED",
+                        diagnostics = completedDiagnostics,
+                        debugLogs = debugLogs
+                    )
+                }
+                confirmedStepsInPlan.add(step.stepId)
                 step.status = StepStatus.RUNNING
             }
 
@@ -300,7 +353,7 @@ class AndroidAgent(
 
             step.status = StepStatus.RUNNING
             KavyaStateManager.updateTaskState(TaskState.EXECUTING, "Executing step ${step.id}")
-            var stepResult = executeAtomicStep(step)
+            var stepResult = executeAtomicStep(step, confirmedStepsInPlan)
             step.status = StepStatus.VERIFYING
 
             // 2. AI = THE ONLY BRAIN: No local/offline recovery loop is allowed to tap/scroll/dismiss independently.
@@ -510,7 +563,10 @@ class AndroidAgent(
      */
     private val fileAgent = FileAgent(context)
 
-    suspend fun executeAtomicStep(step: TaskStep): StepExecutionResult {
+    suspend fun executeAtomicStep(
+        step: TaskStep,
+        confirmedStepsInPlan: Set<String> = emptySet()
+    ): StepExecutionResult {
         if (!com.example.orchestrator.AiAuthorityGateway.hasActiveAuthorizedDispatch()) {
             return StepExecutionResult(
                 stepId = step.id,
@@ -585,7 +641,7 @@ class AndroidAgent(
             UniversalActionType.GOOGLE_MAPS_SEARCH -> handleGoogleMapsSearch(step)
             UniversalActionType.MEMORY_TOOL -> handleMemoryTool(step)
             UniversalActionType.WAIT_FOR_CONDITION -> handleWaitForCondition(step)
-            UniversalActionType.CONFIRM_ACTION -> handleConfirmAction(step)
+            UniversalActionType.CONFIRM_ACTION -> handleConfirmAction(step, confirmedInPlan = step.stepId in confirmedStepsInPlan)
             UniversalActionType.DOWNLOAD_IMAGE -> handleDownloadImage(step)
             UniversalActionType.ATTACH_FILE -> handleAttachFile(step)
             UniversalActionType.CREATE_REPORT -> handleCreateReport(step)
@@ -618,8 +674,30 @@ class AndroidAgent(
         )
     }
 
-    private suspend fun handleConfirmAction(step: TaskStep): StepExecutionResult {
-        Log.i(TAG, "Confirmation checkpoint passed for step ${step.id}: ${step.actionDescription}")
+    private suspend fun handleConfirmAction(step: TaskStep, confirmedInPlan: Boolean = false): StepExecutionResult {
+        if (!confirmedInPlan) {
+            val bridge = pendingConfirmationBridge
+            val approved = if (bridge != null) {
+                try {
+                    bridge("Confirm Action", step.actionDescription.ifBlank { step.param.ifBlank { "Allow action?" } })
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+            } else {
+                false
+            }
+            if (!approved) {
+                return StepExecutionResult(
+                    stepId = step.id,
+                    success = false,
+                    actionType = UniversalActionType.CONFIRM_ACTION,
+                    output = "User confirmation was not granted for step ${step.id}: ${step.actionDescription}"
+                )
+            }
+        }
+        Log.i(TAG, "Confirmation checkpoint granted for step ${step.id}: ${step.actionDescription}")
         return StepExecutionResult(
             stepId = step.id,
             success = true,
@@ -641,18 +719,21 @@ class AndroidAgent(
                 )
                 return StepExecutionResult(
                     stepId = step.id,
-                    success = true,
+                    success = waitResult.satisfied,
                     actionType = UniversalActionType.DOWNLOAD_IMAGE,
-                    output = "Image downloaded successfully (${waitResult.reason})"
+                    output = if (waitResult.satisfied) {
+                        "Image downloaded successfully (${waitResult.reason})"
+                    } else {
+                        "Download button tapped, but completed file could not be verified: ${waitResult.reason}"
+                    }
                 )
             }
         }
-        return fileAgent.executeFileAction(
-            UniversalActionType.CREATE_FILE,
-            param = step.param.ifBlank { "generated_image_${System.currentTimeMillis()}.png" },
-            target = step.targetAppOrUrl,
-            content = "BINARY_IMAGE_DATA",
-            stepId = step.id
+        return StepExecutionResult(
+            stepId = step.id,
+            success = false,
+            actionType = UniversalActionType.DOWNLOAD_IMAGE,
+            output = "Could not locate or trigger image download option on screen."
         )
     }
 
@@ -673,9 +754,9 @@ class AndroidAgent(
         }
         return StepExecutionResult(
             stepId = step.id,
-            success = true,
+            success = false,
             actionType = UniversalActionType.ATTACH_FILE,
-            output = "Attached file: ${step.param}"
+            output = "Could not locate or click attachment button on screen."
         )
     }
 
@@ -724,8 +805,17 @@ class AndroidAgent(
         val screen = FreshScreenRecognizer.inspectFreshScreenNow()
         val field = UIElementResolver.findFormField(screen, step.param)
         val service = KavyaAccessibilityService.instance
+        val inputValue = step.messageText.ifBlank { step.param }.trim()
+        if (inputValue.isBlank()) {
+            return StepExecutionResult(
+                stepId = step.id,
+                success = false,
+                actionType = UniversalActionType.FILL_FORM,
+                output = "Missing value for form field '${step.param}'."
+            )
+        }
         if (field != null && service != null && field.node != null) {
-            val typed = service.typeInNode(field.node, step.messageText.ifBlank { step.param })
+            val typed = service.typeInNode(field.node, inputValue)
             if (typed) {
                 return StepExecutionResult(
                     stepId = step.id,
@@ -737,9 +827,9 @@ class AndroidAgent(
         }
         return StepExecutionResult(
             stepId = step.id,
-            success = true,
+            success = false,
             actionType = UniversalActionType.FILL_FORM,
-            output = "Field '${step.param}' updated"
+            output = "Could not locate or type into form field '${step.param}'."
         )
     }
 
@@ -767,19 +857,23 @@ class AndroidAgent(
         )
         return StepExecutionResult(
             stepId = step.id,
-            success = true,
+            success = folderResult.success,
             actionType = UniversalActionType.ORGANIZE_FILES,
-            output = "Files organized into folder '${step.param}': ${folderResult.output}"
+            output = if (folderResult.success) {
+                "Prepared folder '${step.param}': ${folderResult.output}"
+            } else {
+                "Could not organize files into '${step.param}': ${folderResult.output}"
+            }
         )
     }
 
     private suspend fun handleReplanTask(step: TaskStep): StepExecutionResult {
-        Log.i(TAG, "Re-planning initiated at step ${step.id} for: ${step.param}")
+        Log.w(TAG, "Local handleReplanTask invoked for step ${step.id} (${step.param}); replanning requires AI orchestrator.")
         return StepExecutionResult(
             stepId = step.id,
-            success = true,
+            success = false,
             actionType = UniversalActionType.REPLAN_TASK,
-            output = "Task replanned dynamically"
+            output = "Dynamic replanning requires the AI orchestrator with a fresh screen observation."
         )
     }
 
@@ -1636,26 +1730,44 @@ class AndroidAgent(
             messageText = parts.getOrNull(1) ?: ""
         }
         if (contactName.isBlank()) contactName = step.param
+        contactName = contactName.trim()
+        messageText = messageText.trim()
+        if (contactName.isBlank() || messageText.isBlank()) {
+            return StepExecutionResult(step.id, false, UniversalActionType.SEND_SMS, "SMS recipient and message text are both required.")
+        }
 
         val intent = Intent(Intent.ACTION_SENDTO).apply {
             data = Uri.parse("smsto:")
             putExtra("sms_body", messageText)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        try {
+        return try {
             context.startActivity(intent)
-            delay(200)
+            delay(250)
             val service = KavyaAccessibilityService.instance
+            var sendClicked = false
             if (service != null) {
+                val screenBefore = screenInspector.getScreenContextString()
                 service.typeInNodeByText("To", contactName)
                 delay(150)
                 service.clickNodeByText(contactName)
                 delay(150)
-                service.clickSearchOrSubmitButton() || service.clickNodeByText("Send")
+                sendClicked = service.clickSearchOrSubmitButton() || service.clickNodeByText("Send")
+                if (sendClicked) {
+                    val verif = verificationEngine.verifyUiInteraction(UniversalActionType.SUBMIT, "Send", screenBefore, settleDelayMs = 250L)
+                    if (verif.passed) {
+                        return StepExecutionResult(step.id, true, UniversalActionType.SEND_SMS, "Sent SMS to $contactName")
+                    }
+                }
             }
-            return StepExecutionResult(step.id, true, UniversalActionType.SEND_SMS, "Sent SMS to $contactName")
+            StepExecutionResult(
+                step.id,
+                false,
+                UniversalActionType.SEND_SMS,
+                "Opened SMS composer for $contactName, but delivery/send confirmation is required in the messaging app."
+            )
         } catch(e: Exception) {
-            return StepExecutionResult(step.id, false, UniversalActionType.SEND_SMS, "Could not start messaging intent")
+            StepExecutionResult(step.id, false, UniversalActionType.SEND_SMS, "Could not start messaging intent: ${e.message}")
         }
     }
 
@@ -1673,7 +1785,14 @@ class AndroidAgent(
             messageText = parts.getOrNull(1)?.trim() ?: ""
         }
         if (contactName.isBlank()) contactName = step.param.trim()
-        if (messageText.isBlank()) messageText = "Hello"
+        if (contactName.isBlank() || messageText.isBlank()) {
+            return StepExecutionResult(
+                step.id,
+                false,
+                UniversalActionType.SEND_WHATSAPP_MESSAGE,
+                "Recipient and message text must be specified before sending a WhatsApp message."
+            )
+        }
 
         val lowerContact = contactName.lowercase(Locale.ROOT)
         val isGenericContact = lowerContact in listOf(
@@ -1875,23 +1994,38 @@ class AndroidAgent(
     }
 
     private suspend fun handleEmail(step: TaskStep): StepExecutionResult {
-        val recipient = step.recipient.ifBlank { step.param }
-        val messageText = step.messageText
+        val recipient = step.recipient.ifBlank { step.param }.trim()
+        val messageText = step.messageText.trim()
+        if (recipient.isBlank()) {
+            return StepExecutionResult(step.id, false, UniversalActionType.SEND_EMAIL, "Email recipient is required.")
+        }
         val intent = Intent(Intent.ACTION_SENDTO).apply {
             data = Uri.parse("mailto:$recipient")
             putExtra(Intent.EXTRA_TEXT, messageText)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        try {
+        return try {
             context.startActivity(intent)
             delay(500)
             val service = KavyaAccessibilityService.instance
             if (service != null) {
-                service.clickNodeByText("Send")
+                val screenBefore = screenInspector.getScreenContextString()
+                val clickedSend = service.clickNodeByText("Send")
+                if (clickedSend) {
+                    val verif = verificationEngine.verifyUiInteraction(UniversalActionType.SUBMIT, "Send", screenBefore, settleDelayMs = 250L)
+                    if (verif.passed) {
+                        return StepExecutionResult(step.id, true, UniversalActionType.SEND_EMAIL, "Sent email to $recipient")
+                    }
+                }
             }
-            return StepExecutionResult(step.id, true, UniversalActionType.SEND_EMAIL, "Sent email to $recipient")
+            StepExecutionResult(
+                step.id,
+                false,
+                UniversalActionType.SEND_EMAIL,
+                "Opened email composer for $recipient, but send confirmation is required in the email app."
+            )
         } catch(e: Exception) {
-            return StepExecutionResult(step.id, false, UniversalActionType.SEND_EMAIL, "Could not start email intent")
+            StepExecutionResult(step.id, false, UniversalActionType.SEND_EMAIL, "Could not start email intent: ${e.message}")
         }
     }
 
@@ -1956,11 +2090,18 @@ class AndroidAgent(
     }
 
     private suspend fun handleNavigate(step: TaskStep): StepExecutionResult {
-        if (step.param.startsWith("DATE:")) {
-            val rawDate = step.param.removePrefix("DATE:").trim()
+        val param = step.param.trim()
+        if (param.startsWith("DATE:")) {
+            val rawDate = param.removePrefix("DATE:").trim()
             return openCalendarAtDate(step.id, rawDate)
         }
-        return StepExecutionResult(step.id, true, UniversalActionType.NAVIGATE, "Navigated to ${step.param}")
+        if (param.startsWith("http://", ignoreCase = true) || param.startsWith("https://", ignoreCase = true)) {
+            return handleOpenUrl(param)
+        }
+        if (step.targetAppOrUrl.isNotBlank() && !step.targetAppOrUrl.equals("System", ignoreCase = true)) {
+            return handleOpenApp(step.targetAppOrUrl)
+        }
+        return StepExecutionResult(step.id, false, UniversalActionType.NAVIGATE, "Unsupported navigation target: '$param'")
     }
 
     private suspend fun openCalendarAtDate(stepId: Int, rawDate: String): StepExecutionResult {
@@ -2087,7 +2228,7 @@ class AndroidAgent(
 
         if (action.action == "SMS" || action.action == "MESSAGE") {
             val contact = action.target.ifBlank { action.rawParam.substringBefore(":") }.trim()
-            val message = action.query.ifBlank { action.rawParam.substringAfter(":", "Hello") }.trim()
+            val message = action.query.ifBlank { action.rawParam.substringAfter(":", "") }.trim()
             val router = CommandRouter(context)
             val smsResult = router.handleSms(contact, message)
             return StepExecutionResult(

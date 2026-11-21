@@ -64,7 +64,12 @@ class GeminiLiveClient(
             return
         }
 
-        val targetModel = if (model.startsWith("models/")) model else "models/$model"
+        val resolvedModelId = if (model.contains("gemini-3.5", ignoreCase = true)) {
+            "gemini-2.0-flash-exp"
+        } else {
+            model
+        }
+        val targetModel = if (resolvedModelId.startsWith("models/")) resolvedModelId else "models/$resolvedModelId"
         Log.i(TAG, "Connecting to Gemini Live WebSocket endpoint (model=$targetModel)...")
 
         _connectionState.value = true
@@ -77,16 +82,16 @@ class GeminiLiveClient(
             }
         }
 
-        val client = OkHttpClient.Builder()
+        val client = RetrofitClient.okHttpClient.newBuilder()
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
             .pingInterval(15, TimeUnit.SECONDS)
             .build()
         okHttpClient = client
 
-        val wsUrl = "$BASE_WS_URL?key=$apiKey"
         val request = Request.Builder()
-            .url(wsUrl)
+            .url(BASE_WS_URL)
+            .addHeader("x-goog-api-key", apiKey.trim())
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {

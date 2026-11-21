@@ -8,7 +8,8 @@ data class VerificationResult(
     val passed: Boolean,
     val reason: String,
     val currentPackage: String,
-    val screenSummary: String = ""
+    val screenSummary: String = "",
+    val launchDispatched: Boolean = false
 )
 
 /**
@@ -77,11 +78,12 @@ class VerificationEngine(private val screenInspector: ScreenInspector) {
             )
         }
 
-        Log.d(TAG, "Foreground verification dispatched for $expectedPackage (Accessibility service disabled)")
+        Log.w(TAG, "Foreground verification unconfirmed for $expectedPackage (Accessibility off)")
         return VerificationResult(
-            passed = true,
-            reason = "PASS (Launch Dispatched - Accessibility off)",
-            currentPackage = expectedPackage
+            passed = false,
+            reason = "UNVERIFIED: Launch dispatched for $expectedPackage, but foreground cannot be confirmed (Accessibility off)",
+            currentPackage = "unknown",
+            launchDispatched = true
         )
     }
 

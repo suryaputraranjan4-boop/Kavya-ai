@@ -4,12 +4,40 @@
         <exclude domain="sharedpref" path="kavya_secure_prefs.xml" />
         <exclude domain="sharedpref" path="kavya_encrypted_prefs.xml" />
         <exclude domain="sharedpref" path="kavya_encrypted_vault.xml" />
+        <exclude domain="sharedpref" path="kavya_encrypted_vault_meta.xml" />
+        <exclude domain="sharedpref" path="kavya_app_preferences.xml" />
+        <exclude domain="sharedpref" path="kavya_voice_profiles_store.xml" />
+        <exclude domain="sharedpref" path="kavya_vision_settings.xml" />
+        <exclude domain="sharedpref" path="kavya_offline_model_prefs.xml" />
+        <exclude domain="sharedpref" path="kavya_app_aliases.xml" />
+        <exclude domain="sharedpref" path="kavya_evolution_prefs.xml" />
         <exclude domain="database" path="kavya_database" />
+        <exclude domain="database" path="kavya_database-wal" />
+        <exclude domain="database" path="kavya_database-shm" />
+        <exclude domain="file" path="voice_studio_samples" />
+        <exclude domain="file" path="models" />
+        <exclude domain="file" path="chatterbox_models" />
+        <exclude domain="file" path="vision_packages" />
+        <exclude domain="file" path="visualizations" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="kavya_secure_prefs.xml" />
         <exclude domain="sharedpref" path="kavya_encrypted_prefs.xml" />
         <exclude domain="sharedpref" path="kavya_encrypted_vault.xml" />
+        <exclude domain="sharedpref" path="kavya_encrypted_vault_meta.xml" />
+        <exclude domain="sharedpref" path="kavya_app_preferences.xml" />
+        <exclude domain="sharedpref" path="kavya_voice_profiles_store.xml" />
+        <exclude domain="sharedpref" path="kavya_vision_settings.xml" />
+        <exclude domain="sharedpref" path="kavya_offline_model_prefs.xml" />
+        <exclude domain="sharedpref" path="kavya_app_aliases.xml" />
+        <exclude domain="sharedpref" path="kavya_evolution_prefs.xml" />
         <exclude domain="database" path="kavya_database" />
+        <exclude domain="database" path="kavya_database-wal" />
+        <exclude domain="database" path="kavya_database-shm" />
+        <exclude domain="file" path="voice_studio_samples" />
+        <exclude domain="file" path="models" />
+        <exclude domain="file" path="chatterbox_models" />
+        <exclude domain="file" path="vision_packages" />
+        <exclude domain="file" path="visualizations" />
     </device-transfer>
 </data-extraction-rules>

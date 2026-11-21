@@ -83,7 +83,7 @@ object UserCommandClassifier {
         val pattern2 = Regex("(?i)^(.+?)\\s+(?:ko|को)\\s+(?:yeh\\s+|ye\\s+)?(?:message|msg|मैसेज|संदेश)\\s+(?:bhejo|karo|भेजो|करो)\\s*(.+)?$")
         pattern2.find(clean)?.let { match ->
             val recipient = match.groupValues[1].trim()
-            val msg = match.groupValues[2].trim().ifBlank { "Hello" }
+            val msg = match.groupValues[2].trim()
             return Pair(recipient, msg)
         }
 
@@ -95,7 +95,7 @@ object UserCommandClassifier {
             return Pair(leading, lastWord)
         }
 
-        return Pair(clean, "Hello")
+        return Pair(clean, "")
     }
 
     /**

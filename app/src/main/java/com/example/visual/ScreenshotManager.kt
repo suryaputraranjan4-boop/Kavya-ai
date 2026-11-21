@@ -26,6 +26,13 @@ class ScreenshotManager(private val context: Context) {
         private const val TAG = "KavyaScreenshotMgr"
         private const val MAX_IMAGE_DIMENSION = 1024
         private const val JPEG_QUALITY = 80
+        private val totalScreenshotsCaptured = java.util.concurrent.atomic.AtomicLong(0L)
+
+        fun getTotalScreenshotsCaptured(): Long = totalScreenshotsCaptured.get()
+
+        fun resetCaptureCounterForTesting() {
+            totalScreenshotsCaptured.set(0L)
+        }
     }
 
     /**
@@ -49,6 +56,7 @@ class ScreenshotManager(private val context: Context) {
     /**
      * Captures the current screen.
      * Respects Android privacy and security constraints.
+     * Supports unlimited sequential captures during an authorized session without any capture-count cap.
      */
     suspend fun captureScreen(): Bitmap? {
         val service = KavyaAccessibilityService.instance
@@ -60,6 +68,7 @@ class ScreenshotManager(private val context: Context) {
         return try {
             val bitmap = service.captureScreenBitmap()
             if (bitmap != null) {
+                totalScreenshotsCaptured.incrementAndGet()
                 // If it's a hardware bitmap, copy to software config for resizing/compression
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
                     val softwareCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
@@ -88,6 +97,7 @@ class ScreenshotManager(private val context: Context) {
         if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
             return Pair("", null)
         }
+        totalScreenshotsCaptured.incrementAndGet()
         var scaledBitmap: Bitmap = bitmap
         try {
             val width = bitmap.width
@@ -107,6 +117,9 @@ class ScreenshotManager(private val context: Context) {
             val isSharedPipelineFrame = bitmap === VisionPipeline.getLatestFrame() ||
                 bitmap === com.example.services.ScreenShareManager.latestFrameBitmap
             val finalRetainedBitmap = if (retainBitmap || AppPreferences.isScreenAwarenessEnabled(context) || isSharedPipelineFrame) {
+                if (scaledBitmap !== bitmap && !isSharedPipelineFrame && !bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
                 scaledBitmap
             } else {
                 if (scaledBitmap !== bitmap && !scaledBitmap.isRecycled) {

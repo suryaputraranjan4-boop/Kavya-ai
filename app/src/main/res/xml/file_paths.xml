@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <files-path name="internal_files" path="." />
-    <cache-path name="cache_files" path="." />
-    <external-files-path name="app_external_files" path="." />
+    <files-path name="internal_downloads" path="Downloads/" />
+    <files-path name="visualizations" path="visualizations/" />
+    <files-path name="shared_media" path="shared_media/" />
+    <cache-path name="shared_cache" path="shared/" />
+    <external-files-path name="app_external_download" path="Download/" />
+    <external-files-path name="app_external_downloads" path="Downloads/" />
 </paths>

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -49,6 +50,7 @@ import com.example.ai.providers.ConnectionStatus
 import com.example.ai.providers.RuntimeActivityEvent
 import com.example.ai.providers.RuntimeActivityTracker
 import com.example.ui.components.GlassCard
+import com.example.ui.components.StatusBadge
 import com.example.ui.theme.*
 import com.example.utils.AppPreferences
 import com.example.utils.CustomApiConfig
@@ -118,17 +120,7 @@ fun AiApiHubScreen(navController: NavController) {
 
     val modelCoordinator = remember { ModelDownloadCoordinator.getInstance(context) }
     val modelStates by modelCoordinator.states.collectAsState()
-    var activeStorageProfile by remember { mutableStateOf(GemmaModelManager.getStorageProfile(context)) }
-    var showExpandedProfileDialog by remember { mutableStateOf(false) }
     var showExcludedModels by remember { mutableStateOf(false) }
-    var selectedLightweightIds by remember {
-        mutableStateOf(
-            ModelCatalog.LIGHTWEIGHT_VISION_DESCRIPTORS
-                .filter { it.recommendedDefault }
-                .map { it.manifest.modelId }
-                .toSet()
-        )
-    }
 
     val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -556,34 +548,25 @@ fun AiApiHubScreen(navController: NavController) {
             }
 
             item {
-                val batchPreview = remember(selectedLightweightIds, modelStates, activeStorageProfile) {
-                    modelCoordinator.previewBatchBudget(selectedLightweightIds.toList())
+                val emptySelection = emptySet<String>()
+                val batchPreview = remember(modelStates) {
+                    modelCoordinator.previewBatchBudget(emptyList())
+                }
+                val storageEstimate = remember(modelStates, batchPreview.totalDownloadBytes) {
+                    GemmaModelManager.calculateDynamicStorageEstimate(
+                        context = context,
+                        additionalRequestedBytes = batchPreview.totalDownloadBytes
+                    )
                 }
                 OnDeviceModelHubCard(
-                    activeProfile = activeStorageProfile,
+                    storageEstimate = storageEstimate,
                     modelStates = modelStates,
-                    selectedLightweightIds = selectedLightweightIds,
+                    selectedLightweightIds = emptySelection,
                     batchPreview = batchPreview,
                     showExcludedModels = showExcludedModels,
                     onToggleExcludedModels = { showExcludedModels = !showExcludedModels },
-                    onSwitchProfile = { targetProfile ->
-                        if (targetProfile == OfflineStorageProfile.EXPANDED) {
-                            showExpandedProfileDialog = true
-                        } else {
-                            GemmaModelManager.setStorageProfile(context, OfflineStorageProfile.STRICT_2GB)
-                            activeStorageProfile = OfflineStorageProfile.STRICT_2GB
-                        }
-                    },
-                    onToggleLightweightSelect = { modelId ->
-                        selectedLightweightIds = if (modelId in selectedLightweightIds) {
-                            selectedLightweightIds - modelId
-                        } else {
-                            selectedLightweightIds + modelId
-                        }
-                    },
-                    onDownloadSelectedBatch = {
-                        modelCoordinator.startOrResumeBatch(selectedLightweightIds.toList())
-                    },
+                    onToggleLightweightSelect = {},
+                    onDownloadSelectedBatch = {},
                     onStartOrResume = { id -> modelCoordinator.startOrResumeDownload(id) },
                     onPause = { id -> modelCoordinator.pauseDownload(id) },
                     onCancel = { id -> modelCoordinator.cancelDownload(id) },
@@ -591,36 +574,6 @@ fun AiApiHubScreen(navController: NavController) {
                     onDelete = { id -> modelCoordinator.deleteModel(id) },
                     onRedownload = { id -> modelCoordinator.redownloadModel(id) }
                 )
-
-                if (showExpandedProfileDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showExpandedProfileDialog = false },
-                        title = { Text("Enable Expanded Model Storage?") },
-                        text = {
-                            Text(
-                                "Expanded mode raises the local model cap from 2 GB to 4 GB so large bundles like Florence-2 can install alongside SmolVLM2 and Kokoro-82M."
-                            )
-                        },
-                        confirmButton = {
-                            Button(
-                                onClick = {
-                                    GemmaModelManager.setStorageProfile(
-                                        context,
-                                        OfflineStorageProfile.EXPANDED,
-                                        userApprovedExpanded = true
-                                    )
-                                    activeStorageProfile = GemmaModelManager.getStorageProfile(context)
-                                    showExpandedProfileDialog = false
-                                }
-                            ) { Text("Allow Expanded (4 GB)") }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showExpandedProfileDialog = false }) {
-                                Text("Keep 2 GB Strict")
-                            }
-                        }
-                    )
-                }
             }
             item {
                 GlassCard(
@@ -2391,13 +2344,12 @@ fun RuntimeEventRow(event: RuntimeActivityEvent) {
 
 @Composable
 private fun OnDeviceModelHubCard(
-    activeProfile: OfflineStorageProfile,
+    storageEstimate: com.example.ai.offline.DynamicStorageEstimate,
     modelStates: Map<String, ModelDownloadProgressState>,
     selectedLightweightIds: Set<String>,
     batchPreview: BatchBudgetPreview,
     showExcludedModels: Boolean,
     onToggleExcludedModels: () -> Unit,
-    onSwitchProfile: (OfflineStorageProfile) -> Unit,
     onToggleLightweightSelect: (String) -> Unit,
     onDownloadSelectedBatch: () -> Unit,
     onStartOrResume: (String) -> Unit,
@@ -2431,38 +2383,29 @@ private fun OnDeviceModelHubCard(
                         color = TextPrimary
                     )
                     Text(
-                        text = "Voice (Kokoro-82M) • Lightweight Vision (12 ONNX) • Advanced Vision",
+                        text = "Voice (Kokoro-82M) • 12 Visualization Technologies • Advanced Vision",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = TextSecondary
                     )
                 }
+                val freeGb = storageEstimate.availableDeviceBytes / (1024f * 1024f * 1024f)
                 RoleBadge(
-                    label = if (activeProfile == OfflineStorageProfile.EXPANDED) "4 GB EXPANDED" else "2 GB STRICT",
-                    color = if (activeProfile == OfflineStorageProfile.EXPANDED) AccentYellow else AccentCyan
+                    label = String.format(Locale.US, "%.1f GB FREE", freeGb),
+                    color = if (storageEstimate.hasSufficientStorage) AccentCyan else Error
                 )
             }
 
-            // Storage profile toggle row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Color.Black.copy(alpha = 0.22f),
+                modifier = Modifier.fillMaxWidth().testTag("dynamic_storage_estimate_banner")
             ) {
-                OutlinedButton(
-                    onClick = { onSwitchProfile(OfflineStorageProfile.STRICT_2GB) },
-                    enabled = activeProfile != OfflineStorageProfile.STRICT_2GB,
-                    modifier = Modifier.weight(1f).testTag("profile_strict_2gb_btn"),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text("Strict 2 GB", fontSize = 11.sp)
-                }
-                OutlinedButton(
-                    onClick = { onSwitchProfile(OfflineStorageProfile.EXPANDED) },
-                    enabled = activeProfile != OfflineStorageProfile.EXPANDED,
-                    modifier = Modifier.weight(1f).testTag("profile_expanded_4gb_btn"),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text("Expanded 4 GB", fontSize = 11.sp)
-                }
+                Text(
+                    text = storageEstimate.statusMessage,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    color = if (storageEstimate.hasSufficientStorage) TextSecondary else Error,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                )
             }
 
             HorizontalDivider(color = OutlineVariant.copy(alpha = 0.45f))
@@ -2491,64 +2434,42 @@ private fun OnDeviceModelHubCard(
 
             HorizontalDivider(color = OutlineVariant.copy(alpha = 0.45f))
 
-            // 2. Lightweight Vision Group (Multi-select + Batch Budget)
-            Text(
-                text = "Lightweight Vision (12 Verified ONNX Models)",
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                color = SuccessGreenGlow
-            )
+            // 2. Visualization Technology Library (12 Official Technologies in Vision > Tech Library (12))
+            val cardContext = LocalContext.current
+            val techDownloadManager = remember(cardContext) { com.example.vision.VisionTechnologyDownloadManager.getInstance(cardContext) }
+            val techStorage by techDownloadManager.storageSummary.collectAsState()
             Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = Color.Black.copy(alpha = 0.25f),
-                modifier = Modifier.fillMaxWidth()
+                shape = RoundedCornerShape(14.dp),
+                color = SurfaceVariant.copy(alpha = 0.55f),
+                border = BorderStroke(1.dp, GlassBorder),
+                modifier = Modifier.fillMaxWidth().testTag("api_hub_tech_library_summary_card")
             ) {
-                Column(
-                    modifier = Modifier.padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    val downloadMb = batchPreview.totalDownloadBytes / (1024 * 1024)
-                    val projectedMb = batchPreview.projectedTotalBytes / (1024 * 1024)
-                    Text(
-                        text = "Selected: ${selectedLightweightIds.size} model(s) • Pending download: ~$downloadMb MB • Projected total: ~$projectedMb MB",
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                        color = if (batchPreview.fitsBudget) AccentCyan else Error
-                    )
-                    if (!batchPreview.fitsBudget) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = batchPreview.reason,
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp),
-                            color = Error
+                            text = "Visualization Technology Library (12 Engines)",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = "${techStorage.installedCount}/12 installed • ${techStorage.functionalCount}/12 functional • Download & use in Vision > Tech Library (12)",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = TextSecondary
                         )
                     }
-                    Button(
-                        onClick = onDownloadSelectedBatch,
-                        enabled = selectedLightweightIds.isNotEmpty() && batchPreview.fitsBudget,
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Primary),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .testTag("download_selected_vision_batch_btn")
-                    ) {
-                        Text("Download Selected Models (${selectedLightweightIds.size})", fontSize = 12.sp)
-                    }
+                    StatusBadge(
+                        text = "${techStorage.installedCount}/12",
+                        isActive = techStorage.installedCount > 0 || techStorage.functionalCount > 0,
+                        activeColor = SuccessGreen,
+                        inactiveColor = PrimaryLight
+                    )
                 }
-            }
-
-            ModelCatalog.LIGHTWEIGHT_VISION_DESCRIPTORS.forEach { desc ->
-                ManagedModelRow(
-                    descriptor = desc,
-                    state = modelStates[desc.manifest.modelId],
-                    selectable = true,
-                    isSelected = desc.manifest.modelId in selectedLightweightIds,
-                    onToggleSelect = { onToggleLightweightSelect(desc.manifest.modelId) },
-                    onStartOrResume = { onStartOrResume(desc.manifest.modelId) },
-                    onPause = { onPause(desc.manifest.modelId) },
-                    onCancel = { onCancel(desc.manifest.modelId) },
-                    onVerify = { onVerify(desc.manifest.modelId) },
-                    onDelete = { onDelete(desc.manifest.modelId) },
-                    onRedownload = { onRedownload(desc.manifest.modelId) }
-                )
             }
 
             HorizontalDivider(color = OutlineVariant.copy(alpha = 0.45f))

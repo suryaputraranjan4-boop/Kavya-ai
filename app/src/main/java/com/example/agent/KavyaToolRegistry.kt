@@ -192,8 +192,45 @@ object KavyaToolRegistry {
 
                 "analyze_image" -> {
                     val input = parameters["image_path"] ?: parameters["text"] ?: ""
+                    val maxImageBytes = 10L * 1024L * 1024L
+                    val loadedBytes: ByteArray? = try {
+                        when {
+                            input.startsWith("content://") -> {
+                                context.contentResolver.openInputStream(Uri.parse(input))?.use { stream ->
+                                    val buf = stream.readBytes()
+                                    if (buf.size <= maxImageBytes) buf else null
+                                }
+                            }
+                            input.isNotBlank() -> {
+                                val file = java.io.File(input)
+                                if (file.exists() && file.isFile && file.canRead() && file.length() in 1L..maxImageBytes) {
+                                    file.readBytes()
+                                } else {
+                                    null
+                                }
+                            }
+                            else -> null
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Unable to read image from '$input': ${e.message}")
+                        null
+                    } ?: com.example.visual.VisionPipeline.getCompressedJpegFrame()
+
+                    if (loadedBytes == null && input.isBlank()) {
+                        return@withContext ToolExecutionResult(
+                            name,
+                            false,
+                            "",
+                            "No readable image file provided and no live screen frame is available."
+                        )
+                    }
                     val hf = HuggingFaceProvider()
-                    val res = hf.executeSpecializedTask(HfSpecializedTask.IMAGE_ANALYSIS, textInput = input, context = context)
+                    val res = hf.executeSpecializedTask(
+                        task = HfSpecializedTask.IMAGE_ANALYSIS,
+                        textInput = input.ifBlank { "Describe this image in detail." },
+                        binaryInput = loadedBytes,
+                        context = context
+                    )
                     ToolExecutionResult(name, res.success, res.outputText, res.error)
                 }
 
@@ -317,19 +354,37 @@ object KavyaToolRegistry {
                 "set_alarm" -> {
                     val rawTime = parameters["time"] ?: parameters["at"] ?: ""
                     val title = parameters["title"] ?: parameters["label"] ?: "Alarm"
-                    val timeRegex = Regex("(?i)(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?")
+                    val timeRegex = Regex("(?i)\\b(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?\\b")
                     val match = timeRegex.find(rawTime)
                     if (match == null) {
                         ToolExecutionResult(name, false, "", "Invalid time format: '$rawTime'. Please provide e.g. '07:30' or '7:00 AM'.")
                     } else {
-                        val h = match.groupValues[1].toIntOrNull() ?: 8
-                        val m = match.groupValues[2].toIntOrNull() ?: 0
+                        val h = match.groupValues[1].toIntOrNull()
+                        val m = if (match.groupValues[2].isEmpty()) 0 else match.groupValues[2].toIntOrNull()
                         val ampm = match.groupValues[3].lowercase(java.util.Locale.ROOT)
-                        val hour = if (ampm == "pm" && h < 12) h + 12 else if (ampm == "am" && h == 12) 0 else h
-                        val scheduler = com.example.scheduler.SchedulerEngine(context)
-                        val schedule = scheduler.createSchedule(title, title, "ONE_TIME", hour, m)
-                        val timeStr = String.format(java.util.Locale.ROOT, "%02d:%02d", hour, m)
-                        ToolExecutionResult(name, true, "Alarm scheduled for $timeStr: \"$title\" (ID: ${schedule.id})")
+                        val validHourInput = when {
+                            h == null -> false
+                            ampm.isNotEmpty() -> h in 1..12
+                            else -> h in 0..23
+                        }
+                        if (!validHourInput || m == null || m !in 0..59) {
+                            ToolExecutionResult(
+                                name,
+                                false,
+                                "",
+                                "Invalid time values in '$rawTime': hour must be 0-23 (or 1-12 with AM/PM) and minute must be 0-59."
+                            )
+                        } else {
+                            val hour = when {
+                                ampm == "pm" && h!! < 12 -> h + 12
+                                ampm == "am" && h!! == 12 -> 0
+                                else -> h!!
+                            }
+                            val scheduler = com.example.scheduler.SchedulerEngine(context)
+                            val schedule = scheduler.createSchedule(title, title, "ONE_TIME", hour, m)
+                            val timeStr = String.format(java.util.Locale.ROOT, "%02d:%02d", hour, m)
+                            ToolExecutionResult(name, true, "Alarm scheduled for $timeStr: \"$title\" (ID: ${schedule.id})")
+                        }
                     }
                 }
 

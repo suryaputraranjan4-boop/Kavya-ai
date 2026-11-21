@@ -7,6 +7,7 @@ import androidx.navigation.compose.composable
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.PermissionsScreen
 import com.example.ui.screens.*
+import com.example.ui.screens.kucp.KucpDashboardScreen
 import com.example.viewmodel.KavyaViewModel
 
 @Composable
@@ -57,6 +58,7 @@ fun AppNavGraph(
         composable("debug_dashboard") { DebugDashboardScreen(onBack = { navController.popBackStack() }) }
         composable("visual_action_control") { VisualActionControlScreen(navController, viewModel) }
         composable("jarvis_intelligence") { JarvisScreenIntelligenceScreen(navController, viewModel) }
+        composable("kucp_dashboard") { KucpDashboardScreen(navController, viewModel) }
         composable("help_support") { HelpSupportScreen(navController) }
     }
 }

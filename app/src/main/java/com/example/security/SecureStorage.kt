@@ -2,12 +2,12 @@ package com.example.security
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import java.security.KeyStore
+import java.security.SecureRandom
 import java.security.spec.KeySpec
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -18,11 +18,11 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Authoritative Security & Credential Storage System (Upgrade / Repair).
+ * Authoritative Security & Credential Storage System.
  * API keys and credentials:
  * - are never hardcoded or logged in plaintext
- * - use Android KeyStore AES-256-GCM encryption with seamless AES-256 software fallback
- * - guarantee 100% key persistence across process recreation, device restarts, and navigation
+ * - use Android KeyStore AES-256-GCM encryption with CSPRNG-seeded AES-256 software fallback
+ * - guarantee key persistence across process recreation, device restarts, and navigation
  * - mask secrets in logs and UI
  */
 object SecureStorage {
@@ -31,6 +31,10 @@ object SecureStorage {
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val KEY_ALIAS = "kavya_secure_credentials_key"
     private const val PREFS_FILE = "kavya_encrypted_vault"
+    private const val META_PREFS_FILE = "kavya_encrypted_vault_meta"
+    private const val META_SEED_KEY = "fallback_entropy_b64"
+    private const val META_SALT_KEY = "fallback_salt_b64"
+    private const val PBKDF2_ITERATIONS = 120_000
     private const val GCM_TAG_LENGTH = 128
     private const val IV_SEPARATOR = "]"
     private const val LEGACY_OBF_PREFIX = "OBF:"
@@ -41,6 +45,10 @@ object SecureStorage {
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+    }
+
+    private fun getMetaPrefs(context: Context): SharedPreferences {
+        return context.getSharedPreferences(META_PREFS_FILE, Context.MODE_PRIVATE)
     }
 
     /**
@@ -71,28 +79,39 @@ object SecureStorage {
                 entry?.secretKey
             }
         } catch (e: Exception) {
-            Log.w(TAG, "AndroidKeyStore is unavailable (${e.javaClass.simpleName}); invoking secure software fallback.")
+            Log.w(TAG, "AndroidKeyStore is unavailable (${e.javaClass.simpleName}); invoking CSPRNG software fallback.")
             null
         }
     }
 
     /**
-     * Fallback: Generates a device-bound PBKDF2 AES-256 secret key when Android KeyStore is unavailable.
+     * Fallback: Generates and persists a per-install CSPRNG seed & random 32-byte salt
+     * when Android KeyStore is unavailable, deriving a 256-bit AES key via PBKDF2WithHmacSHA256.
      */
     private fun getFallbackSecretKey(context: Context): SecretKey {
         fallbackKeyCache?.let { return it }
         synchronized(this) {
             fallbackKeyCache?.let { return it }
 
-            val androidId = try {
-                Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID).orEmpty()
-            } catch (_: Throwable) {
-                ""
+            val meta = getMetaPrefs(context)
+            var seedB64 = meta.getString(META_SEED_KEY, null)
+            var saltB64 = meta.getString(META_SALT_KEY, null)
+            val random = SecureRandom()
+
+            if (seedB64.isNullOrBlank() || saltB64.isNullOrBlank()) {
+                val seedBytes = ByteArray(32).also { random.nextBytes(it) }
+                val saltBytes = ByteArray(32).also { random.nextBytes(it) }
+                seedB64 = Base64.encodeToString(seedBytes, Base64.NO_WRAP)
+                saltB64 = Base64.encodeToString(saltBytes, Base64.NO_WRAP)
+                meta.edit()
+                    .putString(META_SEED_KEY, seedB64)
+                    .putString(META_SALT_KEY, saltB64)
+                    .commit()
             }
-            val seedString = "${context.packageName}_${androidId.ifBlank { "kavya_device_stable_id" }}_salt_2026"
-            val salt = "KavyaSecretVaultSalt2026".toByteArray(Charsets.UTF_8)
+
+            val salt = Base64.decode(saltB64, Base64.NO_WRAP)
             val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-            val spec: KeySpec = PBEKeySpec(seedString.toCharArray(), salt, 1000, 256)
+            val spec: KeySpec = PBEKeySpec(seedB64.toCharArray(), salt, PBKDF2_ITERATIONS, 256)
             val tmp = factory.generateSecret(spec)
             val secretKey = SecretKeySpec(tmp.encoded, "AES")
             fallbackKeyCache = secretKey
@@ -102,7 +121,7 @@ object SecureStorage {
 
     /**
      * Encrypts plain text using AES-256-GCM.
-     * Tries Android KeyStore first; if unavailable, uses PBKDF2 software AES-GCM encryption.
+     * Tries Android KeyStore first; if unavailable, uses CSPRNG PBKDF2 software AES-GCM encryption.
      */
     private fun encrypt(context: Context, plainText: String): String? {
         if (plainText.isBlank()) return ""

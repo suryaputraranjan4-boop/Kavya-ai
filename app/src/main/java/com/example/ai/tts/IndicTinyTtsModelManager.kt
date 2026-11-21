@@ -1,6 +1,7 @@
 package com.example.ai.tts
 
 import android.content.Context
+import android.os.StatFs
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -198,14 +199,30 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                 val validTargets = MODEL_SPECS.associateWith { spec ->
                     isDownloadedFileValid(spec, File(modelDir, spec.fileName))
                 }
+                val remainingBytes = MODEL_SPECS.sumOf { spec ->
+                    if (validTargets[spec] == true) 0L
+                    else {
+                        val expected = if (spec.expectedSizeBytes > 0L) spec.expectedSizeBytes else 4_000L
+                        val partial = File(modelDir, spec.fileName + ".part")
+                        val have = if (partial.isFile) partial.length().coerceAtMost(expected) else 0L
+                        (expected - have).coerceAtLeast(0L)
+                    }
+                }
+                val freeBytes = try {
+                    StatFs(modelDir.absolutePath).availableBytes
+                } catch (_: Throwable) {
+                    Long.MAX_VALUE
+                }
+                val requiredWithMargin = remainingBytes + (32L * 1024L * 1024L)
+                if (freeBytes < requiredWithMargin) {
+                    val needMb = (requiredWithMargin / (1024L * 1024L)).coerceAtLeast(1L)
+                    val freeMb = (freeBytes / (1024L * 1024L)).coerceAtLeast(0L)
+                    throw IllegalStateException("Insufficient storage: need ~${needMb} MB free, only ${freeMb} MB available.")
+                }
+
                 var completedBytes = MODEL_SPECS.sumOf { spec ->
                     val target = File(modelDir, spec.fileName)
-                    val partial = File(modelDir, spec.fileName + ".part")
-                    when {
-                        validTargets[spec] == true -> target.length()
-                        partial.isFile -> partial.length()
-                        else -> 0L
-                    }
+                    if (validTargets[spec] == true) target.length() else 0L
                 }
                 for (spec in MODEL_SPECS) {
                     if (paused) {
@@ -218,8 +235,8 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                     if (target.exists() && !target.delete()) {
                         throw IllegalStateException("Could not replace an invalid model file: " + spec.fileName)
                     }
-                    val downloaded = downloadOneWithBackoff(spec, target) { bytes ->
-                        val progress = ((completedBytes + bytes).toFloat() / totalBytes.toFloat()).coerceIn(0f, 0.99f)
+                    val downloaded = downloadOneWithBackoff(spec, target) { fileBytesSoFar ->
+                        val progress = ((completedBytes + fileBytesSoFar).toFloat() / totalBytes.toFloat()).coerceIn(0f, 0.99f)
                         _downloadProgress.value = progress
                         _progressText.value = "Downloading " + spec.fileName
                     }
@@ -314,6 +331,10 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                         val expectedResponseBytes = if (append) spec.expectedSizeBytes - existingBytes else spec.expectedSizeBytes
                         if (contentLength != expectedResponseBytes) return@withContext false
                     }
+                    var cumulativeFileBytes = if (append) existingBytes else 0L
+                    if (cumulativeFileBytes > 0L) {
+                        onProgress(cumulativeFileBytes)
+                    }
                     FileOutputStream(partial, append).use { output ->
                         body.byteStream().use { input ->
                             val buffer = ByteArray(64 * 1024)
@@ -322,7 +343,8 @@ class IndicTinyTtsModelManager private constructor(private val appContext: Conte
                                 val count = input.read(buffer)
                                 if (count < 0) break
                                 output.write(buffer, 0, count)
-                                onProgress(count.toLong())
+                                cumulativeFileBytes += count.toLong()
+                                onProgress(cumulativeFileBytes)
                             }
                             output.fd.sync()
                         }

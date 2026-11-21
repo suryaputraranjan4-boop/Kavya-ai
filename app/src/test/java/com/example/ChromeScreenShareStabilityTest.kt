@@ -127,7 +127,7 @@ class ChromeScreenShareStabilityTest {
     }
 
     @Test
-    fun `snapshot vault caps history at 6 items in reverse chronological order and clears cleanly`() {
+    fun `snapshot vault preserves history beyond legacy 6 item cap in reverse chronological order and clears cleanly`() {
         repeat(8) { idx ->
             ScreenShareManager.saveSnapshotToVault(
                 title = "Snap $idx",
@@ -138,9 +138,9 @@ class ChromeScreenShareStabilityTest {
         }
 
         val vault = ScreenShareManager.snapshotVault.value
-        assertEquals(6, vault.size)
+        assertEquals(8, vault.size)
         assertEquals("Snap 7", vault.first().title)
-        assertEquals("Snap 2", vault.last().title)
+        assertEquals("Snap 0", vault.last().title)
 
         ScreenShareManager.clearSnapshotVault()
         assertTrue(ScreenShareManager.snapshotVault.value.isEmpty())

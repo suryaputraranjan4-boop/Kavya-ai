@@ -32,7 +32,11 @@ class VisualActionVerifier(
         val service = KavyaAccessibilityService.instance
             ?: return Pair(false, "Accessibility service disconnected during verification")
 
-        val root = service.rootInActiveWindow
+        val root = try {
+            service.rootInActiveWindow
+        } catch (_: Exception) {
+            null
+        }
         val currentNodes = hierarchyAnalyzer.collectVisibleNodes(root)
         val screenSummaryAfter = hierarchyAnalyzer.buildHierarchySummary(currentNodes)
         val currentPkg = service.getForegroundPackage()

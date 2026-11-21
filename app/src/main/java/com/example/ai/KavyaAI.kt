@@ -221,8 +221,9 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
         fun getAvailableModels(): List<String> {
             val now = System.currentTimeMillis()
-            val available = MODEL_TIERS.filter { (modelCooldowns[it] ?: 0L) <= now }
-            return if (available.isNotEmpty()) available else MODEL_TIERS
+            val fullChain = (MODEL_TIERS + GeminiModelRegistry.OFFICIAL_API_FALLBACK_MODELS).distinct()
+            val available = fullChain.filter { (modelCooldowns[it] ?: 0L) <= now }
+            return if (available.isNotEmpty()) available else fullChain
         }
     }
 
@@ -242,11 +243,11 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 if (secureKey.isNotBlank()) secureKey else com.example.utils.AppPreferences.getEffectiveApiKey(context)
             } else BuildConfig.GEMINI_API_KEY
             if (key.isBlank()) return "Error: Gemini API key missing."
-            
+
             val byteArrayOutputStream = java.io.ByteArrayOutputStream()
             bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)
             val base64Image = android.util.Base64.encodeToString(byteArrayOutputStream.toByteArray(), android.util.Base64.NO_WRAP)
-            
+
             val request = GenerateContentRequest(
                 contents = listOf(
                     Content(
@@ -259,15 +260,39 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 ),
                 generationConfig = null
             )
-            
-            val activeModel = getAvailableModels().firstOrNull() ?: MODEL_TIERS.first()
-            val response = RetrofitClient.service.generateContent(
-                model = activeModel,
-                apiKey = key,
-                request = request
-            )
-            
-            return response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: "No visual result found."
+
+            var lastFailure: String? = null
+            for (activeModel in getAvailableModels()) {
+                try {
+                    val response = RetrofitClient.service.generateContent(
+                        model = activeModel,
+                        apiKey = key,
+                        request = request
+                    )
+                    val joined = response.candidates?.firstOrNull()?.content?.parts
+                        ?.mapNotNull { it.text }
+                        ?.joinToString("")
+                        ?.trim()
+                    if (!joined.isNullOrBlank()) {
+                        return joined
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (e: HttpException) {
+                    lastFailure = "HTTP ${e.code()}"
+                    if (e.code() == 401 || e.code() == 403) {
+                        return "Visual parsing failed: Invalid or unauthorized Gemini API key (HTTP ${e.code()})."
+                    }
+                    if (e.code() == 429 || e.code() == 503) {
+                        markModelThrottled(activeModel)
+                    }
+                    android.util.Log.w(TAG, "Gemini visual model $activeModel failed with HTTP ${e.code()}, trying next fallback")
+                } catch (e: Exception) {
+                    lastFailure = e.message
+                    android.util.Log.w(TAG, "Gemini visual model $activeModel failed: ${e.message}")
+                }
+            }
+            return if (!lastFailure.isNullOrBlank()) "Visual parsing failed: $lastFailure" else "No visual result found."
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Gemini visual analysis failed", e)
             return "Visual parsing failed: ${e.message}"
@@ -341,10 +366,48 @@ class KavyaAI(private val context: android.content.Context? = null) {
         val model = com.example.utils.AppPreferences.getHuggingFaceModel(ctx)
             .ifBlank { com.example.ai.providers.HuggingFaceProvider.MODEL_TEXT_GEN }
         val startTime = System.currentTimeMillis()
+        val mediaType = "application/json; charset=utf-8".toMediaType()
         return@withContext try {
+            // 1. Try OpenAI-compatible Hugging Face Router v1 chat completions first
+            val chatPayload = org.json.JSONObject().apply {
+                put("model", model)
+                put("max_tokens", 350)
+                put("messages", org.json.JSONArray().put(org.json.JSONObject().apply {
+                    put("role", "user")
+                    put("content", prompt)
+                }))
+            }
+            val chatReq = Request.Builder()
+                .url("https://router.huggingface.co/v1/chat/completions")
+                .addHeader("Authorization", "Bearer ${hfKey.trim()}")
+                .post(chatPayload.toString().toRequestBody(mediaType))
+                .build()
+
+            val (chatCode, chatRaw) = RetrofitClient.okHttpClient.newCall(chatReq).execute().use { response ->
+                Pair(response.code, response.body?.string() ?: "")
+            }
+            if (chatCode in 200..299) {
+                val parsed = try {
+                    org.json.JSONObject(chatRaw)
+                        .optJSONArray("choices")?.optJSONObject(0)
+                        ?.optJSONObject("message")?.optString("content")
+                        ?.trim()
+                } catch (_: Exception) { null }
+                val latency = System.currentTimeMillis() - startTime
+                com.example.ai.providers.RuntimeActivityTracker.logEvent(
+                    context = ctx,
+                    providerId = "huggingface",
+                    model = model,
+                    task = "Specialized Inference",
+                    success = !parsed.isNullOrBlank(),
+                    latencyMs = latency
+                )
+                return@withContext parsed?.takeIf { it.isNotBlank() } ?: chatRaw.take(350)
+            }
+
+            // 2. Fallback to legacy task-specific hf-inference endpoint (e.g. sentiment/classification pipelines)
             val url = "https://router.huggingface.co/hf-inference/models/$model"
             val jsonInput = org.json.JSONObject().apply { put("inputs", prompt) }
-            val mediaType = "application/json; charset=utf-8".toMediaType()
             val body = jsonInput.toString().toRequestBody(mediaType)
             val request = Request.Builder()
                 .url(url)
@@ -358,6 +421,19 @@ class KavyaAI(private val context: android.content.Context? = null) {
             val latency = System.currentTimeMillis() - startTime
 
             if (code in 200..299) {
+                val extracted = try {
+                    val trimmed = raw.trim()
+                    if (trimmed.startsWith("[")) {
+                        val arr = org.json.JSONArray(trimmed)
+                        arr.optJSONObject(0)?.optString("generated_text")?.takeIf { it.isNotBlank() }
+                            ?: trimmed.take(350)
+                    } else {
+                        org.json.JSONObject(trimmed).optString("generated_text").takeIf { it.isNotBlank() }
+                            ?: trimmed.take(350)
+                    }
+                } catch (_: Exception) {
+                    raw.take(350)
+                }
                 com.example.ai.providers.RuntimeActivityTracker.logEvent(
                     context = ctx,
                     providerId = "huggingface",
@@ -366,7 +442,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     success = true,
                     latencyMs = latency
                 )
-                raw.take(350)
+                extracted
             } else {
                 com.example.ai.providers.RuntimeActivityTracker.logEvent(
                     context = ctx,
@@ -469,7 +545,8 @@ class KavyaAI(private val context: android.content.Context? = null) {
         history: List<MessageEntity>,
         screenContext: String?,
         memoryContext: String,
-        isProactiveMode: Boolean
+        isProactiveMode: Boolean,
+        imageBytes: ByteArray? = null
     ): String? = withContext(Dispatchers.IO) {
         val ctx = context ?: return@withContext null
         val openRouterKey = com.example.utils.AppPreferences.getOpenRouterApiKey(ctx)
@@ -477,6 +554,73 @@ class KavyaAI(private val context: android.content.Context? = null) {
 
         val modelId = com.example.utils.AppPreferences.getOpenRouterModel(ctx).ifBlank { "openrouter/free" }
         val systemInstructionText = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+
+        if (imageBytes != null && imageBytes.isNotEmpty()) {
+            return@withContext try {
+                val messagesArr = org.json.JSONArray()
+                messagesArr.put(org.json.JSONObject().apply {
+                    put("role", "system")
+                    put("content", systemInstructionText)
+                })
+                var lastRole = ""
+                for (msg in history.takeLast(12)) {
+                    val role = if (msg.isUser) "user" else "assistant"
+                    if (msg.text.isNotBlank() && role != lastRole) {
+                        messagesArr.put(org.json.JSONObject().apply {
+                            put("role", role)
+                            put("content", msg.text.trim())
+                        })
+                        lastRole = role
+                    }
+                }
+                if (lastRole == "user" && messagesArr.length() > 1) {
+                    messagesArr.remove(messagesArr.length() - 1)
+                }
+                val b64 = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
+                val userContent = org.json.JSONArray().apply {
+                    put(org.json.JSONObject().apply {
+                        put("type", "text")
+                        put("text", prompt.trim())
+                    })
+                    put(org.json.JSONObject().apply {
+                        put("type", "image_url")
+                        put("image_url", org.json.JSONObject().apply {
+                            put("url", "data:image/jpeg;base64,$b64")
+                        })
+                    })
+                }
+                messagesArr.put(org.json.JSONObject().apply {
+                    put("role", "user")
+                    put("content", userContent)
+                })
+                val payload = org.json.JSONObject().apply {
+                    put("model", modelId)
+                    put("messages", messagesArr)
+                }
+                val req = Request.Builder()
+                    .url("https://openrouter.ai/api/v1/chat/completions")
+                    .addHeader("Authorization", "Bearer ${openRouterKey.trim()}")
+                    .addHeader("HTTP-Referer", "https://aistudio.google.com")
+                    .addHeader("X-Title", "Kavya AI")
+                    .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                RetrofitClient.okHttpClient.newCall(req).execute().use { resp ->
+                    val raw = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        Log.w(TAG, "OpenRouter multimodal HTTP ${resp.code}: ${raw.take(160)}")
+                        null
+                    } else {
+                        org.json.JSONObject(raw)
+                            .optJSONArray("choices")?.optJSONObject(0)
+                            ?.optJSONObject("message")?.optString("content")
+                            ?.trim()?.takeIf { it.isNotBlank() }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "OpenRouter multimodal direct call failed: ${e.message}")
+                null
+            }
+        }
 
         val orMessages = mutableListOf<OpenRouterMessage>()
         orMessages.add(OpenRouterMessage(role = "system", content = systemInstructionText))
@@ -550,7 +694,7 @@ class KavyaAI(private val context: android.content.Context? = null) {
                 }
 
                 if (selectedProvider == "OPENROUTER") {
-                    val openRouterReply = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode)
+                    val openRouterReply = consultOpenRouterDirect(prompt, history, screenContext, memoryContext, isProactiveMode, imageBytes)
                     if (!openRouterReply.isNullOrBlank()) return@withContext openRouterReply
                     return@withContext "Error: OpenRouter provider is selected, but failed to respond. Check your OpenRouter API key, credits, and internet connection."
                 }
@@ -663,7 +807,9 @@ class KavyaAI(private val context: android.content.Context? = null) {
                         request = request
                     )
 
-                    val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                    val text = response.candidates?.firstOrNull()?.content?.parts
+                        ?.mapNotNull { it.text }
+                        ?.joinToString("")
                     if (!text.isNullOrBlank()) {
                         val latency = System.currentTimeMillis() - startTime
                         AiErrorClassifier.clearLastError()
@@ -984,85 +1130,85 @@ class KavyaAI(private val context: android.content.Context? = null) {
             emit("Error: [QUOTA] Rate limit reached for selected AI provider. Please wait before retrying.")
             return@flow
         }
-        
-        if (context != null) {
-            val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context).trim().uppercase(java.util.Locale.ROOT)
-            val isExplicitOffline = isStrictOfflineMode()
-            val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
-
-            if (isExplicitOffline) {
-                if (gemmaProvider.isConfigured(context)) {
-                    val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
-                    gemmaProvider.streamGenerate(prompt, sysPrompt, context).collect { chunk ->
-                        emit(chunk)
-                    }
-                } else {
-                    emit("Error: Offline Mode is active (zero network calls), but no local model is installed.")
-                }
-                return@flow
-            }
-
-            if (selectedProvider == "CUSTOM_API" || selectedProvider == "CUSTOM" || selectedProvider == "OPENROUTER" || selectedProvider == "HUGGINGFACE") {
-                val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode, imageBytes)
-                emit(responseText)
-                return@flow
-            }
-        }
-
-        val contents = mutableListOf<Content>()
-        var lastRole = ""
-        for (msg in history.takeLast(10)) {
-            val role = if (msg.isUser) "user" else "model"
-            if (msg.text.isNotBlank() && role != lastRole) {
-                contents.add(Content(role = role, parts = listOf(Part(text = msg.text.trim()))))
-                lastRole = role
-            }
-        }
-        if (lastRole == "user") {
-            contents.removeAt(contents.size - 1)
-        }
-        val userParts = mutableListOf<Part>()
-        if (imageBytes != null && imageBytes.isNotEmpty()) {
-            val base64Data = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
-            userParts.add(Part(inlineData = InlineData(mimeType = "image/jpeg", data = base64Data)))
-        }
-        userParts.add(Part(text = prompt.trim()))
-        contents.add(Content(role = "user", parts = userParts))
-        
-        val sysText = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
-
-        val requestObj = GenerateContentRequest(
-            contents = contents,
-            generationConfig = GenerationConfig(temperature = 0.7f),
-            systemInstruction = Content(parts = listOf(Part(text = sysText)))
-        )
-
-        val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
-        if (apiKey.isBlank()) {
-            val missingKey = AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.MISSING_API_KEY))
-            emit(missingKey.toErrorPrefixString())
-            return@flow
-        }
-
-        val json = kotlinx.serialization.json.Json { encodeDefaults = false; ignoreUnknownKeys = true }
-        val requestJson = json.encodeToString(GenerateContentRequest.serializer(), requestObj)
-        
-        val okHttpClient = okhttp3.OkHttpClient.Builder()
-            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
-
-        val candidateModels = getAvailableModels()
-        var hasEmittedTokens = false
-        var lastStreamClassifiedError: AiClassifiedError? = null
 
         try {
+            if (context != null) {
+                val selectedProvider = com.example.utils.AppPreferences.getAiProvider(context).trim().uppercase(java.util.Locale.ROOT)
+                val isExplicitOffline = isStrictOfflineMode()
+                val gemmaProvider = com.example.ai.providers.GemmaOfflineProvider()
+
+                if (isExplicitOffline) {
+                    if (gemmaProvider.isConfigured(context)) {
+                        val sysPrompt = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+                        gemmaProvider.streamGenerate(prompt, sysPrompt, context).collect { chunk ->
+                            emit(chunk)
+                        }
+                    } else {
+                        emit("Error: Offline Mode is active (zero network calls), but no local model is installed.")
+                    }
+                    return@flow
+                }
+
+                if (selectedProvider == "CUSTOM_API" || selectedProvider == "CUSTOM" || selectedProvider == "OPENROUTER" || selectedProvider == "HUGGINGFACE") {
+                    val responseText = chat(prompt, history, screenContext, memoryContext, isProactiveMode, imageBytes)
+                    emit(responseText)
+                    return@flow
+                }
+            }
+
+            val contents = mutableListOf<Content>()
+            var lastRole = ""
+            for (msg in history.takeLast(10)) {
+                val role = if (msg.isUser) "user" else "model"
+                if (msg.text.isNotBlank() && role != lastRole) {
+                    contents.add(Content(role = role, parts = listOf(Part(text = msg.text.trim()))))
+                    lastRole = role
+                }
+            }
+            if (lastRole == "user") {
+                contents.removeAt(contents.size - 1)
+            }
+            val userParts = mutableListOf<Part>()
+            if (imageBytes != null && imageBytes.isNotEmpty()) {
+                val base64Data = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
+                userParts.add(Part(inlineData = InlineData(mimeType = "image/jpeg", data = base64Data)))
+            }
+            userParts.add(Part(text = prompt.trim()))
+            contents.add(Content(role = "user", parts = userParts))
+
+            val sysText = com.example.ai.SystemPrompt.buildSystemPrompt(screenContext, memoryContext, isProactiveMode)
+
+            val requestObj = GenerateContentRequest(
+                contents = contents,
+                generationConfig = GenerationConfig(temperature = 0.7f),
+                systemInstruction = Content(parts = listOf(Part(text = sysText)))
+            )
+
+            val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
+            if (apiKey.isBlank()) {
+                val missingKey = AiErrorClassifier.recordError(AiClassifiedError(AiErrorCategory.MISSING_API_KEY))
+                emit(missingKey.toErrorPrefixString())
+                return@flow
+            }
+
+            val json = kotlinx.serialization.json.Json { encodeDefaults = false; ignoreUnknownKeys = true }
+            val requestJson = json.encodeToString(GenerateContentRequest.serializer(), requestObj)
+
+            val okHttpClient = RetrofitClient.okHttpClient.newBuilder()
+                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+
+            val candidateModels = getAvailableModels()
+            var hasEmittedTokens = false
+            var lastStreamClassifiedError: AiClassifiedError? = null
+
             modelLoop@ for (model in candidateModels) {
                 if (hasEmittedTokens) break
                 val request = okhttp3.Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$apiKey")
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse")
                     .addHeader("x-goog-api-key", apiKey)
                     .addHeader("Accept", "text/event-stream")
-                    .post(okhttp3.RequestBody.create("application/json".toMediaType(), requestJson))
+                    .post(requestJson.toRequestBody("application/json".toMediaType()))
                     .build()
 
                 try {
@@ -1103,7 +1249,9 @@ class KavyaAI(private val context: android.content.Context? = null) {
                                         try {
                                             val chunk = json.decodeFromString(GenerateContentResponse.serializer(), dataJson)
                                             sawValidChunk = true
-                                            val textChunk = chunk.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: ""
+                                            val textChunk = chunk.candidates?.firstOrNull()?.content?.parts
+                                                ?.mapNotNull { it.text }
+                                                ?.joinToString("") ?: ""
                                             if (textChunk.isNotEmpty()) {
                                                 hasEmittedTokens = true
                                                 AiErrorClassifier.clearLastError()
@@ -1173,7 +1321,21 @@ class KavyaAI(private val context: android.content.Context? = null) {
     }.flowOn(kotlinx.coroutines.Dispatchers.IO)
 
     suspend fun transcribeAudio(pcmData: ByteArray, sampleRate: Int = 16000): String = withContext(Dispatchers.IO) {
-        if (pcmData.isEmpty()) {
+        if (pcmData.size < sampleRate / 2) { // < 250ms of 16-bit mono PCM
+            AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.NO_SPEECH_RECOGNIZED)
+            return@withContext ""
+        }
+        // Pre-gate pure silence or near-zero mic audio before making any cloud STT call
+        var sumSq = 0.0
+        val samples = pcmData.size / 2
+        val bbCheck = java.nio.ByteBuffer.wrap(pcmData, 0, samples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until samples) {
+            val s = bbCheck.short.toDouble()
+            sumSq += s * s
+        }
+        val utteranceRms = kotlin.math.sqrt(sumSq / samples.coerceAtLeast(1))
+        if (utteranceRms < 180.0) {
+            Log.d(TAG, "Skipped cloud STT for silent/low-energy PCM (RMS=${"%.1f".format(utteranceRms)})")
             AiErrorClassifier.recordVoiceError(VoiceInputErrorCategory.NO_SPEECH_RECOGNIZED)
             return@withContext ""
         }
@@ -1190,10 +1352,11 @@ class KavyaAI(private val context: android.content.Context? = null) {
                     role = "user",
                     parts = listOf(
                         Part(inlineData = InlineData(mimeType = "audio/wav", data = base64Wav)),
-                        Part(text = "Transcribe the spoken audio accurately. Output only the verbatim transcribed speech text in its spoken language (Hindi, English, or Hinglish) without any commentary or bracketed noise tags like <noise> or [music]. If there is no intelligible human speech, return an empty string.")
+                        Part(text = "Transcribe ONLY clearly spoken human words from this audio in their spoken language (Hindi, English, or Hinglish). STRICT RULE: If the audio is silent, faint background noise, breathing, tapping, fan hum, or unintelligible, return literally nothing (an empty response). NEVER invent, guess, or hallucinate filler words like 'Thank you', 'Thanks for watching', 'Okay', 'You', or descriptions like '[silence]'.")
                     )
                 )
-            )
+            ),
+            generationConfig = GenerationConfig(temperature = 0.0f)
         )
         val apiKey = if (context != null) com.example.utils.AppPreferences.getEffectiveApiKey(context) else BuildConfig.GEMINI_API_KEY
         if (apiKey.isBlank()) {

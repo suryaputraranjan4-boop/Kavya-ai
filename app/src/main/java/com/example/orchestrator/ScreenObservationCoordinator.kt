@@ -157,9 +157,26 @@ object ScreenObservationCoordinator {
         )
     }
 
+    @Volatile
+    private var assistScreenshotJpeg: ByteArray? = null
+    @Volatile
+    private var assistScreenshotWidth: Int = 0
+    @Volatile
+    private var assistScreenshotHeight: Int = 0
+    @Volatile
+    private var assistScreenshotTimestampMs: Long = 0L
+
+    fun registerAssistScreenshot(bitmap: Bitmap?) {
+        if (bitmap == null || bitmap.isRecycled) return
+        assistScreenshotWidth = bitmap.width
+        assistScreenshotHeight = bitmap.height
+        assistScreenshotJpeg = encodeScaledJpeg(bitmap)
+        assistScreenshotTimestampMs = System.currentTimeMillis()
+    }
+
     suspend fun captureFreshObservation(
         context: Context,
-        minTimestampMs: Long = System.currentTimeMillis() - 100L
+        minTimestampMs: Long = System.currentTimeMillis() - 5000L
     ): ScreenObservationRecord? = withContext(Dispatchers.IO) {
         testObserverProvider?.let { custom ->
             val obs = custom(context)
@@ -183,11 +200,20 @@ object ScreenObservationCoordinator {
 
         var capturedBitmap: Bitmap? = null
         var source = "ACCESSIBILITY_TREE_ONLY"
+        var preEncodedJpeg: ByteArray? = null
+        var preEncodedW = geometry.widthPx
+        var preEncodedH = geometry.heightPx
 
-        // 1. Prefer live MediaProjection frame only if captured after minTimestampMs
+        // 1. Prefer live MediaProjection frame when Screen Sharing is active (static screens keep last valid frame)
         val pipelineFrame = VisionPipeline.getLatestFrame()
         val pipelineTs = VisionPipeline.perceptionState.value.timestamp
-        if (pipelineFrame != null && !pipelineFrame.isRecycled && pipelineTs >= minTimestampMs) {
+        val screenShareActive = com.example.services.ScreenShareManager.isScreenSharingActive
+        val effectiveMinTs = if (screenShareActive) {
+            minOf(minTimestampMs, System.currentTimeMillis() - 15_000L)
+        } else {
+            minTimestampMs
+        }
+        if (pipelineFrame != null && !pipelineFrame.isRecycled && pipelineTs >= effectiveMinTs) {
             capturedBitmap = pipelineFrame
             source = "MEDIA_PROJECTION_FRESH"
         }
@@ -205,9 +231,22 @@ object ScreenObservationCoordinator {
             }
         }
 
-        val bitmapW = capturedBitmap?.width ?: geometry.widthPx
-        val bitmapH = capturedBitmap?.height ?: geometry.heightPx
-        val jpegBytes = capturedBitmap?.let { encodeScaledJpeg(it) }
+        // 3. Fallback to official Android VoiceInteractionSession OS assist screenshot (if captured within 10s)
+        if (capturedBitmap == null) {
+            val assistBytes = assistScreenshotJpeg
+            if (assistBytes != null && assistBytes.isNotEmpty() &&
+                System.currentTimeMillis() - assistScreenshotTimestampMs <= 10_000L
+            ) {
+                preEncodedJpeg = assistBytes
+                preEncodedW = assistScreenshotWidth.takeIf { it > 0 } ?: geometry.widthPx
+                preEncodedH = assistScreenshotHeight.takeIf { it > 0 } ?: geometry.heightPx
+                source = "ASSISTANT_OS_SCREENSHOT"
+            }
+        }
+
+        val bitmapW = capturedBitmap?.width ?: preEncodedW
+        val bitmapH = capturedBitmap?.height ?: preEncodedH
+        val jpegBytes = capturedBitmap?.let { encodeScaledJpeg(it) } ?: preEncodedJpeg
         if (capturedBitmap != null && source == "ACCESSIBILITY_SCREENSHOT" && !capturedBitmap.isRecycled) {
             capturedBitmap.recycle()
         }

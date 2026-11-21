@@ -243,17 +243,17 @@ fun SettingsScreen(navController: NavController) {
         ) {
             // Group 1: Companion & Voice
             item {
-                SettingsSectionHeader("Companion & Voice ✨")
+                SettingsSectionHeader("Companion & Voice")
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    backgroundColor = SurfaceGlass.copy(alpha = 0.75f)
+                    shape = RoundedCornerShape(22.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.80f)
                 ) {
-                    SettingRow("Voice & AI Persona ✨", "Natural female voice, sentiment tones & pacing", Icons.Default.RecordVoiceOver, Primary) {
+                    SettingRow("Voice & AI Persona", "Natural female voice, sentiment tones & pacing", Icons.Default.RecordVoiceOver, Primary) {
                         navController.navigate("voice_settings")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
-                    SettingRow("Proactive Conversation 💬", "Natural follow-ups, screen context & silence rules", Icons.Default.ChatBubble, AccentCyan) {
+                    SettingRow("Proactive Conversation", "Natural follow-ups, screen context & silence rules", Icons.Default.ChatBubble, AccentCyan) {
                         navController.navigate("proactive_settings")
                     }
                 }
@@ -261,17 +261,17 @@ fun SettingsScreen(navController: NavController) {
 
             // Group 2: Vision & Setup
             item {
-                SettingsSectionHeader("Vision & Setup 🛡️")
+                SettingsSectionHeader("Vision & Setup")
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    backgroundColor = SurfaceGlass.copy(alpha = 0.75f)
+                    shape = RoundedCornerShape(22.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.80f)
                 ) {
-                    SettingRow("API Dashboard", "OpenRouter, Hugging Face, Gemini & Custom APIs", Icons.Default.VpnKey, AccentPurpleLight) {
+                    SettingRow("AI Provider Hub", "OpenRouter, Hugging Face, Gemini & Custom APIs", Icons.Default.VpnKey, AccentPurpleLight) {
                         navController.navigate("ai_api_hub")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
-                    SettingRow("Permissions & Service Status", "Accessibility & Audio", Icons.Default.Security, SuccessGreen) {
+                    SettingRow("Permissions & Service Status", "Accessibility, overlay & audio permissions", Icons.Default.Security, SuccessGreen) {
                         navController.navigate("permissions")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
@@ -283,7 +283,7 @@ fun SettingsScreen(navController: NavController) {
                         navController.navigate("screenshare")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
-                    SettingRow("JARVIS Floating Orb", "Enable/disable overlay orb, test animations & permissions", Icons.Default.BlurOn, Primary) {
+                    SettingRow("Vision, Local Models & Orb", "16 engines, 12 local ONNX models & floating orb", Icons.Default.BlurOn, Primary) {
                         navController.navigate("jarvis_intelligence")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
@@ -291,7 +291,7 @@ fun SettingsScreen(navController: NavController) {
                         navController.navigate("routines")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
-                    SettingRow("Visual Action Engine 🎮", "Human-like screen control, games & emergency stop", Icons.Default.TouchApp, AccentCyan) {
+                    SettingRow("Visual Action Engine", "Precision screen control & emergency stop", Icons.Default.TouchApp, AccentCyan) {
                         navController.navigate("visual_action_control")
                     }
                 }
@@ -299,17 +299,17 @@ fun SettingsScreen(navController: NavController) {
 
             // Group 3: Preferences & Diagnostics
             item {
-                SettingsSectionHeader("System & Preferences ⚙️")
+                SettingsSectionHeader("System & Preferences")
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    backgroundColor = SurfaceGlass.copy(alpha = 0.75f)
+                    shape = RoundedCornerShape(22.dp),
+                    backgroundColor = SurfaceGlass.copy(alpha = 0.80f)
                 ) {
                     SettingRow("Automation Diagnostics", "Live state, task traces & self-test", Icons.Default.BugReport, PrimaryLight) {
                         navController.navigate("automation_debug")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
-                    SettingRow("Appearance", "Dark futuristic themes", Icons.Default.Palette, Secondary) {
+                    SettingRow("Appearance", "Glass themes and display preferences", Icons.Default.Palette, Secondary) {
                         navController.navigate("appearance")
                     }
                     HorizontalDivider(color = OutlineVariant, modifier = Modifier.padding(vertical = 4.dp))
@@ -1128,6 +1128,36 @@ fun VoiceSettingsScreen(navController: NavController, viewModel: KavyaViewModel?
                             unfocusedTextColor = TextPrimary
                         )
                     )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    var voiceUploadConsented by remember {
+                        mutableStateOf(com.example.utils.AppPreferences.isChatterboxVoiceUploadConsented(context))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
+                                "Allow Reference Voice Upload",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = TextPrimary
+                            )
+                            Text(
+                                "Required before sending custom recorded/imported voice samples to your Chatterbox server.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                        }
+                        Switch(
+                            checked = voiceUploadConsented,
+                            onCheckedChange = {
+                                voiceUploadConsented = it
+                                com.example.utils.AppPreferences.setChatterboxVoiceUploadConsented(context, it)
+                            },
+                            modifier = Modifier.testTag("chatterbox_voice_upload_consent_switch")
+                        )
+                    }
                     Spacer(modifier = Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),

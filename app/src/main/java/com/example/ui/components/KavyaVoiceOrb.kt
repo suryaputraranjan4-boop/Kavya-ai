@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -11,9 +10,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,25 +47,22 @@ fun KavyaVoiceOrb(
     val isPressed by interactionSource.collectIsPressedAsState()
 
     val animatedAmplitude by animateFloatAsState(
-        targetValue = amplitude.coerceIn(0f, 1f),
-        animationSpec = spring(stiffness = Spring.StiffnessHigh),
+        targetValue = (amplitude / 1500f).coerceIn(0f, 1f),
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
         label = "AmplitudeSpring"
     )
 
-    // Smooth press feedback
     val pressScale by animateFloatAsState(
-        targetValue = if (isPressed) 0.94f else 1f,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        targetValue = if (isPressed) 0.93f else 1f,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
         label = "PressScale"
     )
 
-    // Infinite transitions for ambient, listening, and speaking effects
     val infiniteTransition = rememberInfiniteTransition(label = "OrbLoop")
 
-    // Ambient Idle Breathing (very slow, graceful)
     val idleBreath by infiniteTransition.animateFloat(
-        initialValue = 0.98f,
-        targetValue = 1.02f,
+        initialValue = 0.985f,
+        targetValue = 1.015f,
         animationSpec = infiniteRepeatable(
             animation = tween(3200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -75,10 +70,9 @@ fun KavyaVoiceOrb(
         label = "IdleBreath"
     )
 
-    // Speaking Gentle Float / Wobble (Smooth, gentle floating - never shaky)
     val speakingFloatY by infiniteTransition.animateFloat(
-        initialValue = -6f,
-        targetValue = 6f,
+        initialValue = -4f,
+        targetValue = 4f,
         animationSpec = infiniteRepeatable(
             animation = tween(2200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -86,19 +80,9 @@ fun KavyaVoiceOrb(
         label = "SpeakingFloatY"
     )
 
-    val speakingRotation by infiniteTransition.animateFloat(
-        initialValue = -2.5f,
-        targetValue = 2.5f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2600, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "SpeakingRotation"
-    )
-
     val speakingPulse by infiniteTransition.animateFloat(
-        initialValue = 1.02f,
-        targetValue = 1.14f,
+        initialValue = 1.01f,
+        targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
             animation = tween(1400, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -106,7 +90,6 @@ fun KavyaVoiceOrb(
         label = "SpeakingPulse"
     )
 
-    // Continuous wave phase for waveform animation
     val wavePhase by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 2f * Math.PI.toFloat(),
@@ -117,58 +100,63 @@ fun KavyaVoiceOrb(
         label = "WavePhase"
     )
 
-    // Dynamic sizing & transforms based on VoiceState
+    val spinAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "ThinkSpin"
+    )
+
     val baseScaleTarget = when (state) {
         VoiceState.IDLE -> 1.0f
-        VoiceState.UNDERSTANDING -> 1.02f
+        VoiceState.UNDERSTANDING -> 1.03f
         VoiceState.THINKING -> 1.04f
-        VoiceState.EXECUTING -> 1.06f
-        VoiceState.SPEAKING -> 1.12f
+        VoiceState.EXECUTING -> 1.05f
+        VoiceState.SPEAKING -> 1.08f
         VoiceState.ERROR -> 1.0f
     }
 
     val stateScale by animateFloatAsState(
-        targetValue = baseScaleTarget,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+        targetValue = baseScaleTarget + (animatedAmplitude * 0.06f),
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
         label = "StateScale"
     )
 
     val finalScale = when (state) {
         VoiceState.IDLE -> stateScale * idleBreath * pressScale
         VoiceState.SPEAKING -> stateScale * speakingPulse * pressScale
-        VoiceState.UNDERSTANDING -> 1.02f
         VoiceState.THINKING -> stateScale * idleBreath * pressScale
-        VoiceState.EXECUTING -> 1.06f
-        VoiceState.ERROR -> stateScale * pressScale
+        else -> stateScale * pressScale
     }
 
     val offsetY = if (state == VoiceState.SPEAKING) speakingFloatY else 0f
-    val rotationAngle = if (state == VoiceState.SPEAKING) speakingRotation else 0f
 
     val glowColor = when (state) {
-        VoiceState.IDLE -> BrandGradientStart.copy(alpha = 0.18f)
-        VoiceState.UNDERSTANDING -> AccentCyan.copy(alpha = 0.35f)
-        VoiceState.THINKING -> AccentCyan.copy(alpha = 0.35f)
-        VoiceState.EXECUTING -> AccentCyan.copy(alpha = 0.45f)
-        VoiceState.SPEAKING -> AccentPurpleLight.copy(alpha = 0.5f)
-        VoiceState.ERROR -> Error.copy(alpha = 0.3f)
+        VoiceState.IDLE -> Primary.copy(alpha = 0.20f)
+        VoiceState.UNDERSTANDING -> PrimaryLight.copy(alpha = 0.34f)
+        VoiceState.THINKING -> AccentCyan.copy(alpha = 0.34f)
+        VoiceState.EXECUTING -> SuccessGreen.copy(alpha = 0.34f)
+        VoiceState.SPEAKING -> PrimaryLight.copy(alpha = 0.44f)
+        VoiceState.ERROR -> Error.copy(alpha = 0.32f)
     }
 
     val gradientColors = when (state) {
-        VoiceState.IDLE -> listOf(BrandGradientStart, BrandGradientEnd)
-        VoiceState.UNDERSTANDING -> listOf(AccentCyan, AccentPurple)
-        VoiceState.THINKING -> listOf(AccentCyan, AccentPurple)
-        VoiceState.EXECUTING -> listOf(AccentCyan, AccentPurpleLight)
-        VoiceState.SPEAKING -> listOf(BrandGradientStart, AccentPurpleLight, Secondary)
-        VoiceState.ERROR -> listOf(Error, BrandGradientStart)
+        VoiceState.IDLE -> listOf(Primary, PrimaryLight, Secondary)
+        VoiceState.UNDERSTANDING -> listOf(PrimaryLight, AccentCyan, Primary)
+        VoiceState.THINKING -> listOf(AccentCyan, Secondary, PrimaryLight)
+        VoiceState.EXECUTING -> listOf(SuccessGreen, AccentCyan, Primary)
+        VoiceState.SPEAKING -> listOf(Primary, PrimaryLight, AccentPurpleLight, Primary)
+        VoiceState.ERROR -> listOf(Error, Color(0xFFFF7A70))
     }
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
             .offset(y = offsetY.dp)
-            .rotate(rotationAngle)
-            .size(baseSize + 60.dp)
+            .size(baseSize + 44.dp)
             .scale(finalScale)
             .clickable(
                 interactionSource = interactionSource,
@@ -176,54 +164,50 @@ fun KavyaVoiceOrb(
                 onClick = onClick
             )
     ) {
-        // Outer Ambient Radial Glow Halo
-        Box(
-            modifier = Modifier
-                .size(baseSize + 50.dp)
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            glowColor,
-                            glowColor.copy(alpha = glowColor.alpha * 0.4f),
-                            Color.Transparent
-                        )
+        // Outer Ambient Radial Glow Halo (density-correct Canvas)
+        Canvas(modifier = Modifier.size(baseSize + 40.dp)) {
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        glowColor,
+                        glowColor.copy(alpha = glowColor.alpha * 0.35f),
+                        Color.Transparent
                     ),
-                    shape = CircleShape
-                )
-        )
+                    center = center,
+                    radius = size.minDimension / 2f
+                ),
+                radius = size.minDimension / 2f,
+                center = center
+            )
+        }
 
-        // Waveform Rings for SPEAKING state
+        // Waveform ring when speaking
         if (state == VoiceState.SPEAKING) {
-            Canvas(
-                modifier = Modifier
-                    .size(baseSize + 28.dp)
-            ) {
-                val center = Offset(size.width / 2f, size.height / 2f)
-                val baseRadius = (size.width / 2f) - 10f
-                val waveAmplitude = 7f
-
+            Canvas(modifier = Modifier.size(baseSize + 24.dp)) {
+                val c = center
+                val baseRadius = (size.minDimension / 2f) - 8f
+                val waveAmp = 5.5f + (animatedAmplitude * 4f)
                 val path = Path()
                 val steps = 72
                 for (i in 0..steps) {
-                    val angle = (i.toFloat() / steps) * 2 * Math.PI.toFloat()
-                    val wave = sin(angle * 6 + wavePhase) * waveAmplitude
+                    val angle = (i.toFloat() / steps) * 2f * Math.PI.toFloat()
+                    val wave = sin(angle * 6f + wavePhase) * waveAmp
                     val r = baseRadius + wave
-                    val x = center.x + r * cos(angle)
-                    val y = center.y + r * sin(angle)
+                    val x = c.x + r * cos(angle)
+                    val y = c.y + r * sin(angle)
                     if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
                 }
                 path.close()
-
                 drawPath(
                     path = path,
                     brush = Brush.sweepGradient(gradientColors),
-                    style = Stroke(width = 2.5f, cap = StrokeCap.Round),
-                    alpha = 0.8f
+                    style = Stroke(width = 2.4f, cap = StrokeCap.Round),
+                    alpha = 0.85f
                 )
             }
         }
 
-        // Frosted Glass Main Orb Sphere
+        // Frosted Apple Liquid Glass Sphere
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -231,106 +215,112 @@ fun KavyaVoiceOrb(
                 .shadow(
                     elevation = 16.dp,
                     shape = CircleShape,
-                    ambientColor = Primary.copy(alpha = 0.3f),
-                    spotColor = AccentPurple.copy(alpha = 0.4f)
+                    ambientColor = Primary.copy(alpha = 0.25f),
+                    spotColor = Color(0x80000000)
                 )
                 .clip(CircleShape)
                 .background(
-                    Brush.linearGradient(
+                    Brush.verticalGradient(
                         colors = listOf(
-                            SurfaceGlass.copy(alpha = 0.92f),
-                            Surface.copy(alpha = 0.95f)
-                        ),
-                        start = Offset(0f, 0f),
-                        end = Offset(300f, 300f)
+                            Color(0xEB22293A),
+                            Color(0xF0121621)
+                        )
                     )
                 )
                 .border(
-                    width = 1.5.dp,
-                    brush = Brush.linearGradient(
+                    width = 1.4.dp,
+                    brush = Brush.verticalGradient(
                         colors = listOf(
-                            BrandGradientStart.copy(alpha = if (state == VoiceState.IDLE) 0.5f else 0.9f),
-                            AccentPurple.copy(alpha = 0.4f),
-                            Color.White.copy(alpha = 0.15f)
+                            Color(0x75FFFFFF),
+                            PrimaryLight.copy(alpha = if (state == VoiceState.IDLE) 0.35f else 0.72f),
+                            Color(0x1CFFFFFF)
                         )
                     ),
                     shape = CircleShape
                 )
         ) {
-            // Subtle Radial highlight inside the sphere
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                (if (state == VoiceState.SPEAKING) AccentPurple else BrandGradientStart).copy(alpha = 0.22f),
-                                Color.Transparent
-                            ),
-                            center = Offset(baseSize.value * 0.4f, baseSize.value * 0.4f),
-                            radius = baseSize.value * 1.2f
-                        )
+            // Density-correct specular glass dome & subtle core tint
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            (if (state == VoiceState.ERROR) Error else PrimaryLight).copy(alpha = 0.24f),
+                            Color.Transparent
+                        ),
+                        center = Offset(w * 0.34f, h * 0.28f),
+                        radius = w * 0.78f
                     )
-            )
+                )
+                // Crisp top-left Apple glass specular crescent
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0x42FFFFFF), Color.Transparent),
+                        center = Offset(w * 0.32f, h * 0.22f),
+                        radius = w * 0.42f
+                    )
+                )
+            }
 
-            // Center Content: Audio Waves / Animated Visualizers
             when (state) {
                 VoiceState.SPEAKING -> {
-                    // Glowing speaking wave pattern
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.height(38.dp)
+                        modifier = Modifier.height(34.dp)
                     ) {
                         for (i in 0..4) {
                             val barHeight by infiniteTransition.animateFloat(
-                                initialValue = 10f,
-                                targetValue = 34f,
+                                initialValue = 9f,
+                                targetValue = 30f,
                                 animationSpec = infiniteRepeatable(
-                                    animation = tween(420 + ((4 - i) * 80), easing = FastOutSlowInEasing),
+                                    animation = tween(380 + ((4 - i) * 75), easing = FastOutSlowInEasing),
                                     repeatMode = RepeatMode.Reverse
                                 ),
                                 label = "SpeakBar$i"
                             )
                             Box(
                                 modifier = Modifier
-                                    .width(4.5.dp)
+                                    .width(4.dp)
                                     .height(barHeight.dp)
                                     .clip(CircleShape)
                                     .background(
                                         Brush.verticalGradient(
-                                            colors = listOf(AccentPurpleLight, BrandGradientStart)
+                                            colors = listOf(Color.White, PrimaryLight)
                                         )
                                     )
                             )
                         }
                     }
                 }
-                VoiceState.THINKING -> {
-                    // Smooth rotating pulse
+                VoiceState.THINKING, VoiceState.EXECUTING -> {
                     Box(
                         modifier = Modifier
-                            .size(24.dp)
+                            .size(28.dp)
+                            .rotate(spinAngle)
                             .clip(CircleShape)
-                            .background(
-                                Brush.sweepGradient(listOf(AccentCyan, AccentPurple, Color.Transparent))
+                            .border(
+                                width = 2.5.dp,
+                                brush = Brush.sweepGradient(listOf(PrimaryLight, AccentCyan, Color.Transparent)),
+                                shape = CircleShape
                             )
                     )
                 }
                 else -> {
-                    // IDLE: Clean, minimalist modern AI core icon
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .size(54.dp)
+                            .size(44.dp)
                             .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.06f))
+                            .background(Color(0x1AFFFFFF))
+                            .border(1.dp, Color(0x2BFFFFFF), CircleShape)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = "Kavya AI Core",
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = "Kavya Voice Control",
                             tint = TextPrimary,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }

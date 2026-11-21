@@ -43,9 +43,20 @@ enum class GemmaModelStatus {
 }
 
 enum class OfflineStorageProfile(val maxTotalBytes: Long) {
-    STRICT_2GB(2_147_483_648L), // 2.0 GiB default budget: SmolVLM2 Q4_K_M + mmproj (~1.97 GB)
-    EXPANDED(3_758_096_384L)    // 3.5 GiB opt-in budget: SmolVLM2 + Florence-2 ONNX Q4F16
+    STRICT_2GB(Long.MAX_VALUE), // Artificial 2 GB cap removed; bounded only by real device free storage
+    EXPANDED(Long.MAX_VALUE)    // Artificial 4 GB cap removed; bounded only by real device free storage
 }
+
+data class DynamicStorageEstimate(
+    val installedModelsBytes: Long,
+    val partialDownloadsBytes: Long,
+    val availableDeviceBytes: Long,
+    val safetyHeadroomBytes: Long,
+    val usableForDownloadsBytes: Long,
+    val additionalRequestedBytes: Long = 0L,
+    val hasSufficientStorage: Boolean,
+    val statusMessage: String
+)
 
 data class OfflineArtifactSpec(
     val fileName: String,
@@ -144,7 +155,7 @@ object DefaultHttpUrlConnectionTransport : ResumableHttpTransport {
 /**
  * Single Authoritative On-Device Model Manager for Kavya AI.
  * Performs real binary header inspection, cryptographic SHA-256 + byte-length verification,
- * resumable HTTP 206 `.part` downloads, storage profile governance (`STRICT_2GB` vs `EXPANDED`),
+ * resumable HTTP 206 `.part` downloads, dynamic device storage telemetry,
  * and safe atomic Storage Access Framework imports.
  */
 object GemmaModelManager {
@@ -154,6 +165,7 @@ object GemmaModelManager {
     private const val KEY_SAVED_MODEL_PATH = "key_saved_offline_model_path"
     private const val KEY_STORAGE_PROFILE = "key_offline_storage_profile"
     private const val KEY_EXPANDED_OPT_IN = "key_offline_expanded_opt_in"
+    private const val SAFETY_HEADROOM_BYTES = 256L * 1024L * 1024L
 
     const val SMOLVLM2_MAIN_GGUF_FILENAME = "HuggingFaceTB_SmolVLM2-2.2B-Instruct-Agentic-GUI-Q4_K_M.gguf"
     const val SMOLVLM2_MMPROJ_GGUF_FILENAME = "mmproj-HuggingFaceTB_SmolVLM2-2.2B-Instruct-Agentic-GUI-f16.gguf"
@@ -195,10 +207,8 @@ object GemmaModelManager {
     )
 
     /**
-     * Optional auxiliary offline vision/OCR/region-proposal bundle (`EXPANDED` profile only):
+     * Auxiliary offline vision/OCR/region-proposal bundle:
      * onnx-community/Florence-2-base-ft (Q4F16 ONNX on Hugging Face main).
-     * Exact LFS SHA-256 and byte sizes are resolved dynamically via HF Tree API / X-Linked-Etag
-     * rather than using synthetic hashes.
      */
     val FLORENCE2_MANIFEST = OfflineModelManifest(
         modelId = "florence-2-base-ft-q4f16-onnx",
@@ -206,7 +216,7 @@ object GemmaModelManager {
         runtimeRepoId = "onnx-community/Florence-2-base-ft",
         pinnedRevision = "main",
         license = "MIT",
-        minimumProfile = OfflineStorageProfile.EXPANDED,
+        minimumProfile = OfflineStorageProfile.STRICT_2GB,
         artifacts = listOf(
             OfflineArtifactSpec(
                 fileName = "vision_encoder_q4f16.onnx",
@@ -342,58 +352,85 @@ object GemmaModelManager {
 
     fun getStorageProfile(context: Context): OfflineStorageProfile {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_STORAGE_PROFILE, OfflineStorageProfile.STRICT_2GB.name)
-        val optIn = prefs.getBoolean(KEY_EXPANDED_OPT_IN, false)
-        return if (raw == OfflineStorageProfile.EXPANDED.name && optIn) {
-            OfflineStorageProfile.EXPANDED
-        } else {
+        val raw = prefs.getString(KEY_STORAGE_PROFILE, OfflineStorageProfile.EXPANDED.name)
+        return if (raw == OfflineStorageProfile.STRICT_2GB.name) {
             OfflineStorageProfile.STRICT_2GB
+        } else {
+            OfflineStorageProfile.EXPANDED
         }
     }
 
     fun setStorageProfile(
         context: Context,
         profile: OfflineStorageProfile,
-        userApprovedExpanded: Boolean = false
+        userApprovedExpanded: Boolean = true
     ): Boolean {
-        if (profile == OfflineStorageProfile.EXPANDED && !userApprovedExpanded) {
-            return false
-        }
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_STORAGE_PROFILE, profile.name)
-            .putBoolean(KEY_EXPANDED_OPT_IN, profile == OfflineStorageProfile.EXPANDED && userApprovedExpanded)
+            .putBoolean(KEY_EXPANDED_OPT_IN, true)
             .commit()
         return true
     }
 
+    fun calculateDynamicStorageEstimate(
+        context: Context,
+        baseDir: File = getModelDirectory(context),
+        additionalRequestedBytes: Long = 0L,
+        overrideAvailableDiskBytes: Long? = null
+    ): DynamicStorageEstimate {
+        var installedBytes = 0L
+        var partBytes = 0L
+        if (baseDir.exists()) {
+            baseDir.walkTopDown().filter { it.isFile }.forEach { f ->
+                if (f.name.endsWith(".part")) {
+                    partBytes += f.length()
+                } else {
+                    installedBytes += f.length()
+                }
+            }
+        }
+        val availableBytes = overrideAvailableDiskBytes ?: try {
+            android.os.StatFs(baseDir.absolutePath).availableBytes
+        } catch (_: Throwable) {
+            Long.MAX_VALUE
+        }
+        val usableBytes = (availableBytes - SAFETY_HEADROOM_BYTES).coerceAtLeast(0L)
+        val fits = additionalRequestedBytes <= usableBytes
+        val instMb = installedBytes / (1024L * 1024L)
+        val availMb = availableBytes / (1024L * 1024L)
+        val reqMb = additionalRequestedBytes / (1024L * 1024L)
+        val msg = if (fits) {
+            "Installed Models: ~$instMb MB • Available Storage: ~$availMb MB"
+        } else {
+            "Insufficient device storage: requires ~$reqMb MB + 256 MB safety headroom, only ~$availMb MB free."
+        }
+        return DynamicStorageEstimate(
+            installedModelsBytes = installedBytes,
+            partialDownloadsBytes = partBytes,
+            availableDeviceBytes = availableBytes,
+            safetyHeadroomBytes = SAFETY_HEADROOM_BYTES,
+            usableForDownloadsBytes = usableBytes,
+            additionalRequestedBytes = additionalRequestedBytes,
+            hasSufficientStorage = fits,
+            statusMessage = msg
+        )
+    }
+
     fun canInstallManifestUnderProfile(
         manifest: OfflineModelManifest,
-        activeProfile: OfflineStorageProfile,
+        activeProfile: OfflineStorageProfile = OfflineStorageProfile.EXPANDED,
         alreadyInstalledBytes: Long = 0L,
-        availableDiskBytes: Long = Long.MAX_VALUE
+        availableDiskBytes: Long = Long.MAX_VALUE,
+        availableFreeDiskBytes: Long = availableDiskBytes
     ): Pair<Boolean, String> {
-        if (manifest.minimumProfile == OfflineStorageProfile.EXPANDED &&
-            activeProfile != OfflineStorageProfile.EXPANDED
-        ) {
-            return Pair(
-                false,
-                "STORAGE_INSUFFICIENT: Model '${manifest.modelId}' requires EXPANDED storage profile opt-in."
-            )
-        }
-        val projectedTotal = alreadyInstalledBytes + manifest.totalExpectedBytes
-        if (projectedTotal > activeProfile.maxTotalBytes) {
-            return Pair(
-                false,
-                "STORAGE_INSUFFICIENT: Installing '${manifest.modelId}' ($projectedTotal bytes) exceeds ${activeProfile.name} budget (${activeProfile.maxTotalBytes} bytes)."
-            )
-        }
+        val effectiveFreeDisk = minOf(availableDiskBytes, availableFreeDiskBytes)
         // Require at least 256 MB safety headroom beyond the artifact size
-        val requiredFree = manifest.totalExpectedBytes + (256L * 1024L * 1024L)
-        if (availableDiskBytes < requiredFree) {
+        val requiredFree = manifest.totalExpectedBytes.coerceAtLeast(32L * 1024L * 1024L) + SAFETY_HEADROOM_BYTES
+        if (effectiveFreeDisk < requiredFree) {
             return Pair(
                 false,
-                "STORAGE_INSUFFICIENT: Available free disk ($availableDiskBytes bytes) is below required $requiredFree bytes."
+                "STORAGE_INSUFFICIENT: Available free disk ($effectiveFreeDisk bytes) is below required $requiredFree bytes."
             )
         }
         return Pair(true, "OK")

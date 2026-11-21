@@ -229,7 +229,8 @@ class JarvisPreflightAndStabilityTest {
         val engine = VerificationEngine(ScreenInspector())
 
         val result = engine.verifyAppForeground("com.google.android.youtube", timeoutMs = 120L)
-        assertTrue(result.passed)
+        assertFalse(result.passed)
+        assertTrue(result.launchDispatched)
         assertTrue(result.reason.contains("Accessibility off"))
 
         val copyResult = engine.verifyUiInteraction(

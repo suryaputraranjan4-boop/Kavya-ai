@@ -314,12 +314,37 @@ object DefaultRestrictedActionExecutor : RestrictedActionExecutor {
                     )
                     ActionExecutionFeedback(ok, if (ok) "Typed '${envelope.text.take(30)}'" else "Failed typing into target field", if (ok) null else "TYPE_FAILED")
                 }
-                OrchestratorActionType.SWIPE, OrchestratorActionType.SCROLL -> {
+                OrchestratorActionType.SCROLL -> {
+                    if (a11y == null) return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")
+                    val dir = envelope.direction.uppercase().ifBlank { "DOWN" }
+                    // Prefer semantic Accessibility scrolling for standard vertical scrolls when no specific coordinate was calibrated
+                    val isVerticalSemantic = (dir.contains("DOWN") || dir.contains("FORWARD") || dir.contains("UP") || dir.contains("BACKWARD")) && calibratedPoint == null
+                    if (isVerticalSemantic && a11y.scroll(dir)) {
+                        return@withContext ActionExecutionFeedback(true, "Scrolled $dir (semantic)")
+                    }
+                    val geom = ScreenObservationCoordinator.readCurrentDisplayGeometry(context)
+                    val cx = (calibratedPoint?.xPx ?: (geom.widthPx * 0.5f))
+                    val cy = (calibratedPoint?.yPx ?: (geom.heightPx * 0.5f))
+                    // Touch scrolling moves content opposite to finger motion:
+                    // SCROLL DOWN -> drag finger UP (-dy); SCROLL UP -> drag finger DOWN (+dy);
+                    // SCROLL RIGHT -> drag finger LEFT (-dx); SCROLL LEFT -> drag finger RIGHT (+dx).
+                    val (dx, dy) = when {
+                        dir.contains("DOWN") || dir.contains("FORWARD") -> 0f to -(geom.heightPx * 0.35f)
+                        dir.contains("UP") || dir.contains("BACKWARD") -> 0f to (geom.heightPx * 0.35f)
+                        dir.contains("RIGHT") -> -(geom.widthPx * 0.45f) to 0f
+                        dir.contains("LEFT") -> (geom.widthPx * 0.45f) to 0f
+                        else -> 0f to -(geom.heightPx * 0.35f)
+                    }
+                    val ok = a11y.performAuthorizedSwipe(permit, cx, cy, (cx + dx).coerceIn(10f, geom.widthPx - 10f), (cy + dy).coerceIn(10f, geom.heightPx - 10f))
+                    ActionExecutionFeedback(ok, if (ok) "Scrolled $dir" else "Scroll gesture failed")
+                }
+                OrchestratorActionType.SWIPE -> {
                     if (a11y == null) return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")
                     val geom = ScreenObservationCoordinator.readCurrentDisplayGeometry(context)
                     val cx = (calibratedPoint?.xPx ?: (geom.widthPx * 0.5f))
                     val cy = (calibratedPoint?.yPx ?: (geom.heightPx * 0.5f))
                     val dir = envelope.direction.uppercase()
+                    // Literal finger swipe vector
                     val (dx, dy) = when {
                         dir.contains("UP") -> 0f to -(geom.heightPx * 0.35f)
                         dir.contains("DOWN") -> 0f to (geom.heightPx * 0.35f)
@@ -328,7 +353,7 @@ object DefaultRestrictedActionExecutor : RestrictedActionExecutor {
                         else -> 0f to -(geom.heightPx * 0.35f)
                     }
                     val ok = a11y.performAuthorizedSwipe(permit, cx, cy, (cx + dx).coerceIn(10f, geom.widthPx - 10f), (cy + dy).coerceIn(10f, geom.heightPx - 10f))
-                    ActionExecutionFeedback(ok, if (ok) "Scrolled/Swiped $dir" else "Swipe gesture failed")
+                    ActionExecutionFeedback(ok, if (ok) "Swiped $dir" else "Swipe gesture failed")
                 }
                 OrchestratorActionType.BACK -> {
                     if (a11y == null) return@withContext ActionExecutionFeedback(false, "Accessibility service not enabled.", "NO_ACCESSIBILITY")

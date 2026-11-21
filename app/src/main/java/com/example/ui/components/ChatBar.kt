@@ -18,7 +18,6 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,34 +37,48 @@ fun ChatBar(
     onSend: (String) -> Unit,
     onPlusClick: () -> Unit,
     modifier: Modifier = Modifier,
-    placeholderText: String = "Type a message to Kavya...",
+    placeholderText: String = "Message Kavya...",
     onMicClick: (() -> Unit)? = null,
     isMicListening: Boolean = false
 ) {
     var text by remember { mutableStateOf("") }
+    val pillShape = RoundedCornerShape(28.dp)
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(28.dp))
-            .background(SurfaceGlass)
-            .border(1.dp, GlassBorder, RoundedCornerShape(28.dp))
+            .clip(pillShape)
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xDE1D2331), Color(0xD9131722))
+                )
+            )
+            .border(1.dp, AppleGlassBorderBrush, pillShape)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(
             onClick = onPlusClick,
-            modifier = Modifier.size(38.dp)
+            modifier = Modifier.size(40.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = "Actions menu",
-                tint = TextSecondary,
-                modifier = Modifier.size(20.dp)
-            )
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(Color(0x1CFFFFFF))
+                    .border(1.dp, Color(0x28FFFFFF), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Attach or share",
+                    tint = TextPrimary,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
         }
 
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(6.dp))
 
         BasicTextField(
             value = text,
@@ -111,7 +124,7 @@ fun ChatBar(
         val isPressed by interactionSource.collectIsPressedAsState()
         val btnScale by animateFloatAsState(
             targetValue = if (isPressed) 0.90f else 1f,
-            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+            animationSpec = spring(stiffness = Spring.StiffnessMedium),
             label = "ActionBtnScale"
         )
 
@@ -125,6 +138,7 @@ fun ChatBar(
                 }
             },
             enabled = isTyping || onMicClick != null,
+            interactionSource = interactionSource,
             modifier = Modifier
                 .size(44.dp)
                 .scale(btnScale)
@@ -135,15 +149,17 @@ fun ChatBar(
                     .size(38.dp)
                     .clip(CircleShape)
                     .background(
-                        if (isTyping || isMicListening) {
-                            Brush.linearGradient(listOf(BrandGradientStart, BrandGradientEnd))
+                        if (isTyping) {
+                            Brush.linearGradient(listOf(Primary, PrimaryLight))
+                        } else if (isMicListening) {
+                            Brush.linearGradient(listOf(SuccessGreen, AccentCyan))
                         } else {
-                            Brush.linearGradient(listOf(SurfaceElevated, SurfaceVariant))
+                            Brush.verticalGradient(listOf(Color(0x28FFFFFF), Color(0x14FFFFFF)))
                         }
                     )
                     .border(
                         1.dp,
-                        if (isTyping || isMicListening) Color.White.copy(alpha = 0.2f) else GlassBorder,
+                        if (isTyping || isMicListening) Color(0x55FFFFFF) else Color(0x2EFFFFFF),
                         CircleShape
                     )
             ) {
@@ -157,7 +173,7 @@ fun ChatBar(
                 Icon(
                     imageVector = icon,
                     contentDescription = if (isTyping) "Send message" else "Voice input",
-                    tint = if (isTyping || isMicListening) Color.White else TextTertiary,
+                    tint = if (isTyping || isMicListening) Color.White else TextSecondary,
                     modifier = Modifier.size(18.dp)
                 )
             }

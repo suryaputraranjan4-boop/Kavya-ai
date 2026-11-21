@@ -156,11 +156,38 @@ class GeminiAudioPlayer(
 
     @Volatile private var audioTrack: AudioTrack? = null
     @Volatile private var audioTrackSampleRate: Int = 0
-    @Volatile private var pendingPcmChunks = 0
+    private val pendingPcmChunks = java.util.concurrent.atomic.AtomicInteger(0)
     private val pcmExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
+    private fun hasContainerMagic(bytes: ByteArray): Boolean {
+        if (bytes.size < 4) return false
+        val b0 = bytes[0].toInt() and 0xFF
+        val b1 = bytes[1].toInt() and 0xFF
+        val b2 = bytes[2].toInt() and 0xFF
+        val b3 = bytes[3].toInt() and 0xFF
+        val isRiff = b0 == 'R'.code && b1 == 'I'.code && b2 == 'F'.code && b3 == 'F'.code
+        val isOgg = b0 == 'O'.code && b1 == 'g'.code && b2 == 'g'.code && b3 == 'S'.code
+        val isFlac = b0 == 'f'.code && b1 == 'L'.code && b2 == 'a'.code && b3 == 'C'.code
+        val isId3 = b0 == 'I'.code && b1 == 'D'.code && b2 == '3'.code
+        val isMp3Sync = b0 == 0xFF && (b1 and 0xE0) == 0xE0
+        return isRiff || isOgg || isFlac || isId3 || isMp3Sync
+    }
+
     fun playWav(wavBytes: ByteArray, text: String? = null, enqueue: Boolean = false, onComplete: (() -> Unit)? = null) {
-        playAudioBytes(wavBytes, text, enqueue, onComplete)
+        if (wavBytes.isEmpty()) {
+            onComplete?.invoke()
+            return
+        }
+        val playable = if (hasContainerMagic(wavBytes)) {
+            wavBytes
+        } else {
+            val header = createWavHeader(wavBytes.size, sampleRate = 24000)
+            ByteArray(header.size + wavBytes.size).also { out ->
+                System.arraycopy(header, 0, out, 0, header.size)
+                System.arraycopy(wavBytes, 0, out, header.size, wavBytes.size)
+            }
+        }
+        playAudioBytes(playable, text, enqueue, onComplete)
     }
 
     fun playPcm(pcmBytes: ByteArray, sampleRate: Int = 24000, text: String? = null, enqueue: Boolean = false, onComplete: (() -> Unit)? = null) {
@@ -223,7 +250,7 @@ class GeminiAudioPlayer(
             stop()
         }
         requestSpeechFocus()
-        pendingPcmChunks++
+        pendingPcmChunks.incrementAndGet()
 
         val currentGen = playbackGeneration
         pcmExecutor.execute {
@@ -235,15 +262,15 @@ class GeminiAudioPlayer(
                 track.write(pcmBytes, 0, pcmBytes.size, AudioTrack.WRITE_BLOCKING)
                 val durationMs = ((pcmBytes.size.toLong() * 1000L) / (sampleRate * 2)).coerceAtLeast(40L)
                 // Sleep cleanly on single-thread executor until buffer finishes playing unless cancelled
-                if (currentGen == playbackGeneration && pendingPcmChunks == 1) {
+                if (currentGen == playbackGeneration && pendingPcmChunks.get() == 1) {
                     try { Thread.sleep(durationMs.coerceAtMost(8_000L)) } catch (_: InterruptedException) {}
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "AudioTrack streaming error", e)
             } finally {
                 if (currentGen == playbackGeneration) {
-                    pendingPcmChunks = (pendingPcmChunks - 1).coerceAtLeast(0)
-                    if (pendingPcmChunks == 0 && audioQueue.isEmpty() && !isProcessingQueue) {
+                    val remaining = pendingPcmChunks.updateAndGet { prev -> (prev - 1).coerceAtLeast(0) }
+                    if (remaining == 0 && audioQueue.isEmpty() && !isProcessingQueue) {
                         abandonSpeechFocus()
                         notifySpeaking(false)
                     }
@@ -345,12 +372,13 @@ class GeminiAudioPlayer(
             currentTempFile = tempFile
             FileOutputStream(tempFile).use { it.write(queuedItem.audioBytes) }
 
+            requestSpeechFocus()
             val fileToDelete = tempFile
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
                         .build()
                 )
                 setDataSource(fileToDelete.absolutePath)
@@ -420,8 +448,10 @@ class GeminiAudioPlayer(
     @Synchronized
     fun stop() {
         playbackGeneration++
+        pendingPcmChunks.set(0)
         audioQueue.clear()
         isProcessingQueue = false
+        abandonSpeechFocus()
         try {
             audioTrack?.let { track ->
                 if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
@@ -462,6 +492,9 @@ class GeminiAudioPlayer(
         } catch (e: Exception) {
             Log.w(TAG, "Error releasing player: ${e.message}")
         } finally {
+            if (pendingPcmChunks.get() == 0 && audioQueue.isEmpty() && !isProcessingQueue) {
+                abandonSpeechFocus()
+            }
             if (isPlaying && audioQueue.isEmpty()) {
                 isPlaying = false
                 mainHandler.post { 

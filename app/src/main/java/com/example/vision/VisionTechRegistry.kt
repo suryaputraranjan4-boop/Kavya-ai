@@ -12,21 +12,75 @@ import org.json.JSONObject
  */
 object VisionTechRegistry {
 
+    /**
+     * Exact ordered IDs of the 12 core Visualization Technologies that replace the legacy 12-model catalog.
+     */
+    val core12TechnologyIds: List<VisionTechId> = listOf(
+        VisionTechId.TRIPO_SR,
+        VisionTechId.THREE_JS,
+        VisionTechId.BABYLON_JS,
+        VisionTechId.MODEL_VIEWER,
+        VisionTechId.MERMAID_JS,
+        VisionTechId.D3_JS,
+        VisionTechId.PLOTLY_JS,
+        VisionTechId.GSAP,
+        VisionTechId.REACT_FLOW,
+        VisionTechId.EXCALIDRAW,
+        VisionTechId.CESIUM_JS,
+        VisionTechId.MANIM
+    )
+
     val allTechnologies: List<VisionTechnologySpec> = listOf(
         // A. 3D & Spatial
+        VisionTechnologySpec(
+            id = VisionTechId.TRIPO_SR,
+            category = VisionCategory.THREE_D_AND_SPATIAL,
+            displayName = "TripoSR",
+            shortTagline = "3D object reconstruction from a single image via model weights & Python GPU worker",
+            description = "Single-image 3D object reconstruction using official stabilityai/TripoSR weights and an isolated Python PyTorch GPU worker. Uploads a photo, reconstructs a .glb mesh, and opens it directly in Model Viewer / Three.js.",
+            runtimeType = VisionRuntimeType.REMOTE_PYTHON_WORKER,
+            officialRepoUrl = "https://github.com/VAST-AI-Research/TripoSR",
+            docsUrl = "https://github.com/VAST-AI-Research/TripoSR",
+            officialSourceUrl = "https://github.com/VAST-AI-Research/TripoSR",
+            packageName = "stabilityai/TripoSR (Python + PyTorch GPU)",
+            version = "main",
+            licenseName = "MIT",
+            licenseNote = "MIT License (VAST-AI-Research / Stability AI). Model weights & Python PyTorch/CUDA compute worker are managed separately.",
+            capabilities = listOf(
+                "3D object reconstruction from a single photo",
+                "Downloads official stabilityai/TripoSR weights & worker recipe separately",
+                "Upload validation, job progress polling & cancellation",
+                "Opens reconstructed .glb mesh directly inside Model Viewer & Three.js"
+            ),
+            supportedInputFormats = listOf("PNG", "JPEG"),
+            supportedExportFormats = listOf(VisualizationExportFormat.GLB, VisualizationExportFormat.PNG),
+            assetBundleFiles = emptyList(),
+            requiresWebGl = true,
+            isHeavyEngine = true,
+            supportsOffline = false,
+            supportsUndoRedo = false,
+            supportsAnimationOverlay = false,
+            backendRoleDescription = "Android cannot run Python PyTorch CUDA + torchmcubes natively. Model weights can be downloaded & verified locally, while reconstruction runs on a configured Python GPU worker.",
+            downloadKind = VisionDownloadKind.PYTHON_MODEL_WEIGHTS_AND_WORKER,
+            registryMetadataUrl = "https://huggingface.co/api/models/stabilityai/TripoSR/tree/main",
+            visualizationRole = "3D object reconstruction",
+            androidLimitationNote = "Requires Python 3.8+, PyTorch CUDA GPU, and torchmcubes — cannot execute natively inside Android APK. Configure a TripoSR Python GPU Worker URL for live reconstruction.",
+            estimatedPackageSizeBytes = 1_685_000_000L
+        ),
         VisionTechnologySpec(
             id = VisionTechId.THREE_JS,
             category = VisionCategory.THREE_D_AND_SPATIAL,
             displayName = "Three.js",
-            shortTagline = "Interactive WebGL procedural 3D scenes, lights, materials & GLB export",
-            description = "Core WebGL 3D engine powering geometric shapes, procedural assemblies, OrbitControls, TransformControls, hierarchy tree, wireframe/lighting toggles, and GLB binary export.",
+            shortTagline = "Interactive 3D scenes with WebGL lighting, materials, controls & GLB export",
+            description = "Core WebGL 3D library powering interactive 3D scenes, procedural assemblies, OrbitControls, TransformControls, lighting/wireframe toggles, and GLB binary export.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/mrdoob/three.js",
             docsUrl = "https://threejs.org/docs/",
+            officialSourceUrl = "https://threejs.org/manual/#en/installation",
             packageName = "three",
             version = "0.187.0",
             licenseName = "MIT",
-            licenseNote = "Permissive MIT license.",
+            licenseNote = "Permissive MIT license preserved from official npm package 'three'.",
             capabilities = listOf(
                 "Orbit, zoom, pan & TransformControls gizmos",
                 "Procedural primitives, materials, lights & wireframe toggle",
@@ -41,21 +95,27 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% locally inside hardware-accelerated WebView WebGL."
+            backendRoleDescription = "Runs locally inside hardware-accelerated Android WebView WebGL.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/three/latest",
+            visualizationRole = "Interactive 3D scenes",
+            androidLimitationNote = "Runs natively in Android WebView via WebGL 2.0 with local bundled + npm-installed runtime assets.",
+            estimatedPackageSizeBytes = 829_027L
         ),
         VisionTechnologySpec(
             id = VisionTechId.BABYLON_JS,
             category = VisionCategory.THREE_D_AND_SPATIAL,
             displayName = "Babylon.js",
-            shortTagline = "3D engine with gravity/bounce simulation, PBR materials & scene inspector",
-            description = "Production 3D engine supporting interactive camera navigation, mesh hierarchy inspection, PBR material tuning, lighting rigs, rigid/kinematic gravity bounce simulation, and glTF/GLB export.",
+            shortTagline = "Advanced 3D environments with PBR materials, lighting rigs & physics simulation",
+            description = "Production WebGL 3D engine supporting advanced 3D environments, ArcRotateCamera navigation, mesh hierarchy inspection, PBR materials, gravity/bounce simulation, and glTF/GLB export.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/BabylonJS/Babylon.js",
             docsUrl = "https://doc.babylonjs.com/",
+            officialSourceUrl = "https://github.com/BabylonJS/Babylon.js",
             packageName = "@babylonjs/core",
             version = "9.36.0",
             licenseName = "Apache-2.0",
-            licenseNote = "Permissive Apache 2.0 license.",
+            licenseNote = "Permissive Apache-2.0 license preserved from official npm package '@babylonjs/core'.",
             capabilities = listOf(
                 "ArcRotateCamera zoom/pan/orbit controls",
                 "PBR material & dynamic light presets",
@@ -70,23 +130,29 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% locally in WebView WebGL using bundled @babylonjs/core + serializers."
+            backendRoleDescription = "Runs locally in Android WebView WebGL using @babylonjs/core runtime assets.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/%40babylonjs%2Fcore/latest",
+            visualizationRole = "Advanced 3D environments",
+            androidLimitationNote = "Runs locally in Android WebView via WebGL 2.0 (GPU-accelerated).",
+            estimatedPackageSizeBytes = 8_574_576L
         ),
         VisionTechnologySpec(
             id = VisionTechId.MODEL_VIEWER,
             category = VisionCategory.THREE_D_AND_SPATIAL,
             displayName = "Model Viewer",
-            shortTagline = "glTF/GLB inspector with camera presets, hotspots, lighting & AR placement",
-            description = "Web component for glTF/GLB inspection with orbital camera presets, exposure/environment lighting sliders, interactive 3D annotations (hotspots), poster fallback, and WebXR/Scene Viewer AR check.",
+            shortTagline = "3D model viewing for glTF/GLB with camera presets, hotspots & AR support",
+            description = "Official Google web component for 3D model viewing (glTF/GLB) with orbital camera presets, exposure/environment lighting controls, interactive 3D hotspot annotations, and device AR verification.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/google/model-viewer",
             docsUrl = "https://modelviewer.dev/",
+            officialSourceUrl = "https://github.com/google/model-viewer",
             packageName = "@google/model-viewer",
             version = "4.4.0",
             licenseName = "Apache-2.0",
-            licenseNote = "Permissive Apache 2.0 license.",
+            licenseNote = "Permissive Apache-2.0 license preserved from official npm package '@google/model-viewer'.",
             capabilities = listOf(
-                "Load local or imported .glb / .gltf models",
+                "Load local, TripoSR-reconstructed, or imported .glb / .gltf models",
                 "Camera angle presets (Front, Top, Iso, Hero)",
                 "Interactive hotspot annotations & exposure lighting",
                 "Device-verified AR View launch & PNG/GLB export"
@@ -99,36 +165,12 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = false,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs offline in WebView; AR button only enabled when device supports ARCore/Scene Viewer."
-        ),
-        VisionTechnologySpec(
-            id = VisionTechId.TRIPO_SR,
-            category = VisionCategory.THREE_D_AND_SPATIAL,
-            displayName = "TripoSR",
-            shortTagline = "Single-image-to-3D GLB mesh reconstruction via isolated Python GPU worker",
-            description = "Connects securely to a remote or local LAN Python FastAPI / HuggingFace / Gradio TripoSR worker. Validates photo upload, tracks progress & cancellation, downloads the resulting .glb mesh, and previews it in Three.js/Model Viewer.",
-            runtimeType = VisionRuntimeType.REMOTE_PYTHON_WORKER,
-            officialRepoUrl = "https://github.com/VAST-AI-Research/TripoSR",
-            docsUrl = "https://github.com/VAST-AI-Research/TripoSR#readme",
-            packageName = "TripoSR Python Worker (REST /multipart)",
-            version = "Worker API v1",
-            licenseName = "MIT",
-            licenseNote = "Requires external Python PyTorch GPU worker; NEVER bundled inside APK.",
-            capabilities = listOf(
-                "Pick photo via Android Photo Picker or screen capture",
-                "Upload validation, job progress polling & cancellation",
-                "Download reconstructed .glb / .obj mesh to local vault",
-                "Immediate interactive preview inside Model Viewer & Three.js"
-            ),
-            supportedInputFormats = listOf("PNG", "JPEG"),
-            supportedExportFormats = listOf(VisualizationExportFormat.GLB, VisualizationExportFormat.PNG),
-            assetBundleFiles = emptyList(),
-            requiresWebGl = true,
-            isHeavyEngine = true,
-            supportsOffline = false,
-            supportsUndoRedo = false,
-            supportsAnimationOverlay = false,
-            backendRoleDescription = "Requires a live TripoSR Python FastAPI/Gradio worker endpoint (configured in Vision Settings)."
+            backendRoleDescription = "Runs locally in Android WebView; AR placement activates when ARCore / Scene Viewer is detected.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/%40google%2Fmodel-viewer/latest",
+            visualizationRole = "3D model viewing",
+            androidLimitationNote = "Runs locally in Android WebView WebGL; AR Scene Viewer requires ARCore on device.",
+            estimatedPackageSizeBytes = 1_081_932L
         ),
         VisionTechnologySpec(
             id = VisionTechId.THREEPIPE,
@@ -139,6 +181,7 @@ object VisionTechRegistry {
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/repalash/threepipe",
             docsUrl = "https://threepipe.org/",
+            officialSourceUrl = "https://github.com/repalash/threepipe",
             packageName = "threepipe",
             version = "0.6.0",
             licenseName = "Apache-2.0",
@@ -157,7 +200,9 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = false,
-            backendRoleDescription = "Runs locally in WebView WebGL using bundled threepipe engine."
+            backendRoleDescription = "Runs locally in WebView WebGL using bundled threepipe engine.",
+            registryMetadataUrl = "https://registry.npmjs.org/threepipe/latest",
+            estimatedPackageSizeBytes = 1_970_247L
         ),
         VisionTechnologySpec(
             id = VisionTechId.GSPLAT_JS,
@@ -168,6 +213,7 @@ object VisionTechRegistry {
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/huggingface/gsplat.js",
             docsUrl = "https://github.com/huggingface/gsplat.js#readme",
+            officialSourceUrl = "https://github.com/huggingface/gsplat.js",
             packageName = "gsplat",
             version = "1.2.9",
             licenseName = "MIT",
@@ -186,21 +232,24 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = false,
             supportsAnimationOverlay = false,
-            backendRoleDescription = "Runs locally inside WebView WebGL using bundled gsplat engine."
+            backendRoleDescription = "Runs locally inside WebView WebGL using bundled gsplat engine.",
+            registryMetadataUrl = "https://registry.npmjs.org/gsplat/latest",
+            estimatedPackageSizeBytes = 129_437L
         ),
         VisionTechnologySpec(
             id = VisionTechId.CESIUM_JS,
             category = VisionCategory.THREE_D_AND_SPATIAL,
             displayName = "CesiumJS",
-            shortTagline = "3D globe, markers, routes, terrain & offline natural-earth fallback",
-            description = "3D geospatial globe supporting pins, flight/orbit paths, polygon region overlays, layer visibility toggles, camera fly-to presets, and automatic offline natural-earth graticule/topography fallback when no Ion token or network is available.",
+            shortTagline = "3D maps and geographic visualizations with globe, routes & offline vector fallback",
+            description = "3D geospatial globe engine for 3D maps and geographic visualizations: location pins, great-circle flight/orbit routes, polygon overlays, camera fly-to presets, and offline ellipsoid/Natural Earth fallback when no Ion token or network is present.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/CesiumGS/cesium",
-            docsUrl = "https://cesium.com/learn/cesiumjs/ref-doc/",
+            docsUrl = "https://cesium.com/learn/cesiumjs-learn/",
+            officialSourceUrl = "https://github.com/CesiumGS/cesium",
             packageName = "cesium",
             version = "1.147.0",
             licenseName = "Apache-2.0",
-            licenseNote = "Apache-2.0 engine. Optional Cesium Ion imagery token stored strictly in encrypted SecureStorage (never hardcoded).",
+            licenseNote = "Apache-2.0 license preserved from official npm package 'cesium'. Optional Cesium Ion token stored in encrypted SecureStorage.",
             capabilities = listOf(
                 "3D interactive Earth globe & offline vector fallback",
                 "Location pins, flight paths & region overlays",
@@ -215,7 +264,12 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = false,
             supportsAnimationOverlay = false,
-            backendRoleDescription = "Runs offline with Natural Earth vector/ellipsoid globe; optionally uses user-supplied Ion token / OSM online tiles."
+            backendRoleDescription = "Runs locally in Android WebView WebGL with offline globe fallback; optional Cesium Ion token enables high-res satellite tiles.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/cesium/latest",
+            visualizationRole = "3D maps and geographic visualizations",
+            androidLimitationNote = "Runs locally in Android WebView WebGL; high-resolution satellite imagery optionally requires a user-provided Cesium Ion token.",
+            estimatedPackageSizeBytes = 6_095_011L
         ),
 
         // B. Diagrams & Flowcharts
@@ -223,15 +277,16 @@ object VisionTechRegistry {
             id = VisionTechId.MERMAID_JS,
             category = VisionCategory.DIAGRAMS_AND_FLOWCHARTS,
             displayName = "Mermaid.js",
-            shortTagline = "Text-to-diagram engine: flowchart, sequence, state, class, ER, Gantt, journey & mindmap",
-            description = "Deterministic text-to-diagram renderer supporting live syntax editing, strict parse validation with line-level correction hints, theme switching, zoom/pan, optional GSAP step highlights, and .mmd / SVG / PNG export.",
+            shortTagline = "Flowcharts and sequence diagrams from structured text with SVG/PNG export",
+            description = "Text-to-diagram renderer for flowcharts, sequence diagrams, state machines, class diagrams, ER diagrams, Gantt charts, and mindmaps with syntax validation and .mmd / SVG / PNG export.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/mermaid-js/mermaid",
-            docsUrl = "https://mermaid.js.org/intro/",
+            docsUrl = "https://mermaid.js.org/",
+            officialSourceUrl = "https://github.com/mermaid-js/mermaid",
             packageName = "mermaid",
             version = "12.3.0",
             licenseName = "MIT",
-            licenseNote = "Permissive MIT license.",
+            licenseNote = "Permissive MIT license preserved from official npm package 'mermaid'.",
             capabilities = listOf(
                 "Flowchart, Sequence, State, Class, ER, Gantt, User Journey & Mindmap",
                 "Live source editor with parse validation & fix hints",
@@ -246,21 +301,27 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% offline inside WebView."
+            backendRoleDescription = "Runs 100% locally inside Android WebView.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/mermaid/latest",
+            visualizationRole = "Flowcharts and sequence diagrams",
+            androidLimitationNote = "Runs 100% locally inside Android WebView (no GPU or server required).",
+            estimatedPackageSizeBytes = 5_381_490L
         ),
         VisionTechnologySpec(
             id = VisionTechId.REACT_FLOW,
             category = VisionCategory.DIAGRAMS_AND_FLOWCHARTS,
             displayName = "React Flow",
-            shortTagline = "True node-graph editor: drag nodes, connect ports, mini-map, auto-layout & JSON save",
-            description = "Interactive React Flow canvas (not a static image): drag nodes, draw typed edges between handles, edit node labels, add/delete blocks, toggle MiniMap, auto-arrange hierarchy, undo/redo, and save/export graph JSON or SVG/PNG.",
+            shortTagline = "Interactive node-based diagrams with draggable nodes, live edges & mini-map",
+            description = "Interactive node-based diagram editor powered by @xyflow/react: drag nodes, connect handles, edit labels, auto-arrange layouts, undo/redo, and save/export graph JSON or SVG/PNG.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/xyflow/xyflow",
-            docsUrl = "https://reactflow.dev/learn",
+            docsUrl = "https://reactflow.dev/",
+            officialSourceUrl = "https://github.com/xyflow/xyflow",
             packageName = "@xyflow/react",
             version = "13.0.0",
             licenseName = "MIT",
-            licenseNote = "Permissive MIT license.",
+            licenseNote = "Permissive MIT license preserved from official npm package '@xyflow/react'.",
             capabilities = listOf(
                 "Interactive draggable nodes & live edge connection",
                 "Add/edit/delete nodes & auto-layout hierarchy",
@@ -275,21 +336,27 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% offline inside WebView with React 18 + @xyflow/react."
+            backendRoleDescription = "Runs 100% locally inside Android WebView with React + @xyflow/react.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/%40xyflow%2Freact/latest",
+            visualizationRole = "Interactive node-based diagrams",
+            androidLimitationNote = "Runs 100% locally inside Android WebView.",
+            estimatedPackageSizeBytes = 427_014L
         ),
         VisionTechnologySpec(
             id = VisionTechId.EXCALIDRAW,
             category = VisionCategory.DIAGRAMS_AND_FLOWCHARTS,
             displayName = "Excalidraw",
-            shortTagline = "Hand-drawn interactive whiteboard with shapes, arrows, text, undo/redo & .excalidraw export",
-            description = "Full interactive Excalidraw sketching canvas supporting freehand pen, rectangles, ellipses, diamonds, arrows, text labels, selection/move/resize, undo/redo, AI-generated editable sketch layouts, and .excalidraw / PNG / SVG export.",
+            shortTagline = "Sketch-style diagrams and hand-drawn interactive whiteboard with .excalidraw export",
+            description = "Interactive hand-drawn sketching canvas for sketch-style diagrams, architecture wireframes, freehand drawings, shapes, arrows, text labels, undo/redo, and .excalidraw / PNG / SVG export.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/excalidraw/excalidraw",
             docsUrl = "https://docs.excalidraw.com/",
+            officialSourceUrl = "https://github.com/excalidraw/excalidraw",
             packageName = "@excalidraw/excalidraw",
             version = "0.18.1",
             licenseName = "MIT",
-            licenseNote = "Permissive MIT license.",
+            licenseNote = "Permissive MIT license preserved from official npm package '@excalidraw/excalidraw'.",
             capabilities = listOf(
                 "Full Excalidraw toolbar (Pen, Shapes, Arrows, Text, Eraser)",
                 "Touch pan/zoom, multi-select, undo/redo history",
@@ -304,7 +371,12 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = false,
-            backendRoleDescription = "Runs 100% offline inside WebView with bundled Excalidraw assets."
+            backendRoleDescription = "Runs 100% locally inside Android WebView with bundled Excalidraw runtime.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/%40excalidraw%2Fexcalidraw/latest",
+            visualizationRole = "Sketch-style diagrams",
+            androidLimitationNote = "Runs 100% locally inside Android WebView.",
+            estimatedPackageSizeBytes = 8_605_585L
         ),
 
         // C. Charts & Data Visualization
@@ -312,15 +384,16 @@ object VisionTechRegistry {
             id = VisionTechId.D3_JS,
             category = VisionCategory.CHARTS_AND_DATA,
             displayName = "D3.js",
-            shortTagline = "Bespoke SVG data visualizer: force network, radial tree, treemap & interactive charts",
-            description = "Custom data-driven SVG visualizations powered by D3 v7: force-directed node-link networks, tidy hierarchical trees, nested treemaps, stacked streams, interactive hover/tap tooltips, pan/zoom, and smooth transitions.",
+            shortTagline = "Custom data visualizations: force networks, radial trees, treemaps & SVG charts",
+            description = "Data-driven SVG visualization engine powered by D3.js: force-directed node-link networks, tidy hierarchical trees, nested treemaps, interactive tooltips, zoom/pan, and CSV/JSON import.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/d3/d3",
             docsUrl = "https://d3js.org/",
+            officialSourceUrl = "https://github.com/d3/d3",
             packageName = "d3",
             version = "7.9.2",
             licenseName = "ISC",
-            licenseNote = "Permissive ISC license.",
+            licenseNote = "Permissive ISC license preserved from official npm package 'd3'.",
             capabilities = listOf(
                 "Force network, Tidy Tree, Radial Tree & Treemap",
                 "Interactive tooltips, zoom/pan & live layout transitions",
@@ -335,21 +408,27 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% offline inside WebView."
+            backendRoleDescription = "Runs 100% locally inside Android WebView.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/d3/latest",
+            visualizationRole = "Custom data visualizations",
+            androidLimitationNote = "Runs 100% locally inside Android WebView.",
+            estimatedPackageSizeBytes = 283_460L
         ),
         VisionTechnologySpec(
             id = VisionTechId.PLOTLY_JS,
             category = VisionCategory.CHARTS_AND_DATA,
             displayName = "Plotly.js",
-            shortTagline = "Scientific 2D/3D charts: surface, 3D scatter, heatmap, histogram & box/violin plots",
-            description = "Scientific graphing engine rendering interactive Bar, Line, Scatter, Pie, Histogram, Heatmap, 3D Surface, and 3D Scatter plots from genuine user/imported CSV/JSON datasets (never fabricates unverified numbers).",
+            shortTagline = "Interactive charts and graphs: 2D/3D plots, surfaces, heatmaps & histograms",
+            description = "Scientific charting engine for interactive charts and graphs: Bar, Line, Scatter, Pie, Histogram, Heatmap, 3D Surface, and 3D Scatter plots from real CSV/JSON datasets.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/plotly/plotly.js",
             docsUrl = "https://plotly.com/javascript/",
-            packageName = "plotly.js-dist-min",
-            version = "4.3.0",
+            officialSourceUrl = "https://github.com/plotly/plotly.js",
+            packageName = "plotly.js",
+            version = "3.0.1",
             licenseName = "MIT",
-            licenseNote = "Permissive MIT license.",
+            licenseNote = "Permissive MIT license preserved from official npm package 'plotly.js'.",
             capabilities = listOf(
                 "Bar, Line, Scatter, Pie, Histogram, Heatmap & 3D Surface",
                 "Zoom, box-select, pan, hover readout & trace toggles",
@@ -364,7 +443,12 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = false,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% offline inside WebView."
+            backendRoleDescription = "Runs 100% locally inside Android WebView.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/plotly.js/latest",
+            visualizationRole = "Interactive charts and graphs",
+            androidLimitationNote = "Runs 100% locally inside Android WebView.",
+            estimatedPackageSizeBytes = 4_842_992L
         ),
         VisionTechnologySpec(
             id = VisionTechId.APACHE_ECHARTS,
@@ -375,6 +459,7 @@ object VisionTechRegistry {
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/apache/echarts",
             docsUrl = "https://echarts.apache.org/en/index.html",
+            officialSourceUrl = "https://github.com/apache/echarts",
             packageName = "echarts",
             version = "6.1.0",
             licenseName = "Apache-2.0",
@@ -393,7 +478,9 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% offline inside WebView."
+            backendRoleDescription = "Runs 100% offline inside WebView.",
+            registryMetadataUrl = "https://registry.npmjs.org/echarts/latest",
+            estimatedPackageSizeBytes = 1_121_883L
         ),
         VisionTechnologySpec(
             id = VisionTechId.FORCE_GRAPH_3D,
@@ -404,6 +491,7 @@ object VisionTechRegistry {
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/vasturiano/3d-force-graph",
             docsUrl = "https://github.com/vasturiano/3d-force-graph#readme",
+            officialSourceUrl = "https://github.com/vasturiano/3d-force-graph",
             packageName = "3d-force-graph",
             version = "1.80.2",
             licenseName = "MIT",
@@ -422,7 +510,9 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% locally in WebView WebGL."
+            backendRoleDescription = "Runs 100% locally in WebView WebGL.",
+            registryMetadataUrl = "https://registry.npmjs.org/3d-force-graph/latest",
+            estimatedPackageSizeBytes = 1_791_437L
         ),
 
         // D. Animation & Explainer
@@ -430,18 +520,19 @@ object VisionTechRegistry {
             id = VisionTechId.GSAP,
             category = VisionCategory.ANIMATION_AND_EXPLAINER,
             displayName = "GSAP",
-            shortTagline = "Timeline choreography engine animating diagrams, SVG explainers, 3D scenes & steps",
-            description = "Timeline-based animation engine integrated directly with Mermaid, D3, Three.js, and Kavya step-by-step explainers. Provides Play/Pause/Restart/Scrub/Speed controls, camera cue sequences, and automatic Reduced Motion support.",
+            shortTagline = "Smooth animations & timeline choreography for diagrams, SVG explainers & 3D cues",
+            description = "High-performance GreenSock timeline animation engine powering smooth animations, step-by-step highlights, scrubber controls (Play/Pause/Restart/Speed), and Reduced Motion accessibility support.",
             runtimeType = VisionRuntimeType.WEBVIEW_OFFLINE_BUNDLED,
             officialRepoUrl = "https://github.com/greensock/GSAP",
             docsUrl = "https://gsap.com/docs/v3/",
+            officialSourceUrl = "https://gsap.com/docs/v3/Installation/",
             packageName = "gsap",
             version = "3.15.1",
             licenseName = "GSAP Standard No-Charge License",
-            licenseNote = "Standard GSAP license applies for non-Club core plugins.",
+            licenseNote = "GSAP Standard License preserved from official npm package 'gsap'.",
             capabilities = listOf(
                 "Interactive timeline scrubber with Play/Pause/Restart/Speed",
-                "Step-by-step highlight & motion choreography over SVG/DOM/WebGL",
+                "Smooth motion & step-by-step choreography over SVG/DOM/WebGL",
                 "Respects JarvisOrbConfig.reducedMotion accessibility setting",
                 "Exports timeline script JSON & snapshot PNG"
             ),
@@ -453,24 +544,30 @@ object VisionTechRegistry {
             supportsOffline = true,
             supportsUndoRedo = true,
             supportsAnimationOverlay = true,
-            backendRoleDescription = "Runs 100% offline inside WebView and syncs cues back to Kotlin."
+            backendRoleDescription = "Runs 100% locally inside Android WebView and syncs cues back to Kotlin.",
+            downloadKind = VisionDownloadKind.NPM_WEBVIEW_PACKAGE,
+            registryMetadataUrl = "https://registry.npmjs.org/gsap/latest",
+            visualizationRole = "Smooth animations",
+            androidLimitationNote = "Runs 100% locally inside Android WebView.",
+            estimatedPackageSizeBytes = 71_136L
         ),
         VisionTechnologySpec(
             id = VisionTechId.MANIM,
             category = VisionCategory.ANIMATION_AND_EXPLAINER,
-            displayName = "Manim",
-            shortTagline = "Mathematical & algorithm explainer video engine via isolated Python render worker",
-            description = "Generates validated Manim Community Edition Python scene scripts for calculus, vectors, matrices, sorting, geometry, and neural networks. Submits jobs to an isolated Python Manim worker with queue/render status, cancellation, tracebacks, and native ExoPlayer MP4 playback.",
+            displayName = "Manim Community",
+            shortTagline = "Mathematical and educational animations via Python Manim + LaTeX/FFmpeg render worker",
+            description = "Mathematical and educational animation engine supporting validated Manim Community Edition Python Scene scripts, official PyPI package verification, async render worker submission, and native Media3 ExoPlayer MP4 playback.",
             runtimeType = VisionRuntimeType.REMOTE_PYTHON_WORKER,
             officialRepoUrl = "https://github.com/ManimCommunity/manim",
             docsUrl = "https://docs.manim.community/",
-            packageName = "manim (Python Worker HTTP API)",
-            version = "Worker API v1",
+            officialSourceUrl = "https://github.com/ManimCommunity/manim",
+            packageName = "manim (Python + Cairo + FFmpeg + LaTeX)",
+            version = "latest",
             licenseName = "MIT",
-            licenseNote = "Requires external Python Manim Community + LaTeX/FFmpeg worker; never fabricated locally.",
+            licenseNote = "MIT License (Manim Community). Python wheel & external Cairo/FFmpeg/LaTeX render worker are managed separately.",
             capabilities = listOf(
-                "Generate & edit valid Manim Scene Python scripts",
-                "Syntax & safety validation before job submission",
+                "Generate & edit valid Manim Community Python Scene scripts",
+                "Downloads official PyPI manim distribution & worker dependency manifest",
                 "Async worker queue progress, cancellation & error tracebacks",
                 "Native Media3 ExoPlayer MP4 preview & video/script export"
             ),
@@ -482,17 +579,30 @@ object VisionTechRegistry {
             supportsOffline = false,
             supportsUndoRedo = true,
             supportsAnimationOverlay = false,
-            backendRoleDescription = "Requires a live Python ManimCommunity HTTP worker URL (configured in Vision Settings)."
+            backendRoleDescription = "Android cannot run Python + Cairo + FFmpeg + LaTeX natively inside the APK. Download the official PyPI manim package metadata/wheel locally and connect a Manim Python Render Worker for MP4 rendering.",
+            downloadKind = VisionDownloadKind.PYTHON_RENDER_PACKAGE_AND_WORKER,
+            registryMetadataUrl = "https://pypi.org/pypi/manim/json",
+            visualizationRole = "Mathematical and educational animations",
+            androidLimitationNote = "Requires Python 3.9+, Cairo/Pango, FFmpeg, and LaTeX — cannot run natively inside Android APK. Configure a Manim Python Render Worker URL to render MP4 animations.",
+            estimatedPackageSizeBytes = 780_000L
         )
     )
 
     private val byIdMap: Map<VisionTechId, VisionTechnologySpec> = allTechnologies.associateBy { it.id }
+
+    /**
+     * Exact 12 Visualization Technologies replacing the legacy 12-model catalog, in specification order.
+     */
+    val core12Technologies: List<VisionTechnologySpec> = core12TechnologyIds.mapNotNull { byIdMap[it] }
 
     fun getSpec(id: VisionTechId): VisionTechnologySpec =
         byIdMap[id] ?: error("Unknown VisionTechId: $id")
 
     fun byCategory(category: VisionCategory?): List<VisionTechnologySpec> =
         if (category == null) allTechnologies else allTechnologies.filter { it.category == category }
+
+    fun core12ByCategory(category: VisionCategory?): List<VisionTechnologySpec> =
+        if (category == null) core12Technologies else core12Technologies.filter { it.category == category }
 
     fun defaultTemplates(): List<VisualizationTemplate> = listOf(
         VisualizationTemplate(

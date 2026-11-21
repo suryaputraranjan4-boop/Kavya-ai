@@ -405,6 +405,32 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun requestKucpToolConfirmation(
+        toolName: String,
+        riskLabel: String,
+        argsSummary: String
+    ): Boolean {
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        _pendingConfirmation.value = PendingConfirmation(
+            title = "Confirm Integration Tool ($riskLabel)",
+            description = "Allow Kavya to run '$toolName'?\n\nArguments: ${argsSummary.ifBlank { "(none)" }}",
+            actionType = com.example.agent.UniversalActionType.VERIFY,
+            onConfirm = {
+                if (!deferred.isCompleted) deferred.complete(true)
+            },
+            onCancel = {
+                if (!deferred.isCompleted) deferred.complete(false)
+            }
+        )
+        return try {
+            deferred.await()
+        } catch (cancelled: CancellationException) {
+            _pendingConfirmation.value = null
+            if (!deferred.isCompleted) deferred.complete(false)
+            throw cancelled
+        }
+    }
+
     private var messagesJob: kotlinx.coroutines.Job? = null
     // Keep the latest user command instead of silently dropping it while another turn is running.
     @Volatile private var queuedPrompt: String? = null
@@ -528,13 +554,29 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun analyzeScreenWithKavya(prompt: String = "What's on my screen right now? Please guide me.") {
+    fun analyzeScreenWithKavya(prompt: String = "What's on my screen right now?") {
         refreshScreenContext()
         sendMessage(prompt)
     }
 
-    fun analyzeScreen(prompt: String = "What's on my screen right now? Please guide me.") {
+    fun analyzeScreen(prompt: String = "What's on my screen right now?") {
         analyzeScreenWithKavya(prompt)
+    }
+
+    /**
+     * Dedicated Smart Screen Explanation entry point for the EXPLAIN SCREEN button
+     * across Home, Chat, Floating Orb, and Voice Popup.
+     * Automatically selects BASIC / STANDARD / ADVANCED explanation depth and fuses
+     * live screenshot + OCR + installed ONNX models + Accessibility hierarchy + Vision LLM.
+     */
+    fun explainCurrentScreen(prompt: String = "Explain this screen") {
+        refreshScreenContext()
+        com.example.visual.JarvisGuidanceEngine.explainActiveScreenAsync(
+            context = getApplication(),
+            query = prompt,
+            preferredLevel = null,
+            openFullScreenExplainer = false
+        )
     }
 
     init {
@@ -712,44 +754,49 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val safeName = sourceName.replace(Regex("[\\r\\n]"), " ").take(120)
+        _isProcessing.value = true
         viewModelScope.launch(Dispatchers.IO) {
-            val stream = java.io.ByteArrayOutputStream()
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, stream)
-            lastAnalyzedImageBytes = stream.toByteArray()
-
-            val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also { id ->
-                _currentChatId.value = id
-                chatDao.insertChat(ChatEntity(id = id, title = "Image: " + safeName.take(20), timestamp = System.currentTimeMillis()))
-            }
-            val userText = if (!customPrompt.isNullOrBlank()) {
-                "📷 Image attached: $safeName (${bitmap.width} × ${bitmap.height})\nPrompt: $customPrompt"
-            } else {
-                "📷 Image attached: $safeName (${bitmap.width} × ${bitmap.height})."
-            }
-            val userId = UUID.randomUUID().toString()
-            chatDao.insertMessage(MessageEntity(userId, chatId, userText, true, System.currentTimeMillis()))
-            _messages.value = _messages.value + ChatMessage(userId, userText, true)
-            val loadingId = UUID.randomUUID().toString()
-            _messages.value = _messages.value + ChatMessage(loadingId, "Analyzing image…", false, isLoading = true)
             try {
-                val effectivePrompt = customPrompt?.takeIf { it.isNotBlank() }
-                    ?: "Carefully describe and analyze this user-provided image. Extract any visible text, numbers, labels, or objects. Answer questions about its contents. Distinguish visible facts from uncertainty and do not invent details."
-                val result = KavyaAI(getApplication<Application>()).analyzeVisualUI(
-                    bitmap,
-                    effectivePrompt
-                )
-                val answer = result.takeIf { it.isNotBlank() } ?: "I could not analyze this image. Please try another image."
-                val assistantId = UUID.randomUUID().toString()
-                _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = answer.startsWith("Visual parsing failed:") || answer.startsWith("Error:"))
-                chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
-                _latestKavyaCaption.value = answer
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (e: Exception) {
-                val answer = "Image analysis failed: " + (e.localizedMessage ?: "Unknown error")
-                val assistantId = UUID.randomUUID().toString()
-                _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
-                chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+                val stream = java.io.ByteArrayOutputStream()
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, stream)
+                lastAnalyzedImageBytes = stream.toByteArray()
+
+                val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also { id ->
+                    _currentChatId.value = id
+                    chatDao.insertChat(ChatEntity(id = id, title = "Image: " + safeName.take(20), timestamp = System.currentTimeMillis()))
+                }
+                val userText = if (!customPrompt.isNullOrBlank()) {
+                    "📷 Image attached: $safeName (${bitmap.width} × ${bitmap.height})\nPrompt: $customPrompt"
+                } else {
+                    "📷 Image attached: $safeName (${bitmap.width} × ${bitmap.height})."
+                }
+                val userId = UUID.randomUUID().toString()
+                chatDao.insertMessage(MessageEntity(userId, chatId, userText, true, System.currentTimeMillis()))
+                _messages.value = _messages.value + ChatMessage(userId, userText, true)
+                val loadingId = UUID.randomUUID().toString()
+                _messages.value = _messages.value + ChatMessage(loadingId, "Analyzing image…", false, isLoading = true)
+                try {
+                    val effectivePrompt = customPrompt?.takeIf { it.isNotBlank() }
+                        ?: "Carefully describe and analyze this user-provided image. Extract any visible text, numbers, labels, or objects. Answer questions about its contents. Distinguish visible facts from uncertainty and do not invent details."
+                    val result = KavyaAI(getApplication<Application>()).analyzeVisualUI(
+                        bitmap,
+                        effectivePrompt
+                    )
+                    val answer = result.takeIf { it.isNotBlank() } ?: "I could not analyze this image. Please try another image."
+                    val assistantId = UUID.randomUUID().toString()
+                    _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = answer.startsWith("Visual parsing failed:") || answer.startsWith("Error:"))
+                    chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+                    _latestKavyaCaption.value = answer
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (e: Exception) {
+                    val answer = "Image analysis failed: " + (e.localizedMessage ?: "Unknown error")
+                    val assistantId = UUID.randomUUID().toString()
+                    _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
+                    chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+                }
+            } finally {
+                _isProcessing.value = false
             }
         }
     }
@@ -859,59 +906,64 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
             sendMessage("Please wait until the current response finishes before attaching a PDF.")
             return
         }
+        _isProcessing.value = true
         viewModelScope.launch(Dispatchers.IO) {
-            val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also { id ->
-                _currentChatId.value = id
-                chatDao.insertChat(ChatEntity(id = id, title = "PDF: " + displayName.take(20), timestamp = System.currentTimeMillis()))
-            }
-            val userText = "PDF attached: " + displayName
-            val userId = UUID.randomUUID().toString()
-            chatDao.insertMessage(MessageEntity(userId, chatId, userText, true, System.currentTimeMillis()))
-            _messages.value = _messages.value + ChatMessage(userId, userText, true)
-            val loadingId = UUID.randomUUID().toString()
-            _messages.value = _messages.value + ChatMessage(loadingId, "Reading PDF pages…", false, isLoading = true)
             try {
-                val pageResults = mutableListOf<String>()
-                val descriptor = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
-                descriptor.use { fileDescriptor ->
-                    android.graphics.pdf.PdfRenderer(fileDescriptor).use { renderer ->
-                    if (renderer.pageCount == 0) throw IllegalArgumentException("PDF contains no pages.")
-                    val pageLimit = minOf(renderer.pageCount, 20)
-                    for (index in 0 until pageLimit) {
-                        renderer.openPage(index).use { page ->
-                            val scale = minOf(1f, 1400f / maxOf(page.width, page.height).toFloat())
-                            val width = (page.width * scale).toInt().coerceAtLeast(1)
-                            val height = (page.height * scale).toInt().coerceAtLeast(1)
-                            val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
-                            page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            try {
-                                val analysis = KavyaAI(getApplication<Application>()).analyzeVisualUI(
-                                    bitmap,
-                                    "Analyze page " + (index + 1) + " of PDF " + displayName + ". Extract all readable text, tables, headings, diagrams and important details. Clearly state anything unreadable."
-                                )
-                                pageResults.add("Page " + (index + 1) + ":\n" + analysis)
-                            } finally {
-                                bitmap.recycle()
+                val chatId = _currentChatId.value ?: UUID.randomUUID().toString().also { id ->
+                    _currentChatId.value = id
+                    chatDao.insertChat(ChatEntity(id = id, title = "PDF: " + displayName.take(20), timestamp = System.currentTimeMillis()))
+                }
+                val userText = "PDF attached: " + displayName
+                val userId = UUID.randomUUID().toString()
+                chatDao.insertMessage(MessageEntity(userId, chatId, userText, true, System.currentTimeMillis()))
+                _messages.value = _messages.value + ChatMessage(userId, userText, true)
+                val loadingId = UUID.randomUUID().toString()
+                _messages.value = _messages.value + ChatMessage(loadingId, "Reading PDF pages…", false, isLoading = true)
+                try {
+                    val pageResults = mutableListOf<String>()
+                    val descriptor = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                    descriptor.use { fileDescriptor ->
+                        android.graphics.pdf.PdfRenderer(fileDescriptor).use { renderer ->
+                            if (renderer.pageCount == 0) throw IllegalArgumentException("PDF contains no pages.")
+                            val pageLimit = minOf(renderer.pageCount, 20)
+                            for (index in 0 until pageLimit) {
+                                renderer.openPage(index).use { page ->
+                                    val scale = minOf(1f, 1400f / maxOf(page.width, page.height).toFloat())
+                                    val width = (page.width * scale).toInt().coerceAtLeast(1)
+                                    val height = (page.height * scale).toInt().coerceAtLeast(1)
+                                    val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+                                    page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                    try {
+                                        val analysis = KavyaAI(getApplication<Application>()).analyzeVisualUI(
+                                            bitmap,
+                                            "Analyze page " + (index + 1) + " of PDF " + displayName + ". Extract all readable text, tables, headings, diagrams and important details. Clearly state anything unreadable."
+                                        )
+                                        pageResults.add("Page " + (index + 1) + ":\n" + analysis)
+                                    } finally {
+                                        bitmap.recycle()
+                                    }
+                                }
+                            }
+                            if (renderer.pageCount > pageLimit) {
+                                pageResults.add("Only the first " + pageLimit + " of " + renderer.pageCount + " pages were analyzed to protect device memory and request limits.")
                             }
                         }
                     }
-                    if (renderer.pageCount > pageLimit) {
-                        pageResults.add("Only the first " + pageLimit + " of " + renderer.pageCount + " pages were analyzed to protect device memory and request limits.")
-                    }
-                    }
+                    val answer = pageResults.joinToString("\n\n").ifBlank { "No readable PDF pages were found." }
+                    val assistantId = UUID.randomUUID().toString()
+                    _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false)
+                    chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+                    _latestKavyaCaption.value = "PDF analysis complete."
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (e: Exception) {
+                    val answer = "PDF analysis failed: " + (e.localizedMessage ?: "Unable to render this PDF.")
+                    val assistantId = UUID.randomUUID().toString()
+                    _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
+                    chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
                 }
-                val answer = pageResults.joinToString("\n\n").ifBlank { "No readable PDF pages were found." }
-                val assistantId = UUID.randomUUID().toString()
-                _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false)
-                chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
-                _latestKavyaCaption.value = "PDF analysis complete."
-            } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-                val answer = "PDF analysis failed: " + (e.localizedMessage ?: "Unable to render this PDF.")
-                val assistantId = UUID.randomUUID().toString()
-                _messages.value = _messages.value.filterNot { it.id == loadingId } + ChatMessage(assistantId, answer, false, isError = true)
-                chatDao.insertMessage(MessageEntity(assistantId, chatId, answer, false, System.currentTimeMillis()))
+            } finally {
+                _isProcessing.value = false
             }
         }
     }
@@ -1383,10 +1435,14 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                // 3b. Screen Understanding / Visual Q&A goes ONLY through online AI via JarvisGuidanceEngine / AI stream
-                val jarvisMode = com.example.visual.JarvisIntelligencePlanner.classifyMode(prompt)
+                // 3b. Screen Understanding / Visual Q&A triggers ONLY on explicit screen-explain or explicit step-by-step guidance queries (no unwanted step narration in normal chat)
+                val lowerForScreen = prompt.lowercase(java.util.Locale.ROOT)
+                val isExplicitScreenQuery = lowerForScreen.contains("screen") ||
+                    lowerForScreen.contains("what is this") ||
+                    lowerForScreen.contains("explain this") ||
+                    com.example.visual.JarvisGuidanceEngine.isStepByStepGuidanceQuery(prompt)
                 var isJarvisScreenExplain = false
-                if (!isFastChat && cleanResponse.isBlank() && (jarvisMode == com.example.visual.JarvisMode.EXPLAINS_ANYTHING || jarvisMode == com.example.visual.JarvisMode.SHOWS_YOU_HOW)) {
+                if (!isFastChat && cleanResponse.isBlank() && isExplicitScreenQuery) {
                     isJarvisScreenExplain = true
                     val freshObs = com.example.orchestrator.ScreenObservationCoordinator.captureFreshObservation(getApplication())
                     if (freshObs != null) {
@@ -1410,6 +1466,15 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     // Retrieve only top relevant memories (semantic & keyword scored)
                     val relevantMemories = if (!isFastChat) memoryEngine.retrieveRelevantMemories(prompt, contextEngine.activeTargetAppName) else emptyList()
                     var memoryBlock = relevantMemories.joinToString("\n") { "[${it.category} - ${it.key}]: ${it.content}" }
+                    if (!isFastChat) {
+                        val kucpToolsBlock = com.example.kucp.KucpOrchestrationBridge.buildContextualToolsPromptBlock(
+                            context = getApplication(),
+                            userPrompt = prompt
+                        )
+                        if (kucpToolsBlock.isNotBlank()) {
+                            memoryBlock += "\n$kucpToolsBlock"
+                        }
+                    }
                     if (apiContextStr.isNotBlank()) {
                         memoryBlock += "\n\nEXTERNAL API DATA:\nThe user requested data that was just fetched from a live public API. Summarize the following API JSON data naturally and conversationally in a short sentence or two, as if you just looked it up:\n$apiContextStr"
                     }
@@ -1525,6 +1590,50 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
+                    // KUCP Dynamic Tool Execution Hook (never modifies SystemPrompt)
+                    val kucpCall = com.example.kucp.KucpOrchestrationBridge.extractToolCall(fullResponse)
+                    if (kucpCall != null && recursionDepth < 2) {
+                        _agentActionStatus.value = "Running integration tool: ${kucpCall.toolIdOrName}..."
+                        val kucpResult = com.example.kucp.KucpOrchestrationBridge.invokeFromAi(
+                            context = getApplication(),
+                            parsedCall = kucpCall,
+                            onConfirmSensitiveTool = { tool, call ->
+                                requestKucpToolConfirmation(
+                                    toolName = tool.name,
+                                    riskLabel = tool.riskLevel.label,
+                                    argsSummary = call.arguments.entries.joinToString { "${it.key}=${it.value.take(40)}" }
+                                )
+                            }
+                        )
+                        _agentActionStatus.value = null
+                        aType = "KUCP_TOOL"
+                        aParam = kucpCall.toolIdOrName
+                        val toolPayload = kucpResult.isolatedDataForLlm.ifBlank { kucpResult.outputData }
+                        val toolFeedback = if (kucpResult.success) {
+                            "KUCP_TOOL_RESULT (${kucpResult.toolId}):\n$toolPayload"
+                        } else {
+                            "KUCP_TOOL_ERROR (${kucpResult.errorCode}): ${kucpResult.errorMessage}"
+                        }
+                        val synthesisPrompt = "Summarize the integration result concisely and honestly for the user based on their request: \"$prompt\""
+                        val synthesized = try {
+                            aiClient.chat(
+                                prompt = synthesisPrompt,
+                                history = historyEntities,
+                                screenContext = screenContext,
+                                memoryContext = toolFeedback,
+                                isProactiveMode = false,
+                                imageBytes = null
+                            )
+                        } catch (e: Exception) {
+                            if (kucpResult.success) toolPayload else "Integration tool error: ${kucpResult.errorMessage}"
+                        }
+                        if (synthesized.isNotBlank() && !synthesized.startsWith("Error:")) {
+                            fullResponse = synthesized
+                        } else if (!kucpResult.success) {
+                            fullResponse = "Integration '${kucpCall.toolIdOrName}' could not complete: ${kucpResult.errorMessage}"
+                        }
+                    }
+
                     val extractedClean = voiceEngine.cleanText(fullResponse)
                     cleanResponse = if (extractedClean.isNotBlank()) extractedClean else cleanResponseBuilder.toString().ifBlank { fullResponse }
                     if (isJarvisScreenExplain && cleanResponse.isNotBlank() && !cleanResponse.startsWith("Error:")) {
@@ -1541,8 +1650,8 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
 
-                    // Auto-speak the AI response if not already spoken during streaming
-                    if (cleanResponse.isNotBlank() && !alreadySpoken) {
+                    // Auto-speak the AI response if enabled and not already spoken during streaming
+                    if (_autoSpeak.value && cleanResponse.isNotBlank() && !alreadySpoken) {
                         voiceEngine.processAndSpeak(cleanResponse, enqueue = false)
                         alreadySpoken = true
                     }

@@ -24,11 +24,11 @@ class GeminiVisionAnalyzer(private val context: Context) {
 
     companion object {
         private const val TAG = "KavyaGeminiVision"
-        private val VISION_MODELS = listOf(
+        private val VISION_MODELS = (listOf(
             GeminiModelRegistry.VISION_ANALYZER_MODEL,
             GeminiModelRegistry.DEFAULT_AGENT_MODEL,
             GeminiModelRegistry.PRO_REASONING_MODEL
-        )
+        ) + GeminiModelRegistry.OFFICIAL_API_FALLBACK_MODELS).distinct()
     }
 
     private fun getApiKey(): String {
@@ -46,6 +46,18 @@ class GeminiVisionAnalyzer(private val context: Context) {
         currentApp: String,
         hierarchySummary: String
     ): Pair<ScreenUnderstanding, VisualAction?> = withContext(Dispatchers.IO) {
+        if (AppPreferences.getAiProvider(context).equals("GEMMA_OFFLINE", ignoreCase = true) ||
+            AppPreferences.isOfflineFallbackEnabled(context)
+        ) {
+            return@withContext Pair(
+                ScreenUnderstanding(
+                    description = "Strict Offline Mode is active: cloud Gemini visual analysis is disabled.",
+                    targetFound = false,
+                    confidence = 0f
+                ),
+                null
+            )
+        }
         val key = getApiKey()
         if (key.isBlank()) {
             Log.w(TAG, "Gemini API key is not configured for visual analysis.")
@@ -85,7 +97,9 @@ class GeminiVisionAnalyzer(private val context: Context) {
                     apiKey = key,
                     request = request
                 )
-                val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                val text = response.candidates?.firstOrNull()?.content?.parts
+                    ?.mapNotNull { it.text }
+                    ?.joinToString("")
                 if (!text.isNullOrBlank()) {
                     rawResponseText = text.trim()
                     break

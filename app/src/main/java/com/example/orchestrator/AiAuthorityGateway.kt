@@ -211,13 +211,18 @@ object AiAuthorityGateway {
             invalidateSession(session.sessionId, "Provider switched from ${session.providerId} to $normalizedActive")
             return deny("PROVIDER_SWITCHED", "Selected AI provider changed from ${session.providerId} to $normalizedActive. Active automation invalidated.")
         }
-        if (normalizedActive == "GEMMA_OFFLINE" || normalizedActive == "LOCAL") {
-            return deny("OFFLINE_PROVIDER_FORBIDDEN", "Local/offline model cannot authorize device automation.")
-        }
-
-        // 4. Live API authorization & network check
-        if (!isOnline || !hasValidApiAuth) {
-            return deny("NO_VALID_API_AUTH", "Online AI API authorization is unavailable. Execution blocked.")
+        val smolVlm2Ready = com.example.ai.offline.Gemma4E4BEngine.getInstance(context).isSmolVlm2Ready()
+        if (normalizedActive == "LOCAL_MULTIMODAL" || normalizedActive == "GEMMA_OFFLINE" || normalizedActive == "LOCAL") {
+            if (!smolVlm2Ready) {
+                return deny(
+                    "OFFLINE_PROVIDER_FORBIDDEN",
+                    "Local/offline model cannot authorize device automation unless verified SmolVLM2 + mmproj multimodal weights are installed."
+                )
+            }
+        } else if (!isOnline || !hasValidApiAuth) {
+            if (!smolVlm2Ready) {
+                return deny("NO_VALID_API_AUTH", "Online AI API authorization is unavailable. Execution blocked.")
+            }
         }
 
         // 5. Task & session binding

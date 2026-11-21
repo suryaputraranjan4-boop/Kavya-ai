@@ -396,7 +396,7 @@ class ScreenCaptureService : Service(), ComponentCallbacks2 {
                 }
 
                 if (ScreenShareManager.onFrameCaptured(cleanBitmap, cleanBitmap.width, cleanBitmap.height, sessionId)) {
-                    VisionPipeline.onNewFrame(cleanBitmap)
+                    VisionPipeline.onNewFrame(cleanBitmap, bypassIntervalThrottle = true)
                     PerformanceProfileManager.recordFrameProcessingLatencyMs(
                         android.os.SystemClock.elapsedRealtime() - extractStartMs
                     )

@@ -131,8 +131,8 @@ class JarvisOverlayService : Service() {
     private var isFullScreenLayoutActive: Boolean = false
 
     private var snapAnimator: ValueAnimator? = null
-    private var orbWindowX: Int = 24
-    private var orbWindowY: Int = 260
+    private var orbWindowX by mutableIntStateOf(24)
+    private var orbWindowY by mutableIntStateOf(260)
 
     private val serviceLifecycleOwner = OverlayWindowLifecycleOwner()
 
@@ -252,14 +252,14 @@ class JarvisOverlayService : Service() {
         }
     }
 
-    private fun clampOrbPositionToCurrentDisplay() {
+    private fun clampOrbPositionToCurrentDisplay(extraWidthDp: Int = 0) {
         val geom = ScreenAnnotationManager.coordinateMapper.refreshGeometry(this)
         val marginPx = dpToPx(8)
-        val orbApproxPx = dpToPx(96)
+        val orbApproxPx = dpToPx(96 + extraWidthDp)
         val minX = geom.navBarInsetLeft + marginPx
         val maxX = (geom.width - geom.navBarInsetRight - orbApproxPx - marginPx).coerceAtLeast(minX)
         val minY = geom.statusBarInsetTop + marginPx
-        val maxY = (geom.height - geom.navBarInsetBottom - orbApproxPx - marginPx).coerceAtLeast(minY)
+        val maxY = (geom.height - geom.navBarInsetBottom - dpToPx(96) - marginPx).coerceAtLeast(minY)
         orbWindowX = orbWindowX.coerceIn(minX, maxX)
         orbWindowY = orbWindowY.coerceIn(minY, maxY)
     }
@@ -292,6 +292,11 @@ class JarvisOverlayService : Service() {
                 x = orbWindowX
                 y = orbWindowY
                 title = "KavyaUnifiedJarvisOverlay"
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
             }
 
             val composeView = ComposeView(this).apply {
@@ -310,6 +315,7 @@ class JarvisOverlayService : Service() {
             unifiedLayoutParams = params
             isUnifiedWindowAttached = true
             isFullScreenLayoutActive = false
+            ScreenAnnotationManager.coordinateMapper.updateOverlayWindowOffset(0, 0)
             JarvisOverlayController.setActiveWindowCount(1)
             Log.i(TAG, "Attached single Unified JARVIS Live Overlay window at ($orbWindowX, $orbWindowY)")
             true
@@ -351,6 +357,11 @@ class JarvisOverlayService : Service() {
                 params.height = WindowManager.LayoutParams.MATCH_PARENT
                 params.x = 0
                 params.y = 0
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
             } else {
                 params.width = WindowManager.LayoutParams.WRAP_CONTENT
                 params.height = WindowManager.LayoutParams.WRAP_CONTENT
@@ -358,6 +369,15 @@ class JarvisOverlayService : Service() {
                 params.y = orbWindowY
             }
             wm.updateViewLayout(view, params)
+            if (expandFullScreen) {
+                view.post {
+                    val loc = IntArray(2)
+                    view.getLocationOnScreen(loc)
+                    ScreenAnnotationManager.coordinateMapper.updateOverlayWindowOffset(loc[0], loc[1])
+                }
+            } else {
+                ScreenAnnotationManager.coordinateMapper.updateOverlayWindowOffset(0, 0)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Safe window mode update ignored: ${e.message}")
         }
@@ -413,6 +433,19 @@ class JarvisOverlayService : Service() {
 
         LaunchedEffect(needFullScreenCanvas) {
             updateUnifiedWindowMode(needFullScreenCanvas)
+        }
+
+        // Prevent quick-action dock from clipping off the right screen edge when expanded in compact mode
+        LaunchedEffect(isExpanded, isMinimized) {
+            if (!needFullScreenCanvas) {
+                if (isExpanded && !isMinimized) {
+                    clampOrbPositionToCurrentDisplay(extraWidthDp = 210)
+                    updateCompactOrbWindowPosition()
+                } else {
+                    clampOrbPositionToCurrentDisplay(extraWidthDp = 0)
+                    updateCompactOrbWindowPosition()
+                }
+            }
         }
 
         if (!needFullScreenCanvas) {
@@ -478,20 +511,20 @@ class JarvisOverlayService : Service() {
                     exit = fadeOut()
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xEE080E18),
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xEB111622),
                         modifier = Modifier
-                            .padding(top = 4.dp)
-                            .widthIn(max = 220.dp)
-                            .border(1.dp, orbConfig.theme.primaryColor.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .padding(top = 6.dp)
+                            .widthIn(max = 228.dp)
+                            .border(1.dp, Color(0x3DFFFFFF), RoundedCornerShape(14.dp))
                     ) {
                         Text(
                             text = statusLine.orEmpty(),
-                            color = Color.White,
-                            fontSize = 10.sp,
+                            color = Color(0xFFF5F7FA),
+                            fontSize = 11.sp,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                         )
                     }
                 }
@@ -552,18 +585,18 @@ class JarvisOverlayService : Service() {
                                 end = 12.dp
                             )
                     ) {
-                        // Unified Session & Presentation Level Header Pill
+                        // Unified Session & Presentation Level Header Pill (Apple Liquid Glass)
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xF0070D17),
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color(0xEB111622),
                             modifier = Modifier
-                                .padding(bottom = 4.dp)
-                                .border(1.dp, orbConfig.theme.primaryColor.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
+                                .padding(bottom = 6.dp)
+                                .border(1.dp, Color(0x3DFFFFFF), RoundedCornerShape(14.dp))
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
@@ -572,19 +605,17 @@ class JarvisOverlayService : Service() {
                                         .background(orbConfig.theme.primaryColor)
                                 )
                                 Text(
-                                    text = "JARVIS LIVE • ${explanationLevel.badgeLabel}",
-                                    color = orbConfig.theme.primaryColor,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace
+                                    text = "JARVIS • ${explanationLevel.badgeLabel}",
+                                    color = Color(0xFFF5F7FA),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                                 if (ScreenShareManager.isScreenSharingActive) {
                                     Text(
-                                        text = "• SCREEN SHARE ON",
-                                        color = Color(0xFF00E676),
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontFamily = FontFamily.Monospace
+                                        text = "• Screen Live",
+                                        color = Color(0xFF30D158),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
                                     )
                                 }
                             }

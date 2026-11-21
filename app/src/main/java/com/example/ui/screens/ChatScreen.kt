@@ -57,6 +57,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import android.provider.OpenableColumns
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -271,7 +272,9 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                         Text(
                             text = currentChatTitle,
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = TextPrimary
+                            color = TextPrimary,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -311,18 +314,20 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                         expanded = menuExpanded,
                         onDismissRequest = { menuExpanded = false },
                         modifier = Modifier
-                            .background(SurfaceGlass)
-                            .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+                            .background(Color(0xF0151A25))
+                            .border(1.dp, com.example.ui.components.AppleGlassBorderBrush, RoundedCornerShape(14.dp))
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Screen Share & Vision ✨", color = TextPrimary) },
+                            text = { Text("Screen Share & Vision", color = TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.ScreenShare, contentDescription = null, tint = PrimaryLight, modifier = Modifier.size(18.dp)) },
                             onClick = {
                                 showScreenShareSheet = true
                                 menuExpanded = false
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Live Camera Vision 📷", color = TextPrimary) },
+                            text = { Text("Live Camera Vision", color = TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.Videocam, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp)) },
                             onClick = {
                                 menuExpanded = false
                                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -333,7 +338,8 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Record Voice Message 🎤", color = TextPrimary) },
+                            text = { Text("Record Voice Message", color = TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.Mic, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(18.dp)) },
                             onClick = {
                                 menuExpanded = false
                                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -345,6 +351,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                         )
                         DropdownMenuItem(
                             text = { Text("Delete Conversation", color = Error) },
+                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = Error, modifier = Modifier.size(18.dp)) },
                             onClick = {
                                 viewModel.deleteCurrentChat()
                                 menuExpanded = false
@@ -384,45 +391,94 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
             Column(
                 modifier = Modifier.fillMaxSize()
             ) {
-                // Screen Share Active Ribbon Banner
-                AnimatedVisibility(visible = isScreenSharing) {
-                Box(
+                // Screen Share Active Privacy Ribbon Banner + EXPLAIN SCREEN Quick Action
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .glassPanel(shape = RoundedCornerShape(12.dp), backgroundColor = SurfaceGlass.copy(alpha = 0.9f), borderColor = SuccessGreen.copy(alpha = 0.3f))
-                        .clickable { showScreenShareSheet = true }
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Primary.copy(alpha = 0.18f),
+                        modifier = Modifier
+                            .heightIn(min = 42.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .border(1.dp, PrimaryLight.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                            .clickable { viewModel.explainCurrentScreen("Explain this screen") }
+                            .testTag("chat_explain_screen_button")
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(SuccessGreen)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Visibility,
+                                contentDescription = "Explain Screen",
+                                tint = PrimaryLight,
+                                modifier = Modifier.size(16.dp)
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                "Screen Share Active • Observing",
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                color = SuccessGreenGlow
+                                text = "EXPLAIN SCREEN",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 0.5.sp
+                                ),
+                                color = TextPrimary
                             )
                         }
-                        Text(
-                            "Manage",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = PrimaryLight
-                            )
-                        )
+                    }
+
+                    if (isScreenSharing) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .glassPanel(
+                                    shape = RoundedCornerShape(14.dp),
+                                    backgroundColor = SurfaceGlass.copy(alpha = 0.9f),
+                                    borderColor = SuccessGreen.copy(alpha = 0.35f)
+                                )
+                                .clickable { showScreenShareSheet = true }
+                                .padding(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(SuccessGreen)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Screen Shared",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                        color = SuccessGreenGlow,
+                                        maxLines = 1
+                                    )
+                                }
+                                Text(
+                                    "STOP",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = Error
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { viewModel.stopScreenShare() }
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .testTag("chat_stop_screen_share_button")
+                                )
+                            }
+                        }
                     }
                 }
-            }
 
             // Live CEO Orchestration Status HUD
             com.example.ui.components.CeoOrchestrationHud(
@@ -464,13 +520,13 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
             }
         }
 
-        // Floating White Liquid Glass Popup anchored near Plus button
+        // Dark Apple Liquid Glass Attachment Popup anchored above ChatBar
         if (showAttachmentPopup) {
             Popup(
                 alignment = Alignment.BottomStart,
                 offset = IntOffset(
                     x = with(LocalDensity.current) { 16.dp.roundToPx() },
-                    y = with(LocalDensity.current) { (-6).dp.roundToPx() }
+                    y = with(LocalDensity.current) { (-8).dp.roundToPx() }
                 ),
                 onDismissRequest = { showAttachmentPopup = false },
                 properties = PopupProperties(
@@ -481,32 +537,22 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
             ) {
                 Surface(
                     modifier = Modifier
-                        .width(285.dp)
+                        .width(296.dp)
                         .shadow(
-                            elevation = 18.dp,
-                            shape = RoundedCornerShape(22.dp),
-                            spotColor = Color(0x38000000),
-                            ambientColor = Color(0x1A000000)
+                            elevation = 22.dp,
+                            shape = RoundedCornerShape(24.dp),
+                            spotColor = Color(0x70000000),
+                            ambientColor = Color(0x33000000)
                         )
                         .border(
-                            border = BorderStroke(
-                                1.2.dp,
-                                Brush.linearGradient(
-                                    listOf(
-                                        Color.White,
-                                        Color(0xCCFFFFFF),
-                                        Color(0x80FFFFFF),
-                                        Color.White
-                                    )
-                                )
-                            ),
-                            shape = RoundedCornerShape(22.dp)
+                            border = BorderStroke(1.dp, com.example.ui.components.AppleGlassBorderBrush),
+                            shape = RoundedCornerShape(24.dp)
                         ),
-                    color = Color(0xF9FFFFFF),
-                    shape = RoundedCornerShape(22.dp)
+                    color = Color(0xEE141925),
+                    shape = RoundedCornerShape(24.dp)
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -514,29 +560,25 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "ATTACH & SHARE",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 1.2.sp,
-                                    color = Color(0xFF64748B)
-                                ),
+                                text = "Attach & Share",
+                                style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
+                                color = TextSecondary,
                                 modifier = Modifier.padding(start = 4.dp)
                             )
                             IconButton(
                                 onClick = { showAttachmentPopup = false },
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(28.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = "Close attachments",
-                                    tint = Color(0xFF64748B),
-                                    modifier = Modifier.size(15.dp)
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
 
                         // Row 1: Camera, PDF Scanner, Live Screen
                         Row(
@@ -546,6 +588,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             AttachmentOptionItem(
                                 icon = Icons.Default.PhotoCamera,
                                 label = "Camera",
+                                accentColor = PrimaryLight,
                                 onClick = {
                                     showAttachmentPopup = false
                                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -557,7 +600,8 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             )
                             AttachmentOptionItem(
                                 icon = Icons.Default.DocumentScanner,
-                                label = "PDF Scanner",
+                                label = "PDF Scan",
+                                accentColor = AccentCyan,
                                 onClick = {
                                     showAttachmentPopup = false
                                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -571,6 +615,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             AttachmentOptionItem(
                                 icon = Icons.Default.ScreenShare,
                                 label = "Live Screen",
+                                accentColor = SuccessGreen,
                                 onClick = {
                                     showAttachmentPopup = false
                                     showScreenShareSheet = true
@@ -588,6 +633,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             AttachmentOptionItem(
                                 icon = Icons.Default.PhotoLibrary,
                                 label = "Gallery",
+                                accentColor = AccentPurpleLight,
                                 onClick = {
                                     showAttachmentPopup = false
                                     galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -596,6 +642,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             AttachmentOptionItem(
                                 icon = Icons.Default.PictureAsPdf,
                                 label = "PDF Files",
+                                accentColor = Error,
                                 onClick = {
                                     showAttachmentPopup = false
                                     pdfFileLauncher.launch(arrayOf("application/pdf"))
@@ -604,6 +651,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             AttachmentOptionItem(
                                 icon = Icons.Default.FolderOpen,
                                 label = "Documents",
+                                accentColor = AccentYellow,
                                 onClick = {
                                     showAttachmentPopup = false
                                     docFileLauncher.launch(arrayOf("*/*"))
@@ -621,6 +669,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             AttachmentOptionItem(
                                 icon = Icons.Default.Videocam,
                                 label = "Live Camera",
+                                accentColor = PrimaryLight,
                                 onClick = {
                                     showAttachmentPopup = false
                                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -633,6 +682,7 @@ fun ChatScreen(navController: NavController, viewModel: KavyaViewModel) {
                             AttachmentOptionItem(
                                 icon = Icons.Default.Mic,
                                 label = "Voice Note",
+                                accentColor = SuccessGreen,
                                 onClick = {
                                     showAttachmentPopup = false
                                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {

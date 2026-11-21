@@ -77,7 +77,7 @@ class CommandRouter(private val context: Context) {
         regex2.find(trimmed)?.let {
             val recip = it.groupValues[1].trim()
             val msg = it.groupValues[2].trim()
-            if (recip.isNotBlank()) return SmsRequest(recip, msg.ifBlank { "Hello" })
+            if (recip.isNotBlank() && msg.isNotBlank()) return SmsRequest(recip, msg)
         }
         return null
     }
@@ -238,32 +238,82 @@ class CommandRouter(private val context: Context) {
 
     fun handleCall(contactOrNumber: String): CommandExecutionResult {
         val clean = contactOrNumber.trim()
-        val isDigits = clean.all { it.isDigit() || it == '+' || it == ' ' || it == '-' }
-        val uri = if (isDigits && clean.length >= 3) {
-            Uri.parse("tel:${clean.replace(" ", "")}")
-        } else {
-            Uri.parse("tel:")
+        if (clean.isBlank()) {
+            return CommandExecutionResult("Contact name or phone number is required.", false)
         }
-        val intent = Intent(Intent.ACTION_DIAL, uri).apply {
+        val isDigits = clean.all { it.isDigit() || it == '+' || it == ' ' || it == '-' }
+        var dialDigits = if (isDigits && clean.filter { it.isDigit() }.length >= 3) {
+            clean.filter { it.isDigit() || it == '+' }
+        } else {
+            null
+        }
+        var displayName = clean
+
+        if (dialDigits == null && androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.READ_CONTACTS
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                context.contentResolver.query(
+                    android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(
+                        android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                        android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER
+                    ),
+                    "${android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?",
+                    arrayOf("%$clean%"),
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                        val numIdx = cursor.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER)
+                        if (nameIdx >= 0) displayName = cursor.getString(nameIdx) ?: clean
+                        if (numIdx >= 0) dialDigits = cursor.getString(numIdx)?.filter { it.isDigit() || it == '+' }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Contact resolution failed: ${e.message}")
+            }
+        }
+
+        if (dialDigits.isNullOrBlank()) {
+            val contactsIntent = Intent(Intent.ACTION_VIEW, android.provider.ContactsContract.Contacts.CONTENT_URI).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            return try {
+                context.startActivity(contactsIntent)
+                CommandExecutionResult("Contact '$clean' ka number directly resolve nahi hua; Contacts app open kar diya hai.", false)
+            } catch (e: Exception) {
+                CommandExecutionResult("Could not resolve contact '$clean': ${e.message}", false)
+            }
+        }
+
+        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$dialDigits")).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         return try {
             context.startActivity(intent)
-            CommandExecutionResult("Main $clean ko phone mila rahi hoon...", true)
+            CommandExecutionResult("Opened dialer for $displayName (confirm call in dialer).", true)
         } catch (e: Exception) {
             CommandExecutionResult("Call error: ${e.message}", false)
         }
     }
 
     fun handleSms(recipient: String, message: String): CommandExecutionResult {
+        val cleanRecipient = recipient.trim()
+        val cleanMessage = message.trim()
+        if (cleanRecipient.isBlank() || cleanMessage.isBlank()) {
+            return CommandExecutionResult("SMS recipient and message text are both required.", false)
+        }
         val intent = Intent(Intent.ACTION_SENDTO).apply {
             data = Uri.parse("smsto:")
-            putExtra("sms_body", message)
+            putExtra("sms_body", cleanMessage)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         return try {
             context.startActivity(intent)
-            CommandExecutionResult("Main $recipient ko message bhej rahi hoon...", true)
+            CommandExecutionResult("Opened SMS composer for $cleanRecipient (review and send in messaging app).", true)
         } catch (e: Exception) {
             CommandExecutionResult("SMS error: ${e.message}", false)
         }
@@ -306,7 +356,7 @@ class CommandRouter(private val context: Context) {
                 "SMS", "MESSAGE" -> {
                     val parts = actionParam.split(":", limit = 2)
                     val recip = parts.getOrNull(0) ?: actionParam
-                    val msg = parts.getOrNull(1) ?: "Hello"
+                    val msg = parts.getOrNull(1) ?: ""
                     handleSms(recip, msg)
                 }
                 "SCREENSHOT" -> handleTakeScreenshot()
@@ -330,8 +380,12 @@ class CommandRouter(private val context: Context) {
                 }
                 "UI_SCROLL" -> handleUiScroll(actionParam)
                 "READ_SCREEN", "SCREEN_SUMMARY" -> {
-                    val screen = KavyaAccessibilityService.instance?.getScreenContext() ?: "Screen reading unavailable (Accessibility disabled)"
-                    CommandExecutionResult(screen, true)
+                    val service = KavyaAccessibilityService.instance
+                    if (service == null) {
+                        CommandExecutionResult("Screen reading unavailable (Accessibility disabled)", false)
+                    } else {
+                        CommandExecutionResult(service.getScreenContext(), true)
+                    }
                 }
                 "GLOBAL_ACTION" -> {
                     val action = when(actionParam.uppercase()) {
@@ -539,7 +593,7 @@ class CommandRouter(private val context: Context) {
             return if (success) {
                 CommandExecutionResult("Screenshot taken successfully.", true)
             } else {
-                CommandExecutionResult("Screenshot command sent via Accessibility.", true)
+                CommandExecutionResult("Failed to capture screenshot via Accessibility Service.", false)
             }
         }
         return CommandExecutionResult("Please enable Kavya Accessibility Service to take screenshots hands-free.", false)
@@ -802,8 +856,9 @@ class CommandRouter(private val context: Context) {
                 )
             }
 
-            val verificationNote = if (accessibilityService == null) {
-                "PASS (Launch Dispatched - Accessibility off)"
+            val isUnverified = accessibilityService == null
+            val verificationNote = if (isUnverified) {
+                "UNVERIFIED (Launch Dispatched - Accessibility off)"
             } else {
                 "PASS"
             }
@@ -815,15 +870,24 @@ class CommandRouter(private val context: Context) {
                 launchIntent = app.launcherActivity ?: "MainActivity",
                 confidence = confidenceName,
                 foregroundBefore = fgBefore,
-                foregroundAfter = if (fgAfter.isNotBlank() && fgAfter != "unknown") fgAfter else app.packageName,
+                foregroundAfter = if (fgAfter.isNotBlank() && fgAfter != "unknown") fgAfter else "unknown",
                 verification = verificationNote
             )
             lastDiagnostic = diag
-            Log.d(TAG, "App launch succeeded for ${app.appName}.")
-            val isHindiOrHinglish = requestedName.any { it in '\u0900'..'\u097F' } ||
-                requestedName.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("jao") }
-            val successMsg = if (isHindiOrHinglish) "${app.appName} खुल गया।" else "Opened ${app.appName}."
-            CommandExecutionResult(successMsg, true, diagnostic = diag)
+            if (isUnverified) {
+                Log.w(TAG, "Launch dispatched for ${app.appName}, but foreground verification is unavailable (Accessibility off).")
+                CommandExecutionResult(
+                    "Launch intent dispatched for ${app.appName}, but foreground cannot be confirmed (Accessibility off).",
+                    false,
+                    diagnostic = diag
+                )
+            } else {
+                Log.d(TAG, "App launch succeeded for ${app.appName}.")
+                val isHindiOrHinglish = requestedName.any { it in '\u0900'..'\u097F' } ||
+                    requestedName.lowercase(Locale.ROOT).let { it.contains("kholo") || it.contains("chalao") || it.contains("jao") }
+                val successMsg = if (isHindiOrHinglish) "${app.appName} खुल गया।" else "Opened ${app.appName}."
+                CommandExecutionResult(successMsg, true, diagnostic = diag)
+            }
         } catch (e: Exception) {
             val diag = AppLaunchDiagnostic(
                 requestedApp = requestedName,

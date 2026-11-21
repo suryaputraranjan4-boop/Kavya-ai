@@ -284,6 +284,18 @@ class KavyaAccessibilityService : AccessibilityService() {
         return currentCount
     }
 
+    private fun displaySizePx(): Pair<Int, Int> {
+        val dm = resources?.displayMetrics
+        val w = dm?.widthPixels?.takeIf { it > 0 } ?: 1080
+        val h = dm?.heightPixels?.takeIf { it > 0 } ?: 1920
+        return w to h
+    }
+
+    private fun isGiantBounds(b: Rect): Boolean {
+        val (w, h) = displaySizePx()
+        return b.width() >= (w * 0.92f).toInt() && b.height() >= (h * 0.78f).toInt()
+    }
+
     fun findNodeRecursively(node: AccessibilityNodeInfo?, targetText: String): AccessibilityNodeInfo? {
         if (node == null) return null
         val lowerTarget = targetText.lowercase(Locale.ROOT).trim()
@@ -291,7 +303,7 @@ class KavyaAccessibilityService : AccessibilityService() {
 
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
-        val isGiant = bounds.width() > 1000 && bounds.height() > 1800
+        val isGiant = isGiantBounds(bounds)
 
         if (!isGiant && bounds.width() > 0 && bounds.height() > 0) {
             val text = node.text?.toString()?.trim()?.lowercase(Locale.ROOT) ?: ""
@@ -428,7 +440,7 @@ class KavyaAccessibilityService : AccessibilityService() {
             return
         }
 
-        val isGiant = b.width() > 1000 && b.height() > 1800
+        val isGiant = isGiantBounds(b)
         if (isGiant) {
             // Container wrapper: do not add as candidate, but inspect children
             for (i in 0 until node.childCount) {
@@ -480,9 +492,8 @@ class KavyaAccessibilityService : AccessibilityService() {
                 lowerText == "subscribe" || lowerDesc == "subscribe" ||
                 isAvatarOrPhoto || isAdOrSponsored || isClearOrClose
 
-        // Bounds validation: In music/video apps like Spotify/YouTube, content items are typically below the search bar (b.top > 200)
-        // and above bottom navigation tabs (b.bottom < 2050)
-        val isPositionValid = b.top >= 180 && b.bottom <= 2100
+        val (_, screenH) = displaySizePx()
+        val isPositionValid = b.top >= (screenH * 0.07f).toInt() && b.bottom <= (screenH * 0.90f).toInt()
 
         if (!isHeaderOrNav && isPositionValid) {
             val subtreeText = getSubtreeText(node)
@@ -795,7 +806,7 @@ class KavyaAccessibilityService : AccessibilityService() {
 
             val bounds = Rect()
             current.getBoundsInScreen(bounds)
-            val isGiant = bounds.width() > 1000 && bounds.height() > 1800
+            val isGiant = isGiantBounds(bounds)
             if (!isGiant && bounds.width() > 0 && bounds.height() > 0) {
                 val path = android.graphics.Path().apply {
                     moveTo(bounds.centerX().toFloat(), bounds.centerY().toFloat())
@@ -881,7 +892,7 @@ class KavyaAccessibilityService : AccessibilityService() {
             if (isActionClickable) {
                 val b = Rect()
                 current.getBoundsInScreen(b)
-                val isGiant = b.width() > 1000 && b.height() > 1800
+                val isGiant = isGiantBounds(b)
                 if (!isGiant && b.width() > 0 && b.height() > 0) {
                     val clicked = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     if (clicked) return true
@@ -896,7 +907,7 @@ class KavyaAccessibilityService : AccessibilityService() {
         }
         val b = Rect()
         node.getBoundsInScreen(b)
-        val isGiant = b.width() > 1000 && b.height() > 1800
+        val isGiant = isGiantBounds(b)
         if (!isGiant && b.width() > 0 && b.height() > 0) {
             val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (clicked) return true
@@ -914,7 +925,7 @@ class KavyaAccessibilityService : AccessibilityService() {
             if (current.isLongClickable) {
                 val b = Rect()
                 current.getBoundsInScreen(b)
-                val isGiant = b.width() > 1000 && b.height() > 1800
+                val isGiant = isGiantBounds(b)
                 if (!isGiant && b.width() > 0 && b.height() > 0) {
                     return current.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
                 }
@@ -924,7 +935,7 @@ class KavyaAccessibilityService : AccessibilityService() {
         }
         val b = Rect()
         node.getBoundsInScreen(b)
-        val isGiant = b.width() > 1000 && b.height() > 1800
+        val isGiant = isGiantBounds(b)
         return if (!isGiant && b.width() > 0 && b.height() > 0) {
             node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
         } else {
@@ -946,14 +957,9 @@ class KavyaAccessibilityService : AccessibilityService() {
                 if (setSuccess) {
                     typed = true
                     current.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                    // Attempt IME enter if supported
-                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    // Attempt IME enter if supported via AccessibilityAction (API 30+)
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
                         current.performAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-                    } else {
-                        // Fallback: try pressing ENTER via keyevent if it somehow works
-                        try {
-                            Runtime.getRuntime().exec("input keyevent 66")
-                        } catch (e: Exception) {}
                     }
                 }
                 return setSuccess

@@ -2,52 +2,50 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Kavya Futuristic Dark Palette (Deep Navy / Black Base)
-val Background = Color(0xFF08090D)
-val BackgroundGradientEnd = Color(0xFF0D0F18)
-val Surface = Color(0xFF111420)
-val SurfaceGlass = Color(0xFF161A29)
-val SurfaceVariant = Color(0xFF1B2033)
-val SurfaceElevated = Color(0xFF222840)
+// Apple Liquid Glass Dark Obsidian Palette — calm, refined, high-contrast frosted glass
+val Background = Color(0xFF0A0C10)
+val BackgroundGradientEnd = Color(0xFF10141D)
+val Surface = Color(0xFF131722)
+val SurfaceGlass = Color(0xCC1A1F2B)
+val SurfaceVariant = Color(0xFF1E2433)
+val SurfaceElevated = Color(0xFF262D3F)
 
-// Borders & Dividers (Subtle Frost)
-val Outline = Color(0xFF2B324D)
-val OutlineVariant = Color(0x1FFFFFFF)
-val GlassBorder = Color(0x29FFFFFF)
+// Specular Glass Borders & Hairline Dividers
+val Outline = Color(0xFF2E3648)
+val OutlineVariant = Color(0x1CFFFFFF)
+val GlassBorder = Color(0x33FFFFFF)
 
-// Accent Colors (Pink + Purple Gradient)
-val Primary = Color(0xFFFF758C)
-val PrimaryLight = Color(0xFFFF94A8)
-val OnPrimary = Color(0xFF24000D)
-val PrimaryContainer = Color(0xFF4A0E22)
-val OnPrimaryContainer = Color(0xFFFFD8E0)
+// Refined Apple System Accents (Sapphire Blue, Soft Ice, Muted Indigo — no neon AI pink/purple)
+val Primary = Color(0xFF0A84FF)
+val PrimaryLight = Color(0xFF5AC8FA)
+val OnPrimary = Color(0xFFFFFFFF)
+val PrimaryContainer = Color(0xFF0F294A)
+val OnPrimaryContainer = Color(0xFFD6EAFF)
 
-val AccentPurple = Color(0xFFA855F7)
-val AccentPurpleLight = Color(0xFFC084FC)
-val Secondary = Color(0xFF8B5CF6)
-val OnSecondary = Color(0xFF1E0A38)
-val SecondaryContainer = Color(0xFF2E1B4E)
-val OnSecondaryContainer = Color(0xFFE9D5FF)
+val AccentPurple = Color(0xFF5E5CE6)
+val AccentPurpleLight = Color(0xFF8E8CF8)
+val Secondary = Color(0xFF5E5CE6)
+val OnSecondary = Color(0xFFFFFFFF)
+val SecondaryContainer = Color(0xFF1E1E46)
+val OnSecondaryContainer = Color(0xFFDFDFFF)
 
-val AccentCyan = Color(0xFF38BDF8)
-val AccentYellow = Color(0xFFFBBF24)
-val SuccessGreen = Color(0xFF10B981)
-val SuccessGreenGlow = Color(0xFF34D399)
+val AccentCyan = Color(0xFF64D2FF)
+val AccentYellow = Color(0xFFFFD60A)
+val SuccessGreen = Color(0xFF30D158)
+val SuccessGreenGlow = Color(0xFF5EE87F)
 
-// Typography & Content
-val TextPrimary = Color(0xFFF8FAFC)
-val TextSecondary = Color(0xFF94A3B8)
-val TextTertiary = Color(0xFF64748B)
+// High-Legibility Typography & Content
+val TextPrimary = Color(0xFFF5F7FA)
+val TextSecondary = Color(0xFF9EA7B8)
+val TextTertiary = Color(0xFF6E7788)
 
-val Error = Color(0xFFF43F5E)
-val OnError = Color(0xFF3B000B)
-val ErrorContainer = Color(0xFF4C0519)
-val OnErrorContainer = Color(0xFFFFD1D9)
+val Error = Color(0xFFFF453A)
+val OnError = Color(0xFFFFFFFF)
+val ErrorContainer = Color(0xFF3B1214)
+val OnErrorContainer = Color(0xFFFFD9D6)
 
-// Gradient Brushes
-val BrandGradientStart = Color(0xFFFF758C)
-val BrandGradientMid = Color(0xFFD946EF)
-val BrandGradientEnd = Color(0xFF8B5CF6)
-val OrbGlowColor = Color(0xFFEC4899)
-
-
+// Calm Liquid Glass Luminescence Gradient
+val BrandGradientStart = Color(0xFF0A84FF)
+val BrandGradientMid = Color(0xFF38A5FF)
+val BrandGradientEnd = Color(0xFF5E5CE6)
+val OrbGlowColor = Color(0xFF38A5FF)

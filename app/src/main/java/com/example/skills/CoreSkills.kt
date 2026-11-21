@@ -77,8 +77,15 @@ class MessagingSkill : KavyaSkill {
             )
         } ?: return SkillResult(false, "No messaging step found.")
 
-        val recipient = step.recipient ?: "Friend"
-        val message = step.messageText ?: step.param?.split("||")?.getOrNull(1) ?: "Hello"
+        val recipient = step.recipient?.trim().orEmpty()
+        val message = step.messageText.orEmpty().ifBlank { step.param?.split("||")?.getOrNull(1)?.trim().orEmpty() }.trim()
+        if (recipient.isBlank() || message.isBlank()) {
+            return SkillResult(
+                false,
+                "Recipient and message text are required before opening messaging.",
+                "SEND_MESSAGE"
+            )
+        }
         val isWhatsApp = intent.targetApp?.contains("WhatsApp", ignoreCase = true) == true ||
                 step.actionType == UniversalActionType.SEND_WHATSAPP_MESSAGE
 
@@ -89,7 +96,7 @@ class MessagingSkill : KavyaSkill {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
                 context.startActivity(waIntent)
-                SkillResult(true, "WhatsApp message prepared for $recipient: \"$message\"", "SEND_WHATSAPP_MESSAGE")
+                SkillResult(true, "Opened WhatsApp draft for $recipient (review and confirm send in app): \"$message\"", "SEND_WHATSAPP_MESSAGE")
             } catch (e: Exception) {
                 SkillResult(false, "Could not open WhatsApp: ${e.message}", "SEND_WHATSAPP_MESSAGE")
             }
@@ -101,7 +108,7 @@ class MessagingSkill : KavyaSkill {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
                 context.startActivity(smsIntent)
-                SkillResult(true, "SMS drafted for $recipient: \"$message\"", "SEND_SMS")
+                SkillResult(true, "Opened SMS draft for $recipient (review and confirm send in app): \"$message\"", "SEND_SMS")
             } catch (e: Exception) {
                 SkillResult(false, "Could not draft SMS: ${e.message}", "SEND_SMS")
             }
@@ -123,6 +130,9 @@ class MediaSkill : KavyaSkill {
             return SkillResult(false, "Media playback automation denied: active AI Authority permit required.")
         }
         val query = intent.query ?: intent.param ?: ""
+        if (query.isBlank()) {
+            return SkillResult(false, "Media search query is required.", "PLAY_MEDIA")
+        }
         val isSpotify = intent.targetApp?.contains("Spotify", ignoreCase = true) == true
         return try {
             if (isSpotify) {
@@ -130,7 +140,7 @@ class MediaSkill : KavyaSkill {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
                 context.startActivity(intentUri)
-                SkillResult(true, "Playing '$query' on Spotify.", "PLAY_MEDIA")
+                SkillResult(true, "Opened Spotify search for '$query'.", "PLAY_MEDIA")
             } else {
                 val intentUri = Intent(Intent.ACTION_SEARCH).apply {
                     setPackage("com.google.android.youtube")
@@ -138,7 +148,7 @@ class MediaSkill : KavyaSkill {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
                 context.startActivity(intentUri)
-                SkillResult(true, "Playing '$query' on YouTube.", "PLAY_MEDIA")
+                SkillResult(true, "Opened YouTube search for '$query'.", "PLAY_MEDIA")
             }
         } catch (e: Exception) {
             SkillResult(false, "Failed to launch media player: ${e.message}", "PLAY_MEDIA")

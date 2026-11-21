@@ -509,7 +509,10 @@ object AppPreferences {
         if (cleanKey.isBlank() || isPlaceholderKey(cleanKey)) {
             return@withContext Pair(false, "API Key is empty or placeholder.")
         }
-        val candidateModels = com.example.ai.GeminiModelRegistry.CHAT_MODEL_TIERS.distinct()
+        val candidateModels = (
+            com.example.ai.GeminiModelRegistry.CHAT_MODEL_TIERS +
+                com.example.ai.GeminiModelRegistry.OFFICIAL_API_FALLBACK_MODELS
+            ).distinct()
         val testRequest = GenerateContentRequest(
             contents = listOf(
                 Content(
@@ -633,9 +636,32 @@ object AppPreferences {
             return@withContext Pair(false, "Hugging Face connection failed. Please enter your API key.")
         }
         val targetModel = model.ifBlank { com.example.ai.providers.HuggingFaceProvider.MODEL_TEXT_GEN }
+        val mediaType = "application/json; charset=utf-8".toMediaType()
         try {
+            // 1. Probe modern OpenAI-compatible Hugging Face Router v1/chat/completions first
+            val chatBodyJson = org.json.JSONObject().apply {
+                put("model", targetModel)
+                put("max_tokens", 8)
+                put("messages", org.json.JSONArray().put(org.json.JSONObject().apply {
+                    put("role", "user")
+                    put("content", "Hi")
+                }))
+            }.toString()
+            val chatRequest = okhttp3.Request.Builder()
+                .url("https://router.huggingface.co/v1/chat/completions")
+                .addHeader("Authorization", "Bearer ${apiKey.trim()}")
+                .post(okhttp3.RequestBody.Companion.create(mediaType, chatBodyJson))
+                .build()
+            val chatCode = RetrofitClient.okHttpClient.newCall(chatRequest).execute().use { it.code }
+            when (chatCode) {
+                200 -> return@withContext Pair(true, "Hugging Face connected successfully ($targetModel).")
+                503 -> return@withContext Pair(true, "Hugging Face connected ($targetModel is loading).")
+                401, 403 -> return@withContext Pair(false, "Invalid Hugging Face API key ($chatCode).")
+                429 -> return@withContext Pair(true, "Hugging Face connected (Rate limited, but active).")
+            }
+
+            // 2. Fallback to task-specific hf-inference endpoint for non-chat models (classification/embeddings)
             val url = "https://router.huggingface.co/hf-inference/models/$targetModel"
-            val mediaType = "application/json; charset=utf-8".toMediaType()
             val requestBody = okhttp3.RequestBody.Companion.create(mediaType, "{\"inputs\": \"Hello world test\"}")
             val request = okhttp3.Request.Builder()
                 .url(url)
@@ -648,7 +674,7 @@ object AppPreferences {
             when (code) {
                 200 -> Pair(true, "Hugging Face connected successfully ($targetModel).")
                 503 -> Pair(true, "Hugging Face connected ($targetModel is loading).")
-                401 -> Pair(false, "Invalid Hugging Face API key (401).")
+                401, 403 -> Pair(false, "Invalid Hugging Face API key ($code).")
                 404 -> Pair(false, "Model '$targetModel' not found on Hugging Face (404).")
                 429 -> Pair(true, "Hugging Face connected (Rate limited, but active).")
                 else -> Pair(false, "Hugging Face returned status $code.")
@@ -919,6 +945,7 @@ object AppPreferences {
     // Chatterbox Hindi & Voice Studio Preferences
     private const val KEY_CHATTERBOX_BACKEND_URL = "key_chatterbox_backend_url"
     private const val KEY_CHATTERBOX_AUTH_TOKEN = "key_chatterbox_auth_token"
+    private const val KEY_CHATTERBOX_VOICE_UPLOAD_CONSENTED = "key_chatterbox_voice_upload_consented"
     private const val KEY_ACTIVE_VOICE_PROFILE_ID = "key_active_voice_profile_id"
     private const val KEY_SPEECH_ENGINE = "key_speech_engine"
 
@@ -938,6 +965,14 @@ object AppPreferences {
 
     fun setChatterboxAuthToken(context: Context, token: String) {
         com.example.security.SecureStorage.saveSecret(context, "chatterbox_auth_token", token.trim())
+    }
+
+    fun isChatterboxVoiceUploadConsented(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_CHATTERBOX_VOICE_UPLOAD_CONSENTED, false)
+    }
+
+    fun setChatterboxVoiceUploadConsented(context: Context, consented: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_CHATTERBOX_VOICE_UPLOAD_CONSENTED, consented).apply()
     }
 
     fun getActiveVoiceProfileId(context: Context): String {

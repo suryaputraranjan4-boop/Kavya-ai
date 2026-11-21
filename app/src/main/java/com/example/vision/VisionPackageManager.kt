@@ -33,6 +33,8 @@ object VisionPackageManager {
     private const val KEY_MANIM_URL = "manim_worker_url"
     private const val KEY_TRIPOSR_REACHABLE = "triposr_last_reachable"
     private const val KEY_MANIM_REACHABLE = "manim_last_reachable"
+    private const val KEY_TRIPOSR_TESTED = "triposr_health_tested"
+    private const val KEY_MANIM_TESTED = "manim_health_tested"
     private const val SECRET_TRIPOSR_TOKEN = "vision_triposr_worker_token"
     private const val SECRET_MANIM_TOKEN = "vision_manim_worker_token"
     private const val SECRET_CESIUM_ION_TOKEN = "vision_cesium_ion_token"
@@ -48,6 +50,9 @@ object VisionPackageManager {
 
     @Volatile
     private var cachedManifest: Map<String, ManifestEntry>? = null
+
+    @Volatile
+    private var lastAppContext: Context? = null
 
     fun getCacheDirectory(context: Context): File =
         File(context.filesDir, "vision_packages").apply { mkdirs() }
@@ -100,9 +105,11 @@ object VisionPackageManager {
             .trim()
 
     fun setTripoSrEndpoint(context: Context, url: String, token: String? = null) {
+        lastAppContext = context.applicationContext
         context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE).edit()
             .putString(KEY_TRIPOSR_URL, url.trim())
             .putBoolean(KEY_TRIPOSR_REACHABLE, false)
+            .putBoolean(KEY_TRIPOSR_TESTED, false)
             .apply()
         if (token != null) {
             if (token.isBlank()) SecureStorage.clearSecret(context, SECRET_TRIPOSR_TOKEN)
@@ -121,9 +128,11 @@ object VisionPackageManager {
             .trim()
 
     fun setManimEndpoint(context: Context, url: String, token: String? = null) {
+        lastAppContext = context.applicationContext
         context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE).edit()
             .putString(KEY_MANIM_URL, url.trim())
             .putBoolean(KEY_MANIM_REACHABLE, false)
+            .putBoolean(KEY_MANIM_TESTED, false)
             .apply()
         if (token != null) {
             if (token.isBlank()) SecureStorage.clearSecret(context, SECRET_MANIM_TOKEN)
@@ -136,6 +145,7 @@ object VisionPackageManager {
         SecureStorage.getSecret(context, SECRET_MANIM_TOKEN)
 
     fun setCesiumIonToken(context: Context, token: String) {
+        lastAppContext = context.applicationContext
         if (token.isBlank()) SecureStorage.clearSecret(context, SECRET_CESIUM_ION_TOKEN)
         else SecureStorage.saveSecret(context, SECRET_CESIUM_ION_TOKEN, token.trim())
     }
@@ -143,17 +153,24 @@ object VisionPackageManager {
     fun getCesiumIonToken(context: Context): String =
         SecureStorage.getSecret(context, SECRET_CESIUM_ION_TOKEN)
 
-    internal fun markWorkerReachability(context: Context, techId: VisionTechId, reachable: Boolean) {
-        val key = when (techId) {
-            VisionTechId.TRIPO_SR -> KEY_TRIPOSR_REACHABLE
-            VisionTechId.MANIM -> KEY_MANIM_REACHABLE
+    internal fun markWorkerReachability(context: Context, techId: VisionTechId, reachable: Boolean, detailMessage: String = "") {
+        lastAppContext = context.applicationContext
+        val (reachKey, testedKey) = when (techId) {
+            VisionTechId.TRIPO_SR -> KEY_TRIPOSR_REACHABLE to KEY_TRIPOSR_TESTED
+            VisionTechId.MANIM -> KEY_MANIM_REACHABLE to KEY_MANIM_TESTED
             else -> return
         }
         context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
             .edit()
-            .putBoolean(key, reachable)
+            .putBoolean(reachKey, reachable)
+            .putBoolean(testedKey, true)
             .apply()
         refreshAllDiagnostics(context)
+    }
+
+    internal fun markWorkerReachability(techId: VisionTechId, reachable: Boolean, detailMessage: String = "") {
+        val ctx = lastAppContext ?: return
+        markWorkerReachability(ctx, techId, reachable, detailMessage)
     }
 
     fun loadManifest(context: Context): Map<String, ManifestEntry> {
@@ -190,6 +207,7 @@ object VisionPackageManager {
         context: Context,
         verifyShaHashes: Boolean = false
     ): Map<VisionTechId, VisionRuntimeDiagnostics> {
+        lastAppContext = context.applicationContext
         val manifest = loadManifest(context)
         val webGlOk = isWebGlSupported(context)
         val arOk = isArPlacementLikelySupported(context)
@@ -207,16 +225,23 @@ object VisionPackageManager {
                     } else {
                         prefs.getBoolean(KEY_MANIM_REACHABLE, false)
                     }
+                    val healthTested = if (spec.id == VisionTechId.TRIPO_SR) {
+                        prefs.getBoolean(KEY_TRIPOSR_TESTED, false)
+                    } else {
+                        prefs.getBoolean(KEY_MANIM_TESTED, false)
+                    }
                     val configured = endpoint.isNotBlank() &&
                         (endpoint.startsWith("https://", ignoreCase = true) || endpoint.startsWith("http://", ignoreCase = true))
                     val status = when {
                         !configured -> VisionAvailabilityStatus.BACKEND_REQUIRED
                         reachable -> VisionAvailabilityStatus.BACKEND_READY
-                        else -> VisionAvailabilityStatus.BACKEND_READY // Configured endpoint ready for job submission / health check
+                        healthTested -> VisionAvailabilityStatus.BACKEND_UNREACHABLE
+                        else -> VisionAvailabilityStatus.CONFIGURED_UNTESTED
                     }
                     val detail = when {
                         !configured -> "Remote Python GPU/Render worker URL not configured yet."
                         reachable -> "Worker reachable at $endpoint"
+                        healthTested -> "Worker unreachable at $endpoint — verify server & network."
                         else -> "Configured worker endpoint ($endpoint) — tap Test Connection to verify health."
                     }
                     VisionRuntimeDiagnostics(

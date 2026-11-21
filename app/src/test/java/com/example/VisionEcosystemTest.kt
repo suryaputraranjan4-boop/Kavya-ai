@@ -105,13 +105,23 @@ class VisionEcosystemTest {
         assertEquals(VisionAvailabilityStatus.BACKEND_REQUIRED, diagMap[VisionTechId.TRIPO_SR]!!.availabilityStatus)
         assertEquals(VisionAvailabilityStatus.BACKEND_REQUIRED, diagMap[VisionTechId.MANIM]!!.availabilityStatus)
 
-        // Configuring worker & Cesium token persists cleanly
+        // Configuring worker & Cesium token persists cleanly and reports CONFIGURED_UNTESTED until health-tested
         VisionPackageManager.setTripoSrEndpoint(ctx, "http://10.0.2.2:8000", "secret-tripo-123")
         VisionPackageManager.setCesiumIonToken(ctx, "user-ion-token-xyz")
-        val updated = VisionPackageManager.refreshAllDiagnostics(ctx)
-        assertEquals(VisionAvailabilityStatus.BACKEND_READY, updated[VisionTechId.TRIPO_SR]!!.availabilityStatus)
+        val updatedUntested = VisionPackageManager.refreshAllDiagnostics(ctx)
+        assertEquals(VisionAvailabilityStatus.CONFIGURED_UNTESTED, updatedUntested[VisionTechId.TRIPO_SR]!!.availabilityStatus)
         assertEquals("secret-tripo-123", VisionPackageManager.getTripoSrToken(ctx))
         assertEquals("user-ion-token-xyz", VisionPackageManager.getCesiumIonToken(ctx))
+
+        // Failed health check reports BACKEND_UNREACHABLE
+        VisionPackageManager.markWorkerReachability(VisionTechId.TRIPO_SR, false, "Connection refused")
+        val updatedUnreachable = VisionPackageManager.refreshAllDiagnostics(ctx)
+        assertEquals(VisionAvailabilityStatus.BACKEND_UNREACHABLE, updatedUnreachable[VisionTechId.TRIPO_SR]!!.availabilityStatus)
+
+        // Successful health check reports BACKEND_READY
+        VisionPackageManager.markWorkerReachability(VisionTechId.TRIPO_SR, true, "HTTP 200 OK")
+        val updatedReady = VisionPackageManager.refreshAllDiagnostics(ctx)
+        assertEquals(VisionAvailabilityStatus.BACKEND_READY, updatedReady[VisionTechId.TRIPO_SR]!!.availabilityStatus)
 
         // Cleanup secrets
         VisionPackageManager.setTripoSrEndpoint(ctx, "", "")

@@ -43,12 +43,20 @@ enum class VisionRuntimeType {
     REMOTE_PYTHON_WORKER
 }
 
+enum class VisionDownloadKind(val label: String) {
+    NPM_WEBVIEW_PACKAGE("npm JS Package (WebView Runtime)"),
+    PYTHON_MODEL_WEIGHTS_AND_WORKER("Model Weights + Python GPU Worker"),
+    PYTHON_RENDER_PACKAGE_AND_WORKER("Python Wheel + LaTeX/FFmpeg Worker")
+}
+
 enum class VisionAvailabilityStatus(val label: String) {
     INSTALLED_VERIFIED("Installed & Verified"),
     NOT_INSTALLED("Not Installed"),
     DOWNLOADING("Downloading Package"),
     VERIFYING("Verifying Integrity"),
     BACKEND_REQUIRED("Worker URL Required"),
+    CONFIGURED_UNTESTED("Configured — Untested"),
+    BACKEND_UNREACHABLE("Worker Unreachable"),
     BACKEND_READY("Worker Ready"),
     UNSUPPORTED("Unsupported on Device"),
     ERROR("Verification Error")
@@ -117,7 +125,17 @@ data class VisionTechnologySpec(
     val supportsOffline: Boolean,
     val supportsUndoRedo: Boolean,
     val supportsAnimationOverlay: Boolean,
-    val backendRoleDescription: String
+    val backendRoleDescription: String,
+    val officialSourceUrl: String = officialRepoUrl,
+    val downloadKind: VisionDownloadKind = if (runtimeType == VisionRuntimeType.REMOTE_PYTHON_WORKER) {
+        VisionDownloadKind.PYTHON_RENDER_PACKAGE_AND_WORKER
+    } else {
+        VisionDownloadKind.NPM_WEBVIEW_PACKAGE
+    },
+    val registryMetadataUrl: String = "",
+    val visualizationRole: String = shortTagline,
+    val androidLimitationNote: String = backendRoleDescription,
+    val estimatedPackageSizeBytes: Long = 0L
 )
 
 data class VisionRuntimeDiagnostics(

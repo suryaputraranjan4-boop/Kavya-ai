@@ -26,7 +26,7 @@ object ScreenShareManager {
     private const val TAG = "KavyaScreenShareManager"
     private const val FIRST_FRAME_TIMEOUT_MS = 6500L
     private const val STATIC_SCREEN_THRESHOLD_MS = 4500L
-    private const val MAX_VAULT_SNAPSHOTS = 6
+    private const val MAX_VAULT_SNAPSHOTS = 250
 
     data class ScreenCaptureTelemetry(
         val sessionId: String = "",
@@ -627,15 +627,17 @@ object ScreenShareManager {
         heartbeatJob?.cancel()
         heartbeatJob = null
 
-        val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
-            action = ScreenCaptureService.ACTION_STOP
-        }
+        val serviceIntent = Intent(context, ScreenCaptureService::class.java)
         try {
-            context.startService(serviceIntent)
+            // Use stopService() instead of startService(ACTION_STOP) so stopping from
+            // backgrounded/lock-screen contexts never throws BackgroundServiceStartNotAllowedException.
+            // ScreenCaptureService.onDestroy() invokes stopCapture() cleanly and idempotently.
+            context.stopService(serviceIntent)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to send stop intent to ScreenCaptureService: ${e.message}")
+            Log.w(TAG, "Failed to stop ScreenCaptureService: ${e.message}")
         }
         cleanupResources()
+        currentSessionId = ""
         updateState(ScreenShareState.Stopped)
     }
 

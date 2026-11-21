@@ -565,15 +565,45 @@ object SelectedProviderClient {
 
     private suspend fun invokeHuggingFace(request: ProviderInvocationRequest): ProviderInvocationResult {
         return try {
-            val payload = JSONObject().apply {
-                put("inputs", "${request.systemInstruction}\n\nUser: ${request.prompt}\nAssistant JSON:")
-                put("parameters", JSONObject().apply {
-                    put("max_new_tokens", 800)
-                    put("temperature", 0.2)
-                    put("return_full_text", false)
+            val messages = JSONArray()
+            if (request.systemInstruction.isNotBlank()) {
+                messages.put(JSONObject().apply {
+                    put("role", "system")
+                    put("content", request.systemInstruction)
                 })
             }
-            val url = "https://router.huggingface.co/hf-inference/models/${request.modelId}"
+            val img = request.imageBytes
+            if (img != null && img.isNotEmpty()) {
+                val b64 = Base64.encodeToString(img, Base64.NO_WRAP)
+                val contentArr = JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("type", "text")
+                        put("text", request.prompt)
+                    })
+                    put(JSONObject().apply {
+                        put("type", "image_url")
+                        put("image_url", JSONObject().apply {
+                            put("url", "data:image/jpeg;base64,$b64")
+                        })
+                    })
+                }
+                messages.put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", contentArr)
+                })
+            } else {
+                messages.put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", request.prompt)
+                })
+            }
+            val payload = JSONObject().apply {
+                put("model", request.modelId)
+                put("messages", messages)
+                put("max_tokens", 800)
+                put("temperature", 0.2)
+            }
+            val url = "https://router.huggingface.co/v1/chat/completions"
             val req = Request.Builder()
                 .url(url)
                 .addHeader("Authorization", "Bearer ${request.apiKey}")
@@ -590,11 +620,10 @@ object SelectedProviderClient {
                         isAuthFailure = resp.code == 401 || resp.code == 403
                     )
                 }
-                val text = if (raw.trim().startsWith("[")) {
-                    JSONArray(raw).optJSONObject(0)?.optString("generated_text", "")?.trim().orEmpty()
-                } else {
-                    JSONObject(raw).optString("generated_text", "").trim()
-                }
+                val text = JSONObject(raw)
+                    .optJSONArray("choices")?.optJSONObject(0)
+                    ?.optJSONObject("message")?.optString("content", "")
+                    ?.trim().orEmpty()
                 if (text.isBlank()) {
                     ProviderInvocationResult.Failure("EMPTY_RESPONSE", "HuggingFace returned empty text.")
                 } else {

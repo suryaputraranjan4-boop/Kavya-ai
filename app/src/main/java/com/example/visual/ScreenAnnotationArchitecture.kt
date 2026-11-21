@@ -101,11 +101,24 @@ class ScreenCoordinateMapper(private val context: Context? = null) {
     var capturedFrameHeight: Int = 0
         private set
 
+    @Volatile
+    var overlayWindowOffsetX: Int = 0
+        private set
+
+    @Volatile
+    var overlayWindowOffsetY: Int = 0
+        private set
+
     fun updateCapturedFrameGeometry(width: Int, height: Int) {
         if (width > 0 && height > 0) {
             capturedFrameWidth = width
             capturedFrameHeight = height
         }
+    }
+
+    fun updateOverlayWindowOffset(offsetX: Int, offsetY: Int) {
+        overlayWindowOffsetX = offsetX.coerceAtLeast(0)
+        overlayWindowOffsetY = offsetY.coerceAtLeast(0)
     }
 
     fun refreshGeometry(overrideContext: Context? = context): DisplayGeometry {
@@ -207,10 +220,10 @@ class ScreenCoordinateMapper(private val context: Context? = null) {
         val normRight = (xmax / scale).coerceIn(0f, 1f)
         val normBottom = (ymax / scale).coerceIn(0f, 1f)
 
-        val left = (normLeft * screenWidth).roundToInt().coerceIn(0, screenWidth - 1)
-        val top = (normTop * screenHeight).roundToInt().coerceIn(0, screenHeight - 1)
-        val right = (normRight * screenWidth).roundToInt().coerceIn((left + 24).coerceAtMost(screenWidth), screenWidth)
-        val bottom = (normBottom * screenHeight).roundToInt().coerceIn((top + 24).coerceAtMost(screenHeight), screenHeight)
+        val left = (normLeft * screenWidth).roundToInt().coerceIn(0, (screenWidth - 1).coerceAtLeast(0))
+        val top = (normTop * screenHeight).roundToInt().coerceIn(0, (screenHeight - 1).coerceAtLeast(0))
+        val right = (normRight * screenWidth).roundToInt().coerceIn((left + 1).coerceAtMost(screenWidth), screenWidth)
+        val bottom = (normBottom * screenHeight).roundToInt().coerceIn((top + 1).coerceAtMost(screenHeight), screenHeight)
 
         return Rect(left, top, right, bottom)
     }
@@ -289,11 +302,68 @@ class ScreenCoordinateMapper(private val context: Context? = null) {
         screenHeight: Int = getGeometry().height
     ): Rect {
         if (bounds.width() <= 0 || bounds.height() <= 0) return Rect(0, 0, 0, 0)
-        val left = bounds.left.coerceIn(4, (screenWidth - 20).coerceAtLeast(4))
-        val top = bounds.top.coerceIn(4, (screenHeight - 20).coerceAtLeast(4))
-        val right = bounds.right.coerceIn((left + 16).coerceAtMost(screenWidth - 4), screenWidth - 4)
-        val bottom = bounds.bottom.coerceIn((top + 16).coerceAtMost(screenHeight - 4), screenHeight - 4)
+        val maxW = screenWidth.coerceAtLeast(1)
+        val maxH = screenHeight.coerceAtLeast(1)
+        val left = bounds.left.coerceIn(0, (maxW - 2).coerceAtLeast(0))
+        val top = bounds.top.coerceIn(0, (maxH - 2).coerceAtLeast(0))
+        val right = bounds.right.coerceIn((left + 1).coerceAtMost(maxW), maxW)
+        val bottom = bounds.bottom.coerceIn((top + 1).coerceAtMost(maxH), maxH)
         return Rect(left, top, right, bottom)
+    }
+
+    /**
+     * Guarantees that a click/tap point lies strictly inside [bounds].
+     */
+    fun clampPointInsideBounds(
+        point: Pair<Int, Int>,
+        bounds: Rect
+    ): Pair<Int, Int> {
+        if (bounds.width() <= 0 || bounds.height() <= 0) return point
+        val minX = if (bounds.width() >= 3) bounds.left + 1 else bounds.left
+        val maxX = if (bounds.width() >= 3) bounds.right - 1 else bounds.right
+        val minY = if (bounds.height() >= 3) bounds.top + 1 else bounds.top
+        val maxY = if (bounds.height() >= 3) bounds.bottom - 1 else bounds.bottom
+        return Pair(
+            point.first.coerceIn(minX, maxX.coerceAtLeast(minX)),
+            point.second.coerceIn(minY, maxY.coerceAtLeast(minY))
+        )
+    }
+
+    /**
+     * Converts physical screen coordinates into overlay canvas coordinates by subtracting any
+     * non-zero overlay window origin offset (e.g. if the system inset shifted the overlay window).
+     */
+    fun toOverlayCanvasRect(
+        screenRect: Rect,
+        canvasWidth: Int = getGeometry().width,
+        canvasHeight: Int = getGeometry().height
+    ): Rect {
+        if (screenRect.width() <= 0 || screenRect.height() <= 0) return Rect(0, 0, 0, 0)
+        val shifted = Rect(
+            screenRect.left - overlayWindowOffsetX,
+            screenRect.top - overlayWindowOffsetY,
+            screenRect.right - overlayWindowOffsetX,
+            screenRect.bottom - overlayWindowOffsetY
+        )
+        return clampBoundsToScreen(shifted, canvasWidth, canvasHeight)
+    }
+
+    /**
+     * Converts a physical screen tap point into overlay canvas coordinates and guarantees it lies inside
+     * [targetCanvasRect] when provided.
+     */
+    fun toOverlayCanvasPoint(
+        screenX: Int,
+        screenY: Int,
+        targetCanvasRect: Rect? = null
+    ): Pair<Float, Float> {
+        val shiftedX = screenX - overlayWindowOffsetX
+        val shiftedY = screenY - overlayWindowOffsetY
+        if (targetCanvasRect != null && targetCanvasRect.width() > 0 && targetCanvasRect.height() > 0) {
+            val clamped = clampPointInsideBounds(Pair(shiftedX, shiftedY), targetCanvasRect)
+            return Pair(clamped.first.toFloat(), clamped.second.toFloat())
+        }
+        return Pair(shiftedX.toFloat(), shiftedY.toFloat())
     }
 
     /**
@@ -487,7 +557,8 @@ object HighlightBoxRenderer {
         theme: JarvisThemePreset,
         pulseProgress: Float,
         scanlineProgress: Float,
-        coordinateMapper: ScreenCoordinateMapper
+        coordinateMapper: ScreenCoordinateMapper,
+        showStepNumberBadge: Boolean = true
     ) {
         if (bounds.width() <= 0 || bounds.height() <= 0) return
 
@@ -501,28 +572,30 @@ object HighlightBoxRenderer {
             label = label
         )
 
-        // 2. Numbered Step Badge at top-left corner of the highlight box
-        val badgeRadius = 22f
-        val badgeCenter = Offset(
-            bounds.left.toFloat().coerceIn(badgeRadius + 4f, drawScope.size.width - badgeRadius - 4f),
-            bounds.top.toFloat().coerceIn(badgeRadius + 4f, drawScope.size.height - badgeRadius - 4f)
-        )
-        drawScope.drawCircle(
-            color = theme.glowColor,
-            radius = badgeRadius + 5f * pulseProgress,
-            center = badgeCenter
-        )
-        drawScope.drawCircle(
-            color = theme.primaryColor,
-            radius = badgeRadius,
-            center = badgeCenter
-        )
-        drawScope.drawContext.canvas.nativeCanvas.drawText(
-            stepNumber.toString(),
-            badgeCenter.x,
-            badgeCenter.y + 10f,
-            stepNumberPaint
-        )
+        // 2. Numbered Step Badge at top-left corner of the highlight box (only in Step-by-Step Guidance mode)
+        if (showStepNumberBadge) {
+            val badgeRadius = 22f
+            val badgeCenter = Offset(
+                bounds.left.toFloat().coerceIn(badgeRadius + 4f, drawScope.size.width - badgeRadius - 4f),
+                bounds.top.toFloat().coerceIn(badgeRadius + 4f, drawScope.size.height - badgeRadius - 4f)
+            )
+            drawScope.drawCircle(
+                color = theme.glowColor,
+                radius = badgeRadius + 5f * pulseProgress,
+                center = badgeCenter
+            )
+            drawScope.drawCircle(
+                color = theme.primaryColor,
+                radius = badgeRadius,
+                center = badgeCenter
+            )
+            drawScope.drawContext.canvas.nativeCanvas.drawText(
+                stepNumber.toString(),
+                badgeCenter.x,
+                badgeCenter.y + 10f,
+                stepNumberPaint
+            )
+        }
 
         // 3. Small Explanatory Callout Label Pill near the highlight box
         val cleanLabel = label.trim().take(52)
@@ -851,12 +924,18 @@ fun ExplanationPanel(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f)
                 ) {
+                    val isGuidanceMode = activePlan?.mode == JarvisMode.SHOWS_YOU_HOW
+                    val headerBadgeText = when {
+                        isGuidanceMode -> "STEP $stepNum/$totalSteps"
+                        totalSteps > 1 -> "SECTION $stepNum/$totalSteps"
+                        else -> "SCREEN OVERVIEW"
+                    }
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = theme.primaryColor
                     ) {
                         Text(
-                            text = "STEP $stepNum/$totalSteps",
+                            text = headerBadgeText,
                             color = Color.Black,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold,

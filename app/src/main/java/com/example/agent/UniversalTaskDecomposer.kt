@@ -340,12 +340,13 @@ object UniversalTaskDecomposer {
                     recipient = "friend",
                     expectedState = "Friend's chat conversation open"
                 )
+                val extractedMsg = extractMessagePayload(trimmed).orEmpty()
                 addStep(
                     actionType = UniversalActionType.TYPE,
                     targetApp = "Instagram",
                     actionDesc = "Prepare the requested message",
-                    param = "Hello, check this out!",
-                    messageText = "Hello, check this out!",
+                    param = extractedMsg,
+                    messageText = extractedMsg,
                     selectorType = SelectorType.SEARCH_FIELD,
                     expectedState = "Message draft prepared in composer"
                 )
@@ -361,7 +362,7 @@ object UniversalTaskDecomposer {
                     targetApp = "Instagram",
                     actionDesc = "Send only after confirmation",
                     recipient = "friend",
-                    messageText = "Hello, check this out!",
+                    messageText = extractedMsg,
                     expectedState = "Message sent to friend",
                     requiresConfirmation = true
                 )
@@ -397,8 +398,8 @@ object UniversalTaskDecomposer {
         // E.g.: "Open Gemini, generate an image using a suitable prompt, wait until..."
         // =========================================================================
         if (lower.contains("gemini") && lower.contains("image") && (lower.contains("whatsapp") || lower.contains("send") || lower.contains("share")) && !lower.contains("fail") && !lower.contains("recover") && !lower.contains("alternative")) {
-            val recipient = extractRecipient(trimmed) ?: "Papa"
-            val promptTopic = extractImagePromptTopic(trimmed) ?: "A beautiful sunrise over majestic mountains"
+            val recipient = extractRecipient(trimmed).orEmpty()
+            val promptTopic = extractImagePromptTopic(trimmed) ?: trimmed
 
             addStep(UniversalActionType.OPEN_APP, "Gemini", "Open Gemini", expectedState = "Gemini in foreground")
             addStep(UniversalActionType.VERIFY, "Gemini", "Verify Gemini is loaded", expectedState = "Gemini interface loaded")
@@ -540,15 +541,15 @@ object UniversalTaskDecomposer {
         // =========================================================================
         if (lower.contains("whatsapp") && (lower.contains("another messaging") || lower.contains("other messaging") || lower.contains("telegram")) && lower.contains("message")) {
             addStep(UniversalActionType.OPEN_APP, "WhatsApp", "Open WhatsApp", expectedState = "WhatsApp in foreground")
-            addStep(UniversalActionType.OPEN_CHAT, "WhatsApp", "Find one specified conversation", param = "Recipient 1", recipient = "Recipient 1", expectedState = "Conversation 1 open")
-            addStep(UniversalActionType.TYPE, "WhatsApp", "Prepare first message", param = "Message 1", messageText = "Message 1", selectorType = SelectorType.SEARCH_FIELD, expectedState = "Draft 1 prepared")
+            addStep(UniversalActionType.OPEN_CHAT, "WhatsApp", "Find first specified conversation", param = "", recipient = "", expectedState = "Conversation 1 open")
+            addStep(UniversalActionType.TYPE, "WhatsApp", "Prepare first message", param = "", messageText = "", selectorType = SelectorType.SEARCH_FIELD, expectedState = "Draft 1 prepared")
             addStep(UniversalActionType.OPEN_APP, "Telegram", "Open another messaging application", expectedState = "Second messaging app open")
-            addStep(UniversalActionType.OPEN_CHAT, "Telegram", "Find another specified conversation", param = "Recipient 2", recipient = "Recipient 2", expectedState = "Conversation 2 open")
-            addStep(UniversalActionType.TYPE, "Telegram", "Prepare a different message", param = "Message 2", messageText = "Message 2", selectorType = SelectorType.SEARCH_FIELD, expectedState = "Draft 2 prepared")
+            addStep(UniversalActionType.OPEN_CHAT, "Telegram", "Find second specified conversation", param = "", recipient = "", expectedState = "Conversation 2 open")
+            addStep(UniversalActionType.TYPE, "Telegram", "Prepare a different message", param = "", messageText = "", selectorType = SelectorType.SEARCH_FIELD, expectedState = "Draft 2 prepared")
             addStep(UniversalActionType.CONFIRM_ACTION, "System", "Show me both before sending and ask confirmation", requiresConfirmation = true, expectedState = "Both messages reviewed and approved")
-            addStep(UniversalActionType.SEND_MESSAGE, "Telegram", "Send confirmed message 2", recipient = "Recipient 2", requiresConfirmation = true, expectedState = "Message 2 sent")
+            addStep(UniversalActionType.SEND_MESSAGE, "Telegram", "Send confirmed message 2", recipient = "", requiresConfirmation = true, expectedState = "Message 2 sent")
             addStep(UniversalActionType.OPEN_APP, "WhatsApp", "Switch back to WhatsApp", expectedState = "WhatsApp open")
-            addStep(UniversalActionType.SEND_MESSAGE, "WhatsApp", "Send confirmed message 1", recipient = "Recipient 1", requiresConfirmation = true, expectedState = "Message 1 sent")
+            addStep(UniversalActionType.SEND_MESSAGE, "WhatsApp", "Send confirmed message 1", recipient = "", requiresConfirmation = true, expectedState = "Message 1 sent")
             addStep(UniversalActionType.VERIFY, "System", "Verify both messages sent", expectedState = "Both messages verified delivered")
 
             return TaskPlan(
@@ -591,7 +592,8 @@ object UniversalTaskDecomposer {
         // SCENARIO 9 PATTERN: Complex Multi-Step Form Workflow
         // =========================================================================
         if (lower.contains("form") && (lower.contains("fill") || lower.contains("enter") || lower.contains("review") || lower.contains("submit"))) {
-            addStep(UniversalActionType.OPEN_URL, "Google Chrome", "Open specified website", param = "https://example.com/form", expectedState = "Website loaded")
+            val extractedUrl = Regex("""https?://\S+""").find(trimmed)?.value.orEmpty()
+            addStep(UniversalActionType.OPEN_URL, "Google Chrome", "Open specified website", param = extractedUrl, expectedState = "Website loaded")
             addStep(UniversalActionType.WAIT_FOR_CONDITION, "Google Chrome", "Wait for website to load", waitCondition = WaitConditionType.PAGE_LOADED, expectedState = "Form page ready")
             addStep(UniversalActionType.TAP, "Google Chrome", "Find the relevant form", param = "Form", expectedState = "Form located")
             addStep(UniversalActionType.FILL_FORM, "Google Chrome", "Identify each field individually and enter requested information", selectorType = SelectorType.FORM_FIELD, expectedState = "Fields filled accurately")

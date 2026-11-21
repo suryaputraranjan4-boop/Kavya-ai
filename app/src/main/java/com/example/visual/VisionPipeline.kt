@@ -29,11 +29,15 @@ object VisionPipeline {
     data class VisualPerceptionState(
         val isPipelineActive: Boolean = false,
         val totalFramesProcessed: Int = 0,
+        val frameSequenceNumber: Long = 0L,
         val lastFrameHash: String = "",
         val hasVisualChanged: Boolean = false,
+        val lastVisualDelta: Float = 0f,
         val currentPackage: String = "",
         val timestamp: Long = 0L
     )
+
+    private const val MEAN_DIFF_CHANGE_THRESHOLD = 4.5f
 
     private val _perceptionState = MutableStateFlow(VisualPerceptionState())
     val perceptionState: StateFlow<VisualPerceptionState> = _perceptionState.asStateFlow()
@@ -44,33 +48,46 @@ object VisionPipeline {
     private var previousFrameHash = ""
     private var previousPackage = ""
     private var framesProcessedCount = 0
+    private val sequenceCounter = java.util.concurrent.atomic.AtomicLong(0L)
     private val hashSampleLock = Any()
     private val hashSampleBuffer = ByteArray(256)
+    private var previousLuminanceGrid: IntArray? = null
+    @Volatile
+    var onMeaningfulScreenChange: ((sequenceNumber: Long, packageName: String, delta: Float) -> Unit)? = null
 
     /**
      * Ingests a new raw frame from the ScreenCaptureService VirtualDisplay.
+     *
+     * @param bypassIntervalThrottle Set true when the caller (e.g. ScreenCaptureService)
+     *        has already enforced PerformanceProfileManager.minFrameIntervalMs so frames
+     *        are not dropped twice by slightly-skewed timestamps.
      */
-    fun onNewFrame(bitmap: Bitmap) {
+    fun onNewFrame(bitmap: Bitmap, bypassIntervalThrottle: Boolean = false) {
         if (bitmap.isRecycled) return
         val now = System.currentTimeMillis()
-        val minIntervalMs = PerformanceProfileManager.snapshot.value.minFrameIntervalMs
-        if (now - lastProcessTimestamp < minIntervalMs) {
-            return
+        if (!bypassIntervalThrottle) {
+            val minIntervalMs = PerformanceProfileManager.snapshot.value.minFrameIntervalMs
+            if (now - lastProcessTimestamp < minIntervalMs) {
+                return
+            }
         }
         lastProcessTimestamp = now
 
         cachedLatestFrame = bitmap
         framesProcessedCount++
+        val seq = sequenceCounter.incrementAndGet()
 
-        val frameHash = computeFrameHash(bitmap)
-        val hasChanged = frameHash != previousFrameHash
+        val (frameHash, meanDelta) = computePerceptualSignatureAndDelta(bitmap)
+        val hasChanged = previousFrameHash.isEmpty() || meanDelta >= MEAN_DIFF_CHANGE_THRESHOLD
         if (!hasChanged && previousFrameHash.isNotEmpty()) {
             PerformanceProfileManager.recordSkippedUnchangedFrame()
+        } else {
+            previousFrameHash = frameHash
         }
-        previousFrameHash = frameHash
 
         val activePkg = KavyaAccessibilityService.instance?.getForegroundPackage() ?: "unknown"
-        if (previousPackage.isNotBlank() && activePkg != "unknown" && activePkg != previousPackage) {
+        val packageChanged = previousPackage.isNotBlank() && activePkg != "unknown" && activePkg != previousPackage
+        if (packageChanged) {
             ScreenAnnotationManager.onForegroundWindowChanged(activePkg)
         }
         previousPackage = activePkg
@@ -78,11 +95,17 @@ object VisionPipeline {
         _perceptionState.value = VisualPerceptionState(
             isPipelineActive = true,
             totalFramesProcessed = framesProcessedCount,
+            frameSequenceNumber = seq,
             lastFrameHash = frameHash,
-            hasVisualChanged = hasChanged,
+            hasVisualChanged = hasChanged || packageChanged,
+            lastVisualDelta = meanDelta,
             currentPackage = activePkg,
             timestamp = now
         )
+
+        if (hasChanged || packageChanged) {
+            onMeaningfulScreenChange?.invoke(seq, activePkg, meanDelta)
+        }
     }
 
     fun getLatestFrame(): Bitmap? {
@@ -232,13 +255,16 @@ object VisionPipeline {
     fun invalidateStaleFrameOnResize(width: Int, height: Int) {
         cachedLatestFrame = null
         previousFrameHash = ""
+        synchronized(hashSampleLock) {
+            previousLuminanceGrid = null
+        }
         Log.d(TAG, "Invalidated cached frame after captured content resize to ${width}x${height}")
     }
 
     fun hasSignificantFrameChange(bitmap: Bitmap): Boolean {
         if (bitmap.isRecycled) return false
-        val newHash = computeFrameHash(bitmap)
-        return newHash.isNotBlank() && newHash != previousFrameHash
+        val (_, delta) = peekPerceptualDelta(bitmap)
+        return previousFrameHash.isEmpty() || delta >= MEAN_DIFF_CHANGE_THRESHOLD
     }
 
     fun clearFrame() {
@@ -247,20 +273,30 @@ object VisionPipeline {
 
     fun reset() {
         cachedLatestFrame = null
+        lastProcessTimestamp = 0L
         previousFrameHash = ""
         previousPackage = ""
         framesProcessedCount = 0
+        sequenceCounter.set(0L)
+        synchronized(hashSampleLock) {
+            previousLuminanceGrid = null
+        }
         analysisInFlight.set(false)
         _perceptionState.value = VisualPerceptionState(isPipelineActive = false)
     }
 
-    private fun computeFrameHash(bitmap: Bitmap): String {
+    /**
+     * Computes a 16x16 downsampled luminance grid and returns (md5Hex, meanAbsoluteDifferenceFromPrevious).
+     * Updates the stored baseline grid ONLY when delta >= MEAN_DIFF_CHANGE_THRESHOLD (or on first frame),
+     * preventing slow drift from hiding gradual changes while ignoring clock ticks / minor JPEG shimmer.
+     */
+    private fun computePerceptualSignatureAndDelta(bitmap: Bitmap): Pair<String, Float> {
         return try {
-            if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return ""
-            // Sample 16x16 grid into synchronized reusable 256-byte buffer without Bitmap or ByteArray churn
+            if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return "" to 0f
             val w = bitmap.width
             val h = bitmap.height
-            val digest = synchronized(hashSampleLock) {
+            synchronized(hashSampleLock) {
+                val currentGrid = IntArray(256)
                 var idx = 0
                 for (y in 0 until 16) {
                     val py = ((y * h) / 16).coerceIn(0, h - 1)
@@ -270,14 +306,64 @@ object VisionPipeline {
                         val r = (color shr 16) and 0xFF
                         val g = (color shr 8) and 0xFF
                         val b = color and 0xFF
-                        hashSampleBuffer[idx++] = ((r + g + b) / 3).toByte()
+                        val luma = (r * 77 + g * 150 + b * 29) shr 8
+                        currentGrid[idx] = luma
+                        hashSampleBuffer[idx] = luma.toByte()
+                        idx++
                     }
                 }
-                MessageDigest.getInstance("MD5").digest(hashSampleBuffer)
+                val prev = previousLuminanceGrid
+                val meanDelta = if (prev == null) {
+                    255f
+                } else {
+                    var sumDiff = 0
+                    for (i in 0 until 256) {
+                        sumDiff += kotlin.math.abs(currentGrid[i] - prev[i])
+                    }
+                    sumDiff / 256f
+                }
+                if (prev == null || meanDelta >= MEAN_DIFF_CHANGE_THRESHOLD) {
+                    previousLuminanceGrid = currentGrid
+                }
+                val digest = MessageDigest.getInstance("MD5").digest(hashSampleBuffer)
+                digest.joinToString("") { "%02x".format(it) } to meanDelta
             }
-            digest.joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
-            bitmap.generationId.toString()
+            bitmap.generationId.toString() to 255f
+        }
+    }
+
+    private fun peekPerceptualDelta(bitmap: Bitmap): Pair<String, Float> {
+        return try {
+            if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return "" to 0f
+            val w = bitmap.width
+            val h = bitmap.height
+            synchronized(hashSampleLock) {
+                val prev = previousLuminanceGrid
+                var sumDiff = 0
+                var idx = 0
+                for (y in 0 until 16) {
+                    val py = ((y * h) / 16).coerceIn(0, h - 1)
+                    for (x in 0 until 16) {
+                        val px = ((x * w) / 16).coerceIn(0, w - 1)
+                        val color = bitmap.getPixel(px, py)
+                        val r = (color shr 16) and 0xFF
+                        val g = (color shr 8) and 0xFF
+                        val b = color and 0xFF
+                        val luma = (r * 77 + g * 150 + b * 29) shr 8
+                        hashSampleBuffer[idx] = luma.toByte()
+                        if (prev != null) {
+                            sumDiff += kotlin.math.abs(luma - prev[idx])
+                        }
+                        idx++
+                    }
+                }
+                val meanDelta = if (prev == null) 255f else sumDiff / 256f
+                val digest = MessageDigest.getInstance("MD5").digest(hashSampleBuffer)
+                digest.joinToString("") { "%02x".format(it) } to meanDelta
+            }
+        } catch (_: Exception) {
+            bitmap.generationId.toString() to 255f
         }
     }
 }

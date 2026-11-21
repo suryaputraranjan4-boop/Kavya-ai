@@ -17,7 +17,9 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.automirrored.filled.ScreenShare
 import androidx.compose.material.icons.filled.StopScreenShare
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
+import androidx.compose.ui.platform.testTag
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -276,17 +278,17 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 } else null
             }
     ) {
-        // Very subtle background atmosphere
+        // Subtle calm atmospheric depth
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    Brush.radialGradient(
+                    Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xFF1A1A2E).copy(alpha = 0.6f),
-                            Color.Black
-                        ),
-                        radius = 800f
+                            Background,
+                            BackgroundGradientEnd,
+                            Color(0xFF07090D)
+                        )
                     )
                 )
         )
@@ -301,52 +303,38 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 16.dp, bottom = 24.dp)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(top = 8.dp, bottom = 14.dp)
         ) {
-            // TOP BAR: Menu, Screen Share, and Kavya Title
+            // TOP BAR: Balanced Apple Liquid Glass controls with dead-center title
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
+                    .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Left side: Hamburger + Screen Share
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                        Icon(
-                            imageVector = Icons.Default.Menu,
-                            contentDescription = "Menu",
-                            tint = Color.White.copy(alpha = 0.8f),
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    
-                    val shareInteractionSource = remember { MutableInteractionSource() }
-                    val sharePressed by shareInteractionSource.collectIsPressedAsState()
-                    val shareScale by animateFloatAsState(if (sharePressed) 0.9f else 1f, label="shareScale")
-                    
-                    Box(
-                        modifier = Modifier
-                            .scale(shareScale)
-                            .clip(CircleShape)
-                            .clickable(
-                                interactionSource = shareInteractionSource,
-                                indication = null,
-                                onClick = { showScreenShareSheet = true }
-                            )
-                            .padding(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (isScreenSharing) Icons.Filled.StopScreenShare else Icons.Filled.ScreenShare,
-                            contentDescription = "Screen Share",
-                            tint = if (isScreenSharing) Color(0xFFFF4444) else Color.White.copy(alpha = 0.6f),
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+                // Left side: Drawer + Screen Share
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    AppleGlassIconButton(
+                        icon = Icons.Default.Menu,
+                        contentDescription = "Menu",
+                        onClick = { scope.launch { drawerState.open() } }
+                    )
+                    AppleGlassIconButton(
+                        icon = if (isScreenSharing) Icons.Filled.StopScreenShare else Icons.Filled.ScreenShare,
+                        contentDescription = "Screen Share",
+                        active = isScreenSharing,
+                        activeColor = Error,
+                        onClick = { showScreenShareSheet = true }
+                    )
                 }
-                
+
                 // Center: Title & System Status
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -355,53 +343,60 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     Text(
                         text = "KAVYA",
                         style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.W300,
-                            letterSpacing = 6.sp,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = 5.sp
                         ),
-                        color = Color.White.copy(alpha = 0.95f),
+                        color = TextPrimary,
                         textAlign = TextAlign.Center
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(3.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .size(5.dp)
+                                .size(6.dp)
                                 .clip(CircleShape)
-                                .background(if (isOfflineMode) Color(0xFF00E5FF) else if (canStart) Color(0xFF10B981) else Color(0xFFFFB020))
+                                .background(if (isOfflineMode) PrimaryLight else if (canStart) SuccessGreen else AccentYellow)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isOfflineMode) "OFFLINE • GEMMA 4 E4B" else if (canStart) "SYSTEM READY" else "SETUP REQUIRED",
+                            text = if (isOfflineMode) "LOCAL MODE" else if (canStart) "READY" else "SETUP NEEDED",
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 9.sp,
-                                letterSpacing = 1.5.sp,
+                                fontSize = 9.5.sp,
+                                letterSpacing = 1.2.sp,
                                 fontWeight = FontWeight.SemiBold
                             ),
-                            color = if (isOfflineMode) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.45f)
+                            color = if (isOfflineMode) PrimaryLight else TextSecondary
                         )
                     }
                 }
 
-                // Right side: Unified JARVIS Live Overlay toggle
-                IconButton(
-                    onClick = {
-                        if (com.example.visual.JarvisOverlayController.hasOverlayPermission(context)) {
-                            if (com.example.visual.JarvisOverlayController.isOverlayRunning.value) {
-                                com.example.visual.JarvisOverlayController.toggleOrbExpanded()
-                            } else {
-                                com.example.visual.JarvisOverlayController.enableFloatingOrb(context)
-                            }
-                        } else {
-                            showScreenShareSheet = true
-                        }
-                    }
+                // Right side: Vision & Models + Floating Orb toggle (balanced 2-button cluster)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.TouchApp,
-                        contentDescription = "JARVIS Live Overlay",
-                        tint = Color.White.copy(alpha = 0.85f),
-                        modifier = Modifier.size(22.dp)
+                    val isOrbRunning by com.example.visual.JarvisOverlayController.isOverlayRunning.collectAsState()
+                    AppleGlassIconButton(
+                        icon = Icons.Default.DocumentScanner,
+                        contentDescription = "Vision and Local Models",
+                        onClick = { navController.navigate("jarvis_intelligence") }
+                    )
+                    AppleGlassIconButton(
+                        icon = Icons.Default.TouchApp,
+                        contentDescription = "Floating Orb Overlay",
+                        active = isOrbRunning,
+                        activeColor = PrimaryLight,
+                        onClick = {
+                            if (com.example.visual.JarvisOverlayController.hasOverlayPermission(context)) {
+                                if (com.example.visual.JarvisOverlayController.isOverlayRunning.value) {
+                                    com.example.visual.JarvisOverlayController.toggleOrbExpanded()
+                                } else {
+                                    com.example.visual.JarvisOverlayController.enableFloatingOrb(context)
+                                }
+                            } else {
+                                showScreenShareSheet = true
+                            }
+                        }
                     )
                 }
             }
@@ -533,6 +528,78 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         modifier = Modifier.clickable { navController.navigate("permissions") }
                     )
                 }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Dedicated EXPLAIN SCREEN primary button + instant privacy stop pills
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 20.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = Primary.copy(alpha = 0.22f),
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .clip(RoundedCornerShape(22.dp))
+                            .border(1.dp, PrimaryLight.copy(alpha = 0.55f), RoundedCornerShape(22.dp))
+                            .clickable { viewModel.explainCurrentScreen("Explain this screen") }
+                            .testTag("explain_screen_button")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Visibility,
+                                contentDescription = "Explain Screen",
+                                tint = PrimaryLight,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "EXPLAIN SCREEN",
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 0.8.sp
+                                ),
+                                color = TextPrimary
+                            )
+                        }
+                    }
+
+                    if (isScreenSharing) {
+                        Surface(
+                            shape = RoundedCornerShape(22.dp),
+                            color = Error.copy(alpha = 0.22f),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .clip(RoundedCornerShape(22.dp))
+                                .border(1.dp, Error.copy(alpha = 0.65f), RoundedCornerShape(22.dp))
+                                .clickable { viewModel.stopScreenShare() }
+                                .testTag("home_stop_screen_share_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.StopScreenShare,
+                                    contentDescription = "Stop Screen Sharing",
+                                    tint = Error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Stop Share",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = Error
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // JARVIS "Shows You How" Guidance Banner
@@ -555,36 +622,37 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                 }
             }
 
-            // Quick Action Capsules
+            // Quick Action Capsules (Frosted Glass)
             val suggestions = listOf("Explain Screen", "Screen Guide", "YouTube खोलो", "WhatsApp खोलो", "Google पर सर्च करो", "Torch ON", "Settings")
             androidx.compose.foundation.lazy.LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(suggestions.size) { idx ->
                     val sug = suggestions[idx]
                     Surface(
-                        color = Color.White.copy(alpha = 0.05f),
+                        color = Color(0xB3191E2A),
                         shape = RoundedCornerShape(20.dp),
-                        border = androidx.compose.foundation.BorderStroke(0.5.dp, Color.White.copy(alpha = 0.15f)),
-                        modifier = Modifier.clickable { viewModel.sendMessage(sug) }
+                        border = BorderStroke(1.dp, AppleGlassBorderBrush),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { viewModel.sendMessage(sug) }
                     ) {
                         Text(
                             text = sug,
                             style = MaterialTheme.typography.labelSmall.copy(
-                                color = Color.White.copy(alpha = 0.8f),
-                                letterSpacing = 0.4.sp,
-                                fontWeight = FontWeight.Normal
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium
                             ),
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                            color = TextPrimary.copy(alpha = 0.90f),
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             // BOTTOM: Chat Input
             ChatBar(
@@ -610,11 +678,11 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                     micEngineState == com.example.voice.KavyaMicrophoneEngine.EngineState.MIC_STARTING,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
+                    .padding(horizontal = 16.dp)
             )
         }
 
-        // Live CEO Orchestration Status HUD (Auth, Reasoning, Screen Observation, Verification, Pause/Resume/Cancel/Stop)
+        // Live CEO Orchestration Status HUD
         CeoOrchestrationHud(
             snapshot = orchestrationState,
             fallbackStatus = agentActionStatus,
@@ -624,7 +692,8 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
             onEmergencyStop = { viewModel.emergencyStop("User tapped STOP") },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 74.dp, start = 16.dp, end = 16.dp)
+                .statusBarsPadding()
+                .padding(top = 64.dp, start = 16.dp, end = 16.dp)
                 .widthIn(max = 560.dp)
         )
     }
@@ -636,13 +705,13 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
         onDeny = { viewModel.cancelPendingAction() }
     )
 
-    // Floating White Liquid Glass Popup anchored near Plus button
+    // Dark Apple Liquid Glass Attachment Popup anchored above ChatBar
     if (showAttachmentPopup) {
         Popup(
             alignment = Alignment.BottomStart,
             offset = IntOffset(
-                x = with(LocalDensity.current) { 24.dp.roundToPx() },
-                y = with(LocalDensity.current) { (-80).dp.roundToPx() }
+                x = with(LocalDensity.current) { 16.dp.roundToPx() },
+                y = with(LocalDensity.current) { (-92).dp.roundToPx() }
             ),
             onDismissRequest = { showAttachmentPopup = false },
             properties = PopupProperties(
@@ -653,32 +722,22 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
         ) {
             Surface(
                 modifier = Modifier
-                    .width(285.dp)
+                    .width(296.dp)
                     .shadow(
-                        elevation = 18.dp,
-                        shape = RoundedCornerShape(22.dp),
-                        spotColor = Color(0x38000000),
-                        ambientColor = Color(0x1A000000)
+                        elevation = 22.dp,
+                        shape = RoundedCornerShape(24.dp),
+                        spotColor = Color(0x70000000),
+                        ambientColor = Color(0x33000000)
                     )
                     .border(
-                        border = BorderStroke(
-                            1.2.dp,
-                            Brush.linearGradient(
-                                listOf(
-                                    Color.White,
-                                    Color(0xB3FFFFFF),
-                                    Color(0x80FFFFFF),
-                                    Color.White
-                                )
-                            )
-                        ),
-                        shape = RoundedCornerShape(22.dp)
+                        border = BorderStroke(1.dp, AppleGlassBorderBrush),
+                        shape = RoundedCornerShape(24.dp)
                     ),
-                color = Color(0xB3FFFFFF),
-                shape = RoundedCornerShape(22.dp)
+                color = Color(0xEE141925),
+                shape = RoundedCornerShape(24.dp)
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -686,30 +745,25 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "ATTACH & SHARE",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 1.2.sp,
-                                color = Color.White,
-                                shadow = Shadow(Color(0xF0000000), Offset(0f, 1.5f), 4.5f)
-                            ),
+                            text = "Attach & Share",
+                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
+                            color = TextSecondary,
                             modifier = Modifier.padding(start = 4.dp)
                         )
                         IconButton(
                             onClick = { showAttachmentPopup = false },
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Close attachments",
-                                tint = Color.White,
-                                modifier = Modifier.size(15.dp)
+                                tint = TextSecondary,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     // Row 1: Camera, PDF Scanner, Live Screen
                     Row(
@@ -719,6 +773,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         AttachmentOptionItem(
                             icon = Icons.Default.PhotoCamera,
                             label = "Camera",
+                            accentColor = PrimaryLight,
                             onClick = {
                                 showAttachmentPopup = false
                                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -730,7 +785,8 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         )
                         AttachmentOptionItem(
                             icon = Icons.Default.DocumentScanner,
-                            label = "PDF Scanner",
+                            label = "PDF Scan",
+                            accentColor = AccentCyan,
                             onClick = {
                                 showAttachmentPopup = false
                                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -743,6 +799,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         AttachmentOptionItem(
                             icon = Icons.Default.ScreenShare,
                             label = "Live Screen",
+                            accentColor = SuccessGreen,
                             onClick = {
                                 showAttachmentPopup = false
                                 showScreenShareSheet = true
@@ -760,6 +817,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         AttachmentOptionItem(
                             icon = Icons.Default.PhotoLibrary,
                             label = "Gallery",
+                            accentColor = AccentPurpleLight,
                             onClick = {
                                 showAttachmentPopup = false
                                 galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -768,6 +826,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         AttachmentOptionItem(
                             icon = Icons.Default.PictureAsPdf,
                             label = "PDF Files",
+                            accentColor = Error,
                             onClick = {
                                 showAttachmentPopup = false
                                 pdfFileLauncher.launch(arrayOf("application/pdf"))
@@ -776,6 +835,7 @@ fun HomeScreen(navController: NavController, viewModel: KavyaViewModel) {
                         AttachmentOptionItem(
                             icon = Icons.Default.FolderOpen,
                             label = "Documents",
+                            accentColor = AccentYellow,
                             onClick = {
                                 showAttachmentPopup = false
                                 docFileLauncher.launch(arrayOf("*/*"))

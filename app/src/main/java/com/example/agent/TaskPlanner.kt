@@ -1196,11 +1196,7 @@ class TaskPlanner(private val appResolver: AppResolver? = null) {
 
         val genericPlaceholders = listOf("गाने को", "गाने", "गाना", "gana", "gaane", "video", "song", "this song", "is gaane", "is gaane ko", "")
         if (query.lowercase(Locale.ROOT) in genericPlaceholders) {
-            val isMusicOrVideo = clause.lowercase(Locale.ROOT).let {
-                it.contains("gana") || it.contains("gaana") || it.contains("song") ||
-                it.contains("video") || it.contains("गाने") || it.contains("गाना")
-            }
-            query = if (isMusicOrVideo) "Trending songs" else "Popular"
+            query = ""
         }
 
         return query

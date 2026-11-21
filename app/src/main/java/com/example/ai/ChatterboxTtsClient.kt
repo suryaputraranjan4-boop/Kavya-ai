@@ -104,7 +104,7 @@ class ChatterboxTtsClient(private val context: Context) {
 
         val token = AppPreferences.getChatterboxAuthToken(context).trim()
 
-        // Read reference audio if available
+        // Read reference audio if available and require explicit user consent before upload
         val refBytes = referenceAudioBytes ?: run {
             if (!referenceAudioPath.isNullOrBlank()) {
                 val f = File(referenceAudioPath)
@@ -112,6 +112,12 @@ class ChatterboxTtsClient(private val context: Context) {
                     try { f.readBytes() } catch (_: Exception) { null }
                 } else null
             } else null
+        }
+
+        if (refBytes != null && refBytes.isNotEmpty() && !AppPreferences.isChatterboxVoiceUploadConsented(context)) {
+            return@withContext ChatterboxResult.Error(
+                "VOICE_UPLOAD_CONSENT_REQUIRED: Enable custom voice upload consent in Voice Studio before sending your reference audio to a Chatterbox server."
+            )
         }
 
         val refBase64 = if (refBytes != null && refBytes.isNotEmpty()) {

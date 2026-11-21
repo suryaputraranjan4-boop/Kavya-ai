@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-16T12:30:27.938Z",
+  "generatedAt": "2026-11-19T07:42:36.078Z",
   "files": {
     "vision/vendor/three.bundle.mjs": {
       "sizeBytes": 829027,
@@ -14,8 +14,8 @@
       "sha256": "7771ffcf39a58d3f87beb9658537162a3a8077cdac6c60fc1674d73c846545da"
     },
     "vision/vendor/threepipe.bundle.mjs": {
-      "sizeBytes": 1961081,
-      "sha256": "bd1bc5770036c492f880ee2df51f5dbc94aabbfd34b63869f3d7696ba54b41ce"
+      "sizeBytes": 1970247,
+      "sha256": "cdb6b2b9063bef4bac20dcba784b8d7aa13dc8d4549342b0971302d22301b21e"
     },
     "vision/vendor/gsplat.bundle.mjs": {
       "sizeBytes": 129437,
@@ -26,20 +26,20 @@
       "sha256": "ca180396f07e0c96f5f53b4d18d95ffab7a8a2b5cc115aa9a6fe7037a043c2c7"
     },
     "vision/vendor/mermaid.bundle.mjs": {
-      "sizeBytes": 5537838,
-      "sha256": "336df803d87a38b70a01e736e666c8f7601d2ce42f5e47c8fafe5d721074b9a3"
+      "sizeBytes": 5381490,
+      "sha256": "8414921228f4c0759a5026605e6fb43f2a8f8307290e413eeb6e5ff0fa17c00e"
     },
     "vision/vendor/reactflow.bundle.mjs": {
-      "sizeBytes": 408076,
-      "sha256": "32835cf9511c2a5971bf2c38af183fc46964e380cb5268b91285d4d03a779e3f"
+      "sizeBytes": 408718,
+      "sha256": "be7eafb655f9c4fd324c98406d7c42c20daca25c4b35d11692ec5d10b2b12cfe"
     },
     "vision/vendor/reactflow.css": {
       "sizeBytes": 18296,
       "sha256": "6e8ffcea56270aa1a53c781073c4647a4fa1a02b2d14016e7c50e56b2c078919"
     },
     "vision/vendor/excalidraw.bundle.mjs": {
-      "sizeBytes": 8460859,
-      "sha256": "5fdc3ca89100978629b67afeb251b6099aa7709baff50d3c42ffc2ce3ddebd06"
+      "sizeBytes": 8460896,
+      "sha256": "5d2813cf03386143df62007d40d23af1cc526565e675ab1843d965ac09b1ad0e"
     },
     "vision/vendor/excalidraw.css": {
       "sizeBytes": 144689,
@@ -58,8 +58,8 @@
       "sha256": "b66b25aeb4df84e33199dc21694014d336d222cbd9deb0e5a7c14bd6aa0d0fd0"
     },
     "vision/vendor/force-graph-3d.bundle.mjs": {
-      "sizeBytes": 1508650,
-      "sha256": "e0f3d8fed473c6591a41bb932189016d459eebb15da6cf6f747320b22fe92038"
+      "sizeBytes": 1791437,
+      "sha256": "71b140e1a402231e04ba14f010dbffd4b526663b5956292be1c4d424c7de647a"
     },
     "vision/vendor/gsap.bundle.mjs": {
       "sizeBytes": 71136,

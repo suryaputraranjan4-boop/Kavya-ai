@@ -157,9 +157,10 @@ class KokoroAndMultiModelUpgradeTest {
     // =========================================================================
 
     @Test
-    fun modelCatalog_containsAll12LightweightOnnxModels3ExcludedAndNoSyntheticHashes() {
-        assertEquals(12, ModelCatalog.LIGHTWEIGHT_VISION_DESCRIPTORS.size)
-        assertEquals(3, ModelCatalog.EXCLUDED_MODELS.size)
+    fun modelCatalog_replacesLegacy12OnnxWith12VisualizationTechnologiesAndPreservesVoiceAndVlm() {
+        assertTrue(ModelCatalog.LIGHTWEIGHT_VISION_DESCRIPTORS.isEmpty())
+        assertEquals(12, com.example.vision.VisionTechRegistry.core12Technologies.size)
+        assertEquals(8, ModelCatalog.EXCLUDED_MODELS.size)
         assertEquals(10, ModelLifecycleState.entries.size)
 
         val excludedIds = ModelCatalog.EXCLUDED_MODELS.map { it.modelId }
@@ -167,7 +168,8 @@ class KokoroAndMultiModelUpgradeTest {
         assertTrue("qualcomm/FastViT" in excludedIds)
         assertTrue("qualcomm/SqueezeNet-1_1" in excludedIds)
 
-        // Ensure no old synthetic revision hashes appear in any catalog descriptor
+        // Ensure no old synthetic revision hashes appear in any remaining catalog descriptor (Voice + Advanced Vision)
+        assertTrue(ModelCatalog.allDescriptors().isNotEmpty())
         for (desc in ModelCatalog.allDescriptors()) {
             assertFalse(desc.manifest.pinnedRevision.equals("e7a562f6f09e5a65b28eb82c7d7803fb627da05c", ignoreCase = true))
             for (art in desc.manifest.artifacts) {
@@ -181,36 +183,48 @@ class KokoroAndMultiModelUpgradeTest {
 
     @Test
     fun modelDownloadCoordinator_previewBatchBudgetEnforcesStorageAndHeadroom() {
-        val baseDir = tempFolder.newFolder("budget_check")
-        val coordinator = ModelDownloadCoordinator.getInstance(context)
-        val recommendedIds = ModelCatalog.LIGHTWEIGHT_VISION_DESCRIPTORS
-            .filter { it.recommendedDefault }
-            .map { it.manifest.modelId }
-
-        val okPreview = coordinator.previewBatchBudget(
-            modelIds = recommendedIds,
-            baseDir = baseDir,
-            availableDiskBytes = 2L * 1024L * 1024L * 1024L
+        val prevAbis = Build.SUPPORTED_ABIS
+        org.robolectric.util.ReflectionHelpers.setStaticField(
+            Build::class.java,
+            "SUPPORTED_ABIS",
+            arrayOf("arm64-v8a", "armeabi-v7a")
         )
-        assertTrue(okPreview.fitsBudget)
+        try {
+            val baseDir = tempFolder.newFolder("budget_check")
+            val coordinator = ModelDownloadCoordinator.getInstance(context)
+            val recommendedIds = ModelCatalog.getVoiceDescriptors().map { it.manifest.modelId }
 
-        // Rejects when disk space is smaller than pending + 128 MB headroom
-        val lowDiskPreview = coordinator.previewBatchBudget(
-            modelIds = recommendedIds,
-            baseDir = baseDir,
-            availableDiskBytes = 50L * 1024L * 1024L
-        )
-        assertFalse(lowDiskPreview.fitsBudget)
-        assertTrue(lowDiskPreview.reason.contains("STORAGE_INSUFFICIENT"))
+            val okPreview = coordinator.previewBatchBudget(
+                modelIds = recommendedIds,
+                baseDir = baseDir,
+                availableDiskBytes = 2L * 1024L * 1024L * 1024L
+            )
+            assertTrue(okPreview.fitsBudget)
 
-        // Rejects Florence-2 under STRICT_2GB
-        val blockedFlorence = coordinator.previewBatchBudget(
-            modelIds = listOf(GemmaModelManager.FLORENCE2_MANIFEST.modelId),
-            baseDir = baseDir,
-            availableDiskBytes = 4L * 1024L * 1024L * 1024L
-        )
-        assertFalse(blockedFlorence.fitsBudget)
-        assertTrue(blockedFlorence.reason.contains("STORAGE_INSUFFICIENT"))
+            // Rejects when disk space is smaller than pending + 128 MB headroom
+            val lowDiskPreview = coordinator.previewBatchBudget(
+                modelIds = recommendedIds,
+                baseDir = baseDir,
+                availableDiskBytes = 50L * 1024L * 1024L
+            )
+            assertFalse(lowDiskPreview.fitsBudget)
+            assertTrue(lowDiskPreview.reason.contains("STORAGE_INSUFFICIENT"))
+
+            // Allows Voice + Florence-2 + SmolVLM2 when real free disk space is sufficient (no artificial 2 GB/4 GB ceiling)
+            val allModelIds = ModelCatalog.allDescriptors().map { it.manifest.modelId }
+            val multiModelPreview = coordinator.previewBatchBudget(
+                modelIds = allModelIds,
+                baseDir = baseDir,
+                availableDiskBytes = 12L * 1024L * 1024L * 1024L
+            )
+            assertTrue("All catalog models must be allowed when real device free disk space is sufficient", multiModelPreview.fitsBudget)
+        } finally {
+            org.robolectric.util.ReflectionHelpers.setStaticField(
+                Build::class.java,
+                "SUPPORTED_ABIS",
+                prevAbis
+            )
+        }
     }
 
     // =========================================================================

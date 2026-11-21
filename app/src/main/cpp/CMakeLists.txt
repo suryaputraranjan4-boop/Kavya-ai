@@ -18,6 +18,8 @@ FetchContent_Declare(
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_MTMD ON CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
@@ -40,11 +42,13 @@ target_include_directories(
     kavya_llama
     PRIVATE
     ${llama_cpp_SOURCE_DIR}/include
+    ${llama_cpp_SOURCE_DIR}/tools/mtmd
 )
 
 target_link_libraries(
     kavya_llama
     PRIVATE
     llama
+    mtmd
     ${log-lib}
 )

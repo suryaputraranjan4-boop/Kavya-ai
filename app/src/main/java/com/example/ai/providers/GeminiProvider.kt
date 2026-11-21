@@ -198,39 +198,44 @@ class GeminiProvider : AIProvider {
             .build()
 
         try {
-            val response = RetrofitClient.okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                val err = handleError(response.code, response.body?.string())
-                response.close()
-                emit(err)
-                return@flow
-            }
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val err = handleError(response.code, response.body?.string())
+                    emit(err)
+                    return@flow
+                }
 
-            val stream = response.body?.byteStream()
-            if (stream != null) {
-                BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        val l = line?.trim() ?: continue
-                        if (l.startsWith("data:")) {
-                            val data = l.removePrefix("data:").trim()
-                            if (data.isBlank()) continue
-                            try {
-                                val json = JSONObject(data)
-                                val candidates = json.optJSONArray("candidates")
-                                val first = candidates?.optJSONObject(0)
-                                val content = first?.optJSONObject("content")
-                                val parts = content?.optJSONArray("parts")
-                                val text = parts?.optJSONObject(0)?.optString("text", "") ?: ""
-                                if (text.isNotEmpty()) {
-                                    emit(text)
-                                }
-                            } catch (ignored: Exception) {}
+                val stream = response.body?.byteStream()
+                if (stream != null) {
+                    BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            val l = line?.trim() ?: continue
+                            if (l.startsWith("data:")) {
+                                val data = l.removePrefix("data:").trim()
+                                if (data.isBlank() || data == "[DONE]") continue
+                                try {
+                                    val json = JSONObject(data)
+                                    val candidates = json.optJSONArray("candidates")
+                                    val first = candidates?.optJSONObject(0)
+                                    val content = first?.optJSONObject("content")
+                                    val parts = content?.optJSONArray("parts")
+                                    if (parts != null && parts.length() > 0) {
+                                        val sb = StringBuilder()
+                                        for (idx in 0 until parts.length()) {
+                                            val partText = parts.optJSONObject(idx)?.optString("text", "") ?: ""
+                                            if (partText.isNotEmpty()) sb.append(partText)
+                                        }
+                                        if (sb.isNotEmpty()) {
+                                            emit(sb.toString())
+                                        }
+                                    }
+                                } catch (ignored: Exception) {}
+                            }
                         }
                     }
                 }
             }
-            response.close()
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (e: Exception) {

@@ -18,9 +18,16 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         com.example.evolution.EvolutionUpgradeEntity::class,
         DurableTaskEntity::class,
         DurableTaskStepEntity::class,
-        ScheduledTaskEntity::class
+        ScheduledTaskEntity::class,
+        com.example.kucp.storage.KucpConnectorEntity::class,
+        com.example.kucp.storage.KucpToolEntity::class,
+        com.example.kucp.storage.KucpPluginEntity::class,
+        com.example.kucp.storage.KucpWebhookEntity::class,
+        com.example.kucp.storage.KucpWorkflowEntity::class,
+        com.example.kucp.storage.KucpWorkflowRunEntity::class,
+        com.example.kucp.storage.KucpAuditEventEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -29,6 +36,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun automationFailureDao(): AutomationFailureDao
     abstract fun evolutionDao(): com.example.evolution.EvolutionDao
     abstract fun taskDao(): TaskDao
+    abstract fun kucpDao(): com.example.kucp.storage.KucpDao
 
     companion object {
         @Volatile
@@ -84,6 +92,18 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS kucp_connectors (id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, provider TEXT NOT NULL, protocol TEXT NOT NULL, category TEXT NOT NULL, status TEXT NOT NULL, version TEXT NOT NULL, enabled INTEGER NOT NULL, definitionJson TEXT NOT NULL, updatedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS kucp_tools (toolId TEXT NOT NULL PRIMARY KEY, connectorId TEXT NOT NULL, name TEXT NOT NULL, protocol TEXT NOT NULL, riskLevel TEXT NOT NULL, descriptorJson TEXT NOT NULL, updatedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS kucp_plugins (pluginId TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL, sha256 TEXT NOT NULL, enabled INTEGER NOT NULL, manifestJson TEXT NOT NULL, previousManifestJson TEXT NOT NULL, installedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS kucp_webhooks (id TEXT NOT NULL PRIMARY KEY, connectorId TEXT NOT NULL, name TEXT NOT NULL, active INTEGER NOT NULL, subscriptionJson TEXT NOT NULL, updatedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS kucp_workflows (id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, definitionJson TEXT NOT NULL, updatedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS kucp_workflow_runs (runId TEXT NOT NULL PRIMARY KEY, workflowId TEXT NOT NULL, status TEXT NOT NULL, recordJson TEXT NOT NULL, startedAtMs INTEGER NOT NULL, finishedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS kucp_audit_events (id TEXT NOT NULL PRIMARY KEY, connectorId TEXT NOT NULL, toolId TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, riskLevel TEXT NOT NULL, detailRedacted TEXT NOT NULL, timestampMs INTEGER NOT NULL)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -91,7 +111,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "kavya_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance

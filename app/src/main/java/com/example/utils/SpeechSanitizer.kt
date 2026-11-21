@@ -57,12 +57,68 @@ object SpeechSanitizer {
         Regex("(?i)\\[\\s*crash\\s*\\]"),
         Regex("(?i)\\[\\s*buzz\\s*\\]"),
         Regex("(?i)\\[\\s*hum\\s*\\]"),
-        Regex("(?i)\\[\\s*hiss\\s*\\]")
+        Regex("(?i)\\[\\s*hiss\\s*\\]"),
+        Regex("(?i)\\[\\s*wind\\s*\\]"),
+        Regex("(?i)\\[\\s*typing\\s*\\]"),
+        Regex("(?i)\\[\\s*keyboard\\s*\\]"),
+        Regex("(?i)\\[\\s*breathing\\s*\\]"),
+        Regex("(?i)\\[\\s*inhale\\s*\\]"),
+        Regex("(?i)\\[\\s*exhale\\s*\\]"),
+        Regex("(?i)\\[\\s*mic pop\\s*\\]"),
+        Regex("(?i)<\\s*inaudible\\s*>"),
+        Regex("(?i)\\[\\s*inaudible\\s*\\]")
+    )
+
+    private val PURE_FILLER_TOKENS = setOf(
+        "uh", "um", "umm", "uhh", "hmm", "hm", "ah", "ahh", "eh", "er", "shh", "psst", "mm", "mhm"
+    )
+
+    // Phrases commonly hallucinated by neural STT models (Gemini/Whisper) on pure silence or fan noise
+    private val ALWAYS_HALLUCINATION_PHRASES = setOf(
+        "no speech",
+        "no human speech",
+        "no intelligible speech",
+        "no intelligible human speech",
+        "no speech detected",
+        "empty string",
+        "silence",
+        "inaudible",
+        "unintelligible",
+        "background noise",
+        "ambient noise",
+        "static noise",
+        "music playing",
+        "thanks for watching",
+        "thank you for watching",
+        "please subscribe",
+        "like and subscribe",
+        "subscribe to my channel",
+        "subtitles by",
+        "captions by",
+        "i didn't hear anything",
+        "nothing was said"
+    )
+
+    // Short phantom words that neural STT frequently outputs on low-SNR silence/noise bursts
+    private val LOW_CONFIDENCE_HALLUCINATION_PHRASES = setOf(
+        "thank you",
+        "thanks",
+        "you",
+        "bye",
+        "bye bye",
+        "okay",
+        "ok",
+        "yeah",
+        "yes",
+        "no",
+        "so",
+        "the",
+        "and"
     )
 
     /**
      * Cleans raw speech transcript by stripping noise tags, sound annotations, and non-verbal artifacts.
-     * Returns a clean, trimmed spoken string, or empty string if only noise was captured.
+     * Returns a clean, trimmed spoken string, or empty string if only noise/hallucination was captured.
      */
     fun sanitize(raw: String?): String {
         if (raw.isNullOrBlank()) return ""
@@ -78,13 +134,35 @@ object SpeechSanitizer {
         result = result.replace(Regex("\\[[^\\]]*\\]"), " ")
         result = result.replace(Regex("\\([^\\)]*\\)"), " ")
 
-        // Trim whitespace and punctuation
+        // Trim whitespace and leading/trailing punctuation noise
         result = result.replace(Regex("\\s+"), " ").trim()
+        result = result.trim { it in setOf('.', ',', '!', '?', '-', '_', ';', ':', '\'', '"', '~', '`') }.trim()
 
         // If the remaining string has no letters or digits (e.g. only dots, symbols, noise tokens), return empty
-        val hasActualWords = result.any { it.isLetterOrDigit() || it in '\u0900'..'\u097F' }
-        if (!hasActualWords) {
+        val meaningfulChars = result.filter { it.isLetterOrDigit() || it in '\u0900'..'\u097F' }
+        if (meaningfulChars.isEmpty()) {
             Log.d(TAG, "Suppressed pure noise transcript: '$raw'")
+            return ""
+        }
+
+        // Reject single-character ASCII hallucinations (e.g. "a", "e", "t", "s", "k") unless it is a valid digit
+        if (meaningfulChars.length == 1 && meaningfulChars[0].isLetter() && meaningfulChars[0].code < 128) {
+            Log.d(TAG, "Suppressed single-character hallucination transcript: '$raw'")
+            return ""
+        }
+
+        val normalizedLower = result.lowercase()
+        // Reject pure non-semantic filler sounds ("uh", "um", "hmm")
+        if (normalizedLower in PURE_FILLER_TOKENS) {
+            Log.d(TAG, "Suppressed filler sound transcript: '$raw'")
+            return ""
+        }
+
+        // Reject confirmed neural STT silence hallucination phrases
+        if (normalizedLower in ALWAYS_HALLUCINATION_PHRASES ||
+            normalizedLower.startsWith("there is no ") && normalizedLower.contains("speech")
+        ) {
+            Log.d(TAG, "Suppressed STT silence hallucination transcript: '$raw'")
             return ""
         }
 
@@ -98,5 +176,51 @@ object SpeechSanitizer {
         if (text.isNullOrBlank()) return true
         val sanitized = sanitize(text)
         return sanitized.isBlank()
+    }
+
+    /**
+     * Returns true when a transcript is likely an STT hallucination produced from marginal/noisy audio.
+     */
+    fun isLikelySilenceHallucination(raw: String?, confidence: Float): Boolean {
+        val clean = sanitize(raw)
+        if (clean.isBlank()) return true
+        val lower = clean.lowercase()
+        if (lower in ALWAYS_HALLUCINATION_PHRASES) return true
+        if (confidence < 0.65f && lower in LOW_CONFIDENCE_HALLUCINATION_PHRASES) return true
+        return false
+    }
+
+    /**
+     * Validates that a transcript passes content sanitization, anti-hallucination check, and minimum confidence threshold.
+     */
+    fun isValidCommandTranscript(
+        raw: String?,
+        confidence: Float = 1.0f,
+        minConfidence: Float = 0.35f
+    ): Boolean {
+        if (!confidence.isFinite() || confidence < minConfidence) return false
+        val clean = sanitize(raw)
+        if (clean.isBlank()) return false
+        if (isLikelySilenceHallucination(clean, confidence)) {
+            Log.d(TAG, "Rejected low-confidence hallucination '$clean' (conf=$confidence)")
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Returns true if [newTranscript] is an accidental duplicate of [previousTranscript] within [windowMs].
+     */
+    fun isDuplicateTranscript(
+        newTranscript: String?,
+        previousTranscript: String?,
+        elapsedMs: Long,
+        windowMs: Long = 2200L
+    ): Boolean {
+        if (elapsedMs < 0L || elapsedMs > windowMs) return false
+        val a = sanitize(newTranscript).lowercase()
+        val b = sanitize(previousTranscript).lowercase()
+        if (a.isBlank() || b.isBlank()) return false
+        return a == b
     }
 }

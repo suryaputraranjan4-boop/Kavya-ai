@@ -80,6 +80,7 @@ fun JarvisScreenIntelligenceScreen(
     val (preflightSnapshot, refreshPreflight) = rememberScreenSharePreflightSnapshot(shareState)
     var showPreflightDialog by remember { mutableStateOf(false) }
     var activeVisionTab by remember { mutableIntStateOf(0) }
+    var requestedStudioTechId by remember { mutableStateOf<com.example.vision.VisionTechId?>(null) }
     var testQueryInput by remember { mutableStateOf("Explain this screen") }
     var actionFeedbackBanner by remember { mutableStateOf<String?>(null) }
     var hasOverlayPermission by remember {
@@ -146,17 +147,14 @@ fun JarvisScreenIntelligenceScreen(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(10.dp)
+                                .size(9.dp)
                                 .clip(CircleShape)
-                                .background(orbConfig.theme.primaryColor)
+                                .background(com.example.ui.theme.PrimaryLight)
                         )
                         Text(
-                            text = "VISION STUDIO & JARVIS",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 1.sp,
-                            color = Color.White
+                            text = "Vision & JARVIS",
+                            style = MaterialTheme.typography.titleLarge.copy(fontSize = 19.sp),
+                            color = com.example.ui.theme.TextPrimary
                         )
                     }
                 },
@@ -165,122 +163,187 @@ fun JarvisScreenIntelligenceScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = Color.White
+                            tint = com.example.ui.theme.TextPrimary
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF090D14)
+                    containerColor = com.example.ui.theme.Background
                 )
             )
         },
-        containerColor = Color(0xFF090D14),
+        containerColor = com.example.ui.theme.Background,
         modifier = modifier
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            com.example.ui.theme.Background,
+                            com.example.ui.theme.BackgroundGradientEnd
+                        )
+                    )
+                )
                 .padding(paddingValues)
         ) {
-            TabRow(
-                selectedTabIndex = activeVisionTab,
-                containerColor = Color(0xFF0E1522),
-                contentColor = orbConfig.theme.primaryColor
-            ) {
-                Tab(
-                    selected = activeVisionTab == 0,
-                    onClick = { activeVisionTab = 0 },
-                    text = { Text("Vision Studio (16)", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                )
-                Tab(
-                    selected = activeVisionTab == 1,
-                    onClick = { activeVisionTab = 1 },
-                    text = { Text("JARVIS Live & Orb", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                )
-            }
+            // Sleek 3-tab Apple Liquid Glass segmented control
+            com.example.ui.components.AppleGlassSegmentedControl(
+                options = listOf("Studio (12)", "Tech Library (12)", "JARVIS Orb"),
+                selectedIndex = activeVisionTab,
+                onSelect = { activeVisionTab = it },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
 
-            if (activeVisionTab == 0) {
-                VisionWorkspaceContent(
-                    accentColor = orbConfig.theme.primaryColor,
-                    reducedMotion = orbConfig.reducedMotion,
-                    modifier = Modifier.weight(1f)
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-            // 1. Live Interactive JARVIS Orb Preview Stage
-            item {
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF101724)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.2.dp, orbConfig.theme.primaryColor.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
+            when (activeVisionTab) {
+                0 -> {
+                    VisionWorkspaceContent(
+                        accentColor = com.example.ui.theme.PrimaryLight,
+                        reducedMotion = orbConfig.reducedMotion,
+                        requestedTechId = requestedStudioTechId,
+                        onRequestedTechConsumed = { requestedStudioTechId = null },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                1 -> {
+                    LazyColumn(
                         modifier = Modifier
+                            .weight(1f)
                             .fillMaxWidth()
-                            .padding(18.dp)
+                            .padding(horizontal = 16.dp),
+                        contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Text(
-                            text = "LIVE HOLOGRAPHIC ORB PREVIEW",
-                            color = orbConfig.theme.primaryColor,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 1.2.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(160.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(Color(0xFF060A10))
-                                .border(0.8.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
-                        ) {
-                            JarvisFloatingOrb(
-                                state = orbState,
-                                config = orbConfig,
-                                amplitude = if (orbState == JarvisOrbState.IDLE) 0.25f else audioAmplitude.coerceAtLeast(0.45f),
-                                transientMotion = transientMotion,
-                                onTap = {
-                                    val nextState = JarvisOrbState.entries[(orbState.ordinal + 1) % JarvisOrbState.entries.size]
-                                    JarvisOverlayController.setOrbState(nextState)
+                        item {
+                            com.example.vision.VisualizationTechnologyLibrarySection(
+                                accentColor = com.example.ui.theme.PrimaryLight,
+                                onOpenTechnology = { techId ->
+                                    requestedStudioTechId = techId
+                                    activeVisionTab = 0
                                 }
                             )
                         }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text(
-                            text = "Current State: ${orbState.name} • Tap orb to cycle through ${JarvisOrbState.entries.size} states",
-                            color = Color.White.copy(alpha = 0.75f),
-                            fontSize = 11.5.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
                     }
                 }
-            }
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        // 1. Live Interactive JARVIS Orb Preview Stage
+                        item {
+                            com.example.ui.components.GlassCard(
+                                shape = RoundedCornerShape(22.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "Interactive Orb Preview",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = com.example.ui.theme.TextPrimary
+                                    )
+                                    Text(
+                                        text = "Tap the orb to preview all ${JarvisOrbState.entries.size} live states",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = com.example.ui.theme.TextSecondary
+                                    )
 
-            // 2. Dedicated Floating Orb Control Card (Enable/Disable switches, Permission, Visibility Status, Start/Stop/Test)
-            item {
-                FloatingOrbControlCard(
-                    onPermissionRequiredPrompt = {
-                        refreshPreflight()
-                        showPreflightDialog = true
-                    }
-                )
-            }
+                                    Spacer(modifier = Modifier.height(14.dp))
+
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(164.dp)
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .background(Color(0xFF080B12))
+                                            .border(1.dp, com.example.ui.theme.OutlineVariant, RoundedCornerShape(18.dp))
+                                    ) {
+                                        JarvisFloatingOrb(
+                                            state = orbState,
+                                            config = orbConfig,
+                                            amplitude = if (orbState == JarvisOrbState.IDLE) 0.25f else audioAmplitude.coerceAtLeast(0.45f),
+                                            transientMotion = transientMotion,
+                                            onTap = {
+                                                val nextState = JarvisOrbState.entries[(orbState.ordinal + 1) % JarvisOrbState.entries.size]
+                                                JarvisOverlayController.setOrbState(nextState)
+                                            }
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    com.example.ui.components.StatusBadge(
+                                        text = "State: ${orbState.name.replace("_", " ")}",
+                                        isActive = true,
+                                        activeColor = orbConfig.theme.primaryColor
+                                    )
+                                }
+                            }
+                        }
+
+                        // Compact bridge to the 12 Visualization Technologies library
+                        item {
+                            val techManager = remember(context) {
+                                com.example.vision.VisionTechnologyDownloadManager.getInstance(context)
+                            }
+                            val techSummary by techManager.storageSummary.collectAsState()
+                            com.example.ui.components.GlassCard(
+                                shape = RoundedCornerShape(18.dp),
+                                onClick = { activeVisionTab = 1 },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Visualization Technology Library",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = com.example.ui.theme.TextPrimary
+                                        )
+                                        Text(
+                                            text = "${techSummary.installedCount}/12 installed • ${techSummary.functionalCount}/12 verified for interactive scenes & diagrams",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = com.example.ui.theme.TextSecondary
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = "Open Library",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = com.example.ui.theme.PrimaryLight
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Default.ChevronRight,
+                                            contentDescription = "Open Visualization Technology Library",
+                                            tint = com.example.ui.theme.PrimaryLight,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. Dedicated Floating Orb Control Card
+                        item {
+                            FloatingOrbControlCard(
+                                onPermissionRequiredPrompt = {
+                                    refreshPreflight()
+                                    showPreflightDialog = true
+                                }
+                            )
+                        }
 
             // 3. Screen Share Preflight, Accessibility & Quick Controls
             item {
@@ -713,7 +776,8 @@ fun JarvisScreenIntelligenceScreen(
             item {
                 Spacer(modifier = Modifier.height(24.dp))
             }
-        }
+                    }
+                }
             }
         }
     }

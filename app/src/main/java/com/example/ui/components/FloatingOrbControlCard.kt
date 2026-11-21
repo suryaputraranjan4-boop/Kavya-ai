@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -17,22 +18,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.example.ui.theme.*
 import com.example.utils.AppPreferences
 import com.example.utils.PermissionsManager
-import com.example.visual.JarvisOrbState
 import com.example.visual.JarvisOverlayController
 import com.example.visual.OverlayAttachmentState
 
 /**
- * Dedicated Floating Orb Control Card with explicit Enable / Disable switches,
- * honest WindowManager visibility status, Display-over-other-apps permission status & explanation,
- * Start / Stop / Test Orb action buttons, Reduced Motion toggle, and ON_RESUME auto-refresh.
+ * Clean Apple Liquid Glass Floating Orb Control Card with a single master toggle,
+ * honest WindowManager visibility status, overlay permission check, and Start / Stop / Test actions.
  */
 @Composable
 fun FloatingOrbControlCard(
@@ -107,38 +106,30 @@ fun FloatingOrbControlCard(
     }
 
     val visibilityLabel = when (attachmentState) {
-        OverlayAttachmentState.ATTACHED_VISIBLE -> "VISIBLE OVER APPS (ATTACHED)"
-        OverlayAttachmentState.STARTING -> "STARTING WINDOW OVERLAY..."
-        OverlayAttachmentState.PERMISSION_MISSING -> "HIDDEN • PERMISSION MISSING"
-        OverlayAttachmentState.ERROR -> "ERROR • NOT VISIBLE"
-        OverlayAttachmentState.STOPPED -> "STOPPED • HIDDEN"
+        OverlayAttachmentState.ATTACHED_VISIBLE -> "Visible over apps"
+        OverlayAttachmentState.STARTING -> "Starting overlay..."
+        OverlayAttachmentState.PERMISSION_MISSING -> "Permission required"
+        OverlayAttachmentState.ERROR -> "Unavailable"
+        OverlayAttachmentState.STOPPED -> "Hidden"
     }
 
     val visibilityColor = when (attachmentState) {
-        OverlayAttachmentState.ATTACHED_VISIBLE -> Color(0xFF00E676)
-        OverlayAttachmentState.STARTING -> Color(0xFF40C4FF)
-        OverlayAttachmentState.PERMISSION_MISSING -> Color(0xFFFFB74D)
-        OverlayAttachmentState.ERROR -> Color(0xFFFF5252)
-        OverlayAttachmentState.STOPPED -> Color(0xFF94A3B8)
+        OverlayAttachmentState.ATTACHED_VISIBLE -> SuccessGreen
+        OverlayAttachmentState.STARTING -> PrimaryLight
+        OverlayAttachmentState.PERMISSION_MISSING -> AccentYellow
+        OverlayAttachmentState.ERROR -> Error
+        OverlayAttachmentState.STOPPED -> TextSecondary
     }
 
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF101724)),
+    GlassCard(
         modifier = modifier
             .fillMaxWidth()
-            .border(
-                width = 1.2.dp,
-                color = if (isOverlayRunning) orbConfig.theme.primaryColor.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.14f),
-                shape = RoundedCornerShape(18.dp)
-            )
-            .testTag("floating_orb_control_card")
+            .testTag("floating_orb_control_card"),
+        shape = RoundedCornerShape(22.dp),
+        borderColor = if (isOverlayRunning) PrimaryLight.copy(alpha = 0.55f) else GlassBorder
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Card Header
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -157,41 +148,44 @@ fun FloatingOrbControlCard(
                     )
                     Column {
                         Text(
-                            text = "Floating Orb Controls",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
+                            text = "Floating Orb Overlay",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary
                         )
                         Text(
-                            text = "State: ${orbState.name} • $visibilityLabel",
+                            text = "${orbState.name} • $visibilityLabel",
+                            style = MaterialTheme.typography.bodySmall,
                             color = visibilityColor,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
                             modifier = Modifier.testTag("floating_orb_visibility_status")
                         )
                     }
                 }
+                StatusBadge(
+                    text = if (isOverlayRunning) "Live" else "Off",
+                    isActive = isOverlayRunning,
+                    activeColor = SuccessGreen,
+                    inactiveColor = TextTertiary
+                )
             }
 
-            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+            HorizontalDivider(color = OutlineVariant)
 
-            // Enable Floating Orb Switch
+            // Single clean master toggle switch (no duplicate conflicting disable switch)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                     Text(
-                        text = "Enable Floating Orb",
-                        color = Color.White,
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.SemiBold
+                        text = "Show Floating Orb",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = TextPrimary
                     )
                     Text(
-                        text = "Shows interactive JARVIS orb across apps & home screen",
-                        color = Color.White.copy(alpha = 0.65f),
-                        fontSize = 11.sp
+                        text = "Keep interactive JARVIS orb accessible over any app",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
                     )
                 }
                 Switch(
@@ -203,51 +197,22 @@ fun FloatingOrbControlCard(
                 )
             }
 
-            // Disable Floating Orb Switch
+            // Reduced Motion Switch
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                     Text(
-                        text = "Disable Floating Orb",
-                        color = Color.White,
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.SemiBold
+                        text = "Reduced Motion",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        color = TextPrimary
                     )
                     Text(
-                        text = "Detaches overlay windows and stops foreground orb service",
-                        color = Color.White.copy(alpha = 0.65f),
-                        fontSize = 11.sp
-                    )
-                }
-                Switch(
-                    checked = !isOrbPrefEnabled && !isOverlayRunning,
-                    onCheckedChange = { checked ->
-                        if (checked) requestDisableOrb() else requestEnableOrb()
-                    },
-                    modifier = Modifier.testTag("disable_floating_orb_switch")
-                )
-            }
-
-            // Reduced Motion Switch (Low-end friendly)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Reduced Motion Mode",
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "Lightweight static halo & instant docking for battery saving",
-                        color = Color.White.copy(alpha = 0.62f),
-                        fontSize = 11.sp
+                        text = "Calm static halo and instant edge docking",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
                     )
                 }
                 Switch(
@@ -261,17 +226,15 @@ fun FloatingOrbControlCard(
                 )
             }
 
-            // Display Over Other Apps Permission Status & Explanation
+            // Overlay Permission Banner
             Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = if (hasOverlayPermission) Color(0x1800E676) else Color(0x22FFB74D),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(
-                        width = 1.dp,
-                        color = if (hasOverlayPermission) Color(0x5500E676) else Color(0x66FFB74D),
-                        shape = RoundedCornerShape(12.dp)
-                    )
+                shape = RoundedCornerShape(14.dp),
+                color = if (hasOverlayPermission) SuccessGreen.copy(alpha = 0.12f) else AccentYellow.copy(alpha = 0.14f),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (hasOverlayPermission) SuccessGreen.copy(alpha = 0.35f) else AccentYellow.copy(alpha = 0.45f)
+                ),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
@@ -283,10 +246,9 @@ fun FloatingOrbControlCard(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = if (hasOverlayPermission) "Permission: Display over other apps GRANTED" else "Permission: Display over other apps MISSING",
-                            color = if (hasOverlayPermission) Color(0xFF00E676) else Color(0xFFFFB74D),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
+                            text = if (hasOverlayPermission) "Overlay Permission Granted" else "Overlay Permission Required",
+                            color = if (hasOverlayPermission) SuccessGreen else AccentYellow,
+                            style = MaterialTheme.typography.labelLarge,
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("floating_orb_permission_status")
@@ -304,19 +266,18 @@ fun FloatingOrbControlCard(
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                                     contentDescription = "Open Overlay Settings",
-                                    tint = Color(0xFFFFB74D),
+                                    tint = AccentYellow,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Grant", color = Color(0xFFFFB74D), fontWeight = FontWeight.Bold)
+                                Text("Grant", color = AccentYellow, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
                     Text(
-                        text = "Android's 'Display over other apps' permission lets Kavya render the Floating Orb and touch-through step highlights while you use other apps like YouTube, WhatsApp, or Settings.",
-                        color = Color.White.copy(alpha = 0.78f),
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp
+                        text = "Lets Kavya display the Floating Orb and touch-through step highlights while you use other apps.",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
@@ -324,22 +285,22 @@ fun FloatingOrbControlCard(
             if (!lastOverlayError.isNullOrBlank()) {
                 Text(
                     text = lastOverlayError ?: "",
-                    color = Color(0xFFFF6B6B),
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.Medium,
+                    color = Error,
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
                     modifier = Modifier.testTag("floating_orb_error_text")
                 )
             }
 
-            // Action Buttons: Start Orb | Stop Orb | Test Orb
+            // Action Buttons: Start | Stop | Test
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Button(
                     onClick = { requestEnableOrb() },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853)),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
@@ -348,17 +309,18 @@ fun FloatingOrbControlCard(
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
                         contentDescription = "Start Orb",
-                        tint = Color.Black,
-                        modifier = Modifier.size(18.dp)
+                        tint = Color.White,
+                        modifier = Modifier.size(17.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Start Orb", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Start", color = Color.White, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
                 }
 
                 Button(
                     onClick = { requestDisableOrb() },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD50000)),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Error.copy(alpha = 0.88f)),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
@@ -368,10 +330,10 @@ fun FloatingOrbControlCard(
                         imageVector = Icons.Default.Stop,
                         contentDescription = "Stop Orb",
                         tint = Color.White,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(17.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Stop Orb", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Stop", color = Color.White, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
                 }
 
                 OutlinedButton(
@@ -389,7 +351,9 @@ fun FloatingOrbControlCard(
                             JarvisOverlayController.runTestOrbShowcase(context)
                         }
                     },
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, GlassBorder),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
@@ -398,15 +362,15 @@ fun FloatingOrbControlCard(
                     Icon(
                         imageVector = Icons.Default.Animation,
                         contentDescription = "Test Orb",
-                        tint = orbConfig.theme.primaryColor,
+                        tint = PrimaryLight,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = if (isTestRunning) "Testing..." else "Test Orb",
-                        color = orbConfig.theme.primaryColor,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                        text = if (isTestRunning) "Testing" else "Test",
+                        color = PrimaryLight,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }

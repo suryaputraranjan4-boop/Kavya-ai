@@ -171,13 +171,17 @@ fun EvolutionDashboardTab(report: com.example.evolution.EvolutionReportEntity?, 
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Capability Progress Matrix", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                    Text("Research Mode: Metadata Discovery Only", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Fetches public repository metadata via GitHub API for manual inspection. Source code auditing, sandbox testing, and automatic code installation are not performed on device.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
                     Spacer(modifier = Modifier.height(12.dp))
-                    CapabilityBar("Memory & Context", null)
-                    CapabilityBar("Reasoning & Planning", null)
-                    CapabilityBar("Automation & UI", null)
-                    CapabilityBar("GitHub Evolution Research", null)
-                    CapabilityBar("Self-Testing & Sandbox", null)
+                    CapabilityBar("GitHub Metadata Discovery", null)
+                    CapabilityBar("Source Code Security Scan (Disabled)", null)
+                    CapabilityBar("Local Sandbox Execution (Disabled)", null)
                 }
             }
         }
@@ -263,10 +267,10 @@ fun EvolutionPendingTab(pendingUpgrades: List<com.example.evolution.EvolutionUpg
                                 Text("Diff")
                             }
                             Button(onClick = { viewModel.approveUpgrade(upgrade.id) }, colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen), modifier = Modifier.weight(1f)) {
-                                Text("Approve review")
+                                Text("Bookmark review")
                             }
                             Button(onClick = { viewModel.rejectUpgrade(upgrade.id) }, colors = ButtonDefaults.buttonColors(containerColor = Error), modifier = Modifier.weight(1f)) {
-                                Text("Reject")
+                                Text("Dismiss")
                             }
                         }
                     }
@@ -304,8 +308,7 @@ fun EvolutionHistoryTab(historyList: List<com.example.evolution.EvolutionHistory
 
 @Composable
 fun EvolutionSettingsTab(settings: com.example.evolution.EvolutionSettings, viewModel: EvolutionViewModel) {
-    var automaticInstallation by remember(settings.automaticInstallation) { mutableStateOf(settings.automaticInstallation) }
-    var humanApproval by remember(settings.humanApprovalForMajorChanges) { mutableStateOf(settings.humanApprovalForMajorChanges) }
+    var autoResearch by remember(settings.automaticResearch) { mutableStateOf(settings.automaticResearch) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -318,26 +321,28 @@ fun EvolutionSettingsTab(settings: com.example.evolution.EvolutionSettings, view
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Evolution Control Center", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                    Text("Research Discovery Settings", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Evolution operates strictly in metadata-only research mode. Code downloads, self-modification, and automatic installation are disabled.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Automatic Safe Installation", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                        Text("Allow GitHub Metadata Scan", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
                         Switch(
-                            checked = automaticInstallation,
+                            checked = autoResearch,
                             onCheckedChange = {
-                                automaticInstallation = it
-                                viewModel.updateSettings(settings.copy(automaticInstallation = it))
-                            }
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Human Approval for Major Changes", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-                        Switch(
-                            checked = humanApproval,
-                            onCheckedChange = {
-                                humanApproval = it
-                                viewModel.updateSettings(settings.copy(humanApprovalForMajorChanges = it))
+                                autoResearch = it
+                                viewModel.updateSettings(
+                                    settings.copy(
+                                        automaticResearch = it,
+                                        automaticInstallation = false,
+                                        automaticTesting = false,
+                                        humanApprovalForMajorChanges = true
+                                    )
+                                )
                             }
                         )
                     }

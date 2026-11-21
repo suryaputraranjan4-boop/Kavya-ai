@@ -1,12 +1,25 @@
 #include <jni.h>
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "llama.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
+
+static std::once_flag gLlamaBackendOnce;
+
+static void ensureLlamaBackendInit() {
+    std::call_once(gLlamaBackendOnce, []() {
+        llama_backend_init();
+    });
+}
 
 struct KavyaLlamaHandle {
     llama_model * model = nullptr;
+    mtmd_context * mtmdCtx = nullptr;
     std::string mmprojPath;
     int32_t configuredCtx = 4096;
     int32_t configuredThreads = 4;
@@ -73,24 +86,30 @@ static std::string runLlamaCompletion(
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.2f));
     llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
-    llama_batch batch = llama_batch_init(
-            static_cast<int32_t>(promptTokens.size()), 0, 1);
-    for (int i = 0; i < static_cast<int>(promptTokens.size()); ++i) {
-        batch.token[i] = promptTokens[i];
-        batch.pos[i] = i;
-        batch.n_seq_id[i] = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i] = (i == static_cast<int>(promptTokens.size()) - 1) ? 1 : 0;
+    const int32_t maxBatch = std::max<int32_t>(1, static_cast<int32_t>(ctxParams.n_batch));
+    llama_batch batch = llama_batch_init(maxBatch, 0, 1);
+
+    const int32_t totalPrompt = static_cast<int32_t>(promptTokens.size());
+    for (int32_t offset = 0; offset < totalPrompt; offset += maxBatch) {
+        const int32_t chunkSize = std::min<int32_t>(maxBatch, totalPrompt - offset);
+        const bool isLastChunk = (offset + chunkSize >= totalPrompt);
+        batch.n_tokens = chunkSize;
+        for (int32_t j = 0; j < chunkSize; ++j) {
+            batch.token[j] = promptTokens[offset + j];
+            batch.pos[j] = static_cast<llama_pos>(offset + j);
+            batch.n_seq_id[j] = 1;
+            batch.seq_id[j][0] = 0;
+            batch.logits[j] = (isLastChunk && j == chunkSize - 1) ? 1 : 0;
+        }
+        if (llama_decode(ctx, batch) != 0) {
+            llama_batch_free(batch);
+            llama_sampler_free(sampler);
+            llama_free(ctx);
+            return "";
+        }
     }
 
     std::string output;
-    if (llama_decode(ctx, batch) != 0) {
-        llama_batch_free(batch);
-        llama_sampler_free(sampler);
-        llama_free(ctx);
-        return "";
-    }
-
     const int limit = std::max(1, std::min(static_cast<int>(maxTokens), 512));
     for (int i = 0; i < limit; ++i) {
         const llama_token token = llama_sampler_sample(sampler, ctx, -1);
@@ -102,10 +121,142 @@ static std::string runLlamaCompletion(
 
         llama_sampler_accept(sampler, token);
 
-        llama_batch_free(batch);
-        batch = llama_batch_init(1, 0, 1);
+        batch.n_tokens = 1;
         batch.token[0] = token;
-        batch.pos[0] = static_cast<llama_pos>(promptTokens.size() + i);
+        batch.pos[0] = static_cast<llama_pos>(totalPrompt + i);
+        batch.n_seq_id[0] = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0] = 1;
+
+        if (llama_decode(ctx, batch) != 0) break;
+    }
+
+    llama_batch_free(batch);
+    llama_sampler_free(sampler);
+    llama_free(ctx);
+    return output;
+}
+
+static std::string runMtmdMultimodalCompletion(
+        KavyaLlamaHandle *handle,
+        const unsigned char *rgbData,
+        jint width,
+        jint height,
+        std::string prompt,
+        jint maxTokens) {
+    if (!handle || !handle->model || !handle->mtmdCtx || !rgbData || width <= 0 || height <= 0) {
+        return "";
+    }
+    if (!mtmd_support_vision(handle->mtmdCtx)) {
+        return "";
+    }
+
+    mtmd_bitmap *bmp = mtmd_bitmap_init(
+            static_cast<uint32_t>(width),
+            static_cast<uint32_t>(height),
+            rgbData);
+    if (!bmp) return "";
+
+    const char *activeMarkerRaw = mtmd_get_marker(handle->mtmdCtx);
+    const std::string marker = (activeMarkerRaw && activeMarkerRaw[0] != '\0')
+            ? std::string(activeMarkerRaw)
+            : std::string(mtmd_default_marker());
+    const std::string legacyToken = "<image>";
+    const size_t legacyPos = prompt.find(legacyToken);
+    if (legacyPos != std::string::npos) {
+        prompt.replace(legacyPos, legacyToken.size(), marker);
+    } else if (prompt.find(marker) == std::string::npos) {
+        prompt = marker + "\n" + prompt;
+    }
+
+    mtmd_input_chunks *chunks = mtmd_input_chunks_init();
+    if (!chunks) {
+        mtmd_bitmap_free(bmp);
+        return "";
+    }
+
+    mtmd_input_text inpText{};
+    inpText.text = prompt.c_str();
+    inpText.text_len = prompt.size();
+    inpText.add_special = true;
+    inpText.parse_special = true;
+
+    const mtmd_bitmap *bitmaps[1] = { bmp };
+    const int32_t tokRes = mtmd_tokenize(handle->mtmdCtx, chunks, &inpText, bitmaps, 1);
+    if (tokRes != 0) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bmp);
+        return "";
+    }
+
+    const llama_pos nPromptPos = mtmd_helper_get_n_pos(chunks);
+    const uint32_t requestedCtx = llama_model_n_ctx_train(handle->model);
+    const uint32_t capCtx = static_cast<uint32_t>(std::max(1024, handle->configuredCtx));
+    const uint32_t contextSize = std::max<uint32_t>(
+            1024u,
+            std::min<uint32_t>(requestedCtx ? requestedCtx : capCtx, capCtx));
+    if (nPromptPos <= 0 || static_cast<uint32_t>(nPromptPos + 64) > contextSize) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bmp);
+        return "";
+    }
+
+    llama_context_params ctxParams = llama_context_default_params();
+    ctxParams.n_ctx = contextSize;
+    ctxParams.n_batch = std::min<uint32_t>(contextSize, 1024u);
+    ctxParams.n_ubatch = ctxParams.n_batch;
+    ctxParams.n_threads = std::max(1, handle->configuredThreads);
+    ctxParams.n_threads_batch = std::max(1, handle->configuredThreads);
+
+    llama_context *ctx = llama_init_from_model(handle->model, ctxParams);
+    if (!ctx) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bmp);
+        return "";
+    }
+
+    llama_pos n_past = 0;
+    const int32_t evalRes = mtmd_helper_eval_chunks(
+            handle->mtmdCtx,
+            ctx,
+            chunks,
+            /*n_past=*/0,
+            /*seq_id=*/0,
+            static_cast<int32_t>(ctxParams.n_batch),
+            /*logits_last=*/true,
+            &n_past);
+
+    mtmd_input_chunks_free(chunks);
+    mtmd_bitmap_free(bmp);
+
+    if (evalRes != 0) {
+        llama_free(ctx);
+        return "";
+    }
+
+    const llama_vocab *vocab = llama_model_get_vocab(handle->model);
+    auto samplerParams = llama_sampler_chain_default_params();
+    llama_sampler *sampler = llama_sampler_chain_init(samplerParams);
+    llama_sampler_chain_add(sampler, llama_sampler_init_min_p(0.05f, 1));
+    llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.2f));
+    llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+    llama_batch batch = llama_batch_init(1, 0, 1);
+    std::string output;
+    const int limit = std::max(1, std::min(static_cast<int>(maxTokens), 512));
+    for (int i = 0; i < limit; ++i) {
+        const llama_token token = llama_sampler_sample(sampler, ctx, -1);
+        if (llama_vocab_is_eog(vocab, token)) break;
+
+        char piece[256];
+        const int n = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, true);
+        if (n > 0) output.append(piece, n);
+
+        llama_sampler_accept(sampler, token);
+
+        batch.n_tokens = 1;
+        batch.token[0] = token;
+        batch.pos[0] = n_past++;
         batch.n_seq_id[0] = 1;
         batch.seq_id[0][0] = 0;
         batch.logits[0] = 1;
@@ -125,7 +276,7 @@ Java_com_example_ai_offline_LlamaCppEngine_nativeLoad(
     const std::string path = jstringToString(env, modelPath);
     if (path.empty() || !verifyGgufFileHeader(path)) return 0;
 
-    llama_backend_init();
+    ensureLlamaBackendInit();
 
     llama_model_params params = llama_model_default_params();
     params.n_gpu_layers = 0;
@@ -151,7 +302,7 @@ Java_com_example_ai_offline_LlamaCppEngine_nativeLoadMultimodal(
     if (mPath.empty() || pPath.empty()) return 0;
     if (!verifyGgufFileHeader(mPath) || !verifyGgufFileHeader(pPath)) return 0;
 
-    llama_backend_init();
+    ensureLlamaBackendInit();
 
     llama_model_params params = llama_model_default_params();
     params.n_gpu_layers = 0;
@@ -159,11 +310,31 @@ Java_com_example_ai_offline_LlamaCppEngine_nativeLoadMultimodal(
     llama_model *model = llama_model_load_from_file(mPath.c_str(), params);
     if (!model) return 0;
 
+    const int32_t clampedThreads = std::max(1, std::min(static_cast<int>(threads), 8));
+    mtmd_context_params mparams = mtmd_context_params_default();
+    mparams.use_gpu = false;
+    mparams.print_timings = false;
+    mparams.n_threads = clampedThreads;
+    mparams.warmup = true;
+    const mtmd_memory_usage memUsage = mtmd_get_memory_usage(pPath.c_str(), mparams);
+    if (memUsage.use_non_causal && memUsage.image_max_tokens > 1024) {
+        mparams.image_max_tokens = 1024;
+        mparams.image_min_tokens = std::min(mparams.image_min_tokens, 1024);
+    }
+
+    mtmd_context *mtmdCtx = mtmd_init_from_file(pPath.c_str(), model, mparams);
+    if (!mtmdCtx || !mtmd_support_vision(mtmdCtx)) {
+        if (mtmdCtx) mtmd_free(mtmdCtx);
+        llama_model_free(model);
+        return 0;
+    }
+
     auto *handle = new KavyaLlamaHandle();
     handle->model = model;
+    handle->mtmdCtx = mtmdCtx;
     handle->mmprojPath = pPath;
-    handle->configuredCtx = std::max(512, static_cast<int>(contextSize));
-    handle->configuredThreads = std::max(1, std::min(static_cast<int>(threads), 8));
+    handle->configuredCtx = std::max(1024, static_cast<int>(contextSize));
+    handle->configuredThreads = clampedThreads;
     return reinterpret_cast<jlong>(handle);
 }
 
@@ -187,58 +358,29 @@ Java_com_example_ai_offline_LlamaCppEngine_nativeGenerateMultimodal(
         jstring promptValue,
         jint maxTokens) {
     auto *handle = reinterpret_cast<KavyaLlamaHandle *>(handlePtr);
-    if (!handle || !handle->model || handle->mmprojPath.empty()) {
+    if (!handle || !handle->model || !handle->mtmdCtx || handle->mmprojPath.empty()) {
         return env->NewStringUTF("");
     }
     if (!rgbBytes || width <= 0 || height <= 0) {
         return env->NewStringUTF("");
     }
     const jsize byteLen = env->GetArrayLength(rgbBytes);
-    if (byteLen < width * height * 3) {
+    const int64_t requiredBytes = static_cast<int64_t>(width) * static_cast<int64_t>(height) * 3LL;
+    if (requiredBytes <= 0 || static_cast<int64_t>(byteLen) < requiredBytes) {
         return env->NewStringUTF("");
     }
 
     jbyte *rawRgb = env->GetByteArrayElements(rgbBytes, nullptr);
     if (!rawRgb) return env->NewStringUTF("");
 
-    // Compute spatial quadrant luminance summary from the RGB frame buffer to condition the prompt
-    long sumTL = 0, sumTR = 0, sumBL = 0, sumBR = 0;
-    const int halfW = std::max(1, width / 2);
-    const int halfH = std::max(1, height / 2);
-    const int step = std::max(1, std::min(width, height) / 32);
-    for (int y = 0; y < height; y += step) {
-        for (int x = 0; x < width; x += step) {
-            const int idx = (y * width + x) * 3;
-            const int lum = (static_cast<unsigned char>(rawRgb[idx]) * 77 +
-                             static_cast<unsigned char>(rawRgb[idx + 1]) * 150 +
-                             static_cast<unsigned char>(rawRgb[idx + 2]) * 29) >> 8;
-            if (y < halfH) {
-                if (x < halfW) sumTL += lum; else sumTR += lum;
-            } else {
-                if (x < halfW) sumBL += lum; else sumBR += lum;
-            }
-        }
-    }
+    std::vector<unsigned char> rgbCopy(
+            reinterpret_cast<unsigned char *>(rawRgb),
+            reinterpret_cast<unsigned char *>(rawRgb) + static_cast<size_t>(requiredBytes));
     env->ReleaseByteArrayElements(rgbBytes, rawRgb, JNI_ABORT);
 
-    std::string prompt = jstringToString(env, promptValue);
-    char visionMeta[160];
-    std::snprintf(
-            visionMeta,
-            sizeof(visionMeta),
-            "[mmproj_frame=%dx%d luma=%ld,%ld,%ld,%ld] ",
-            static_cast<int>(width),
-            static_cast<int>(height),
-            sumTL, sumTR, sumBL, sumBR);
-    const std::string imageToken = "<image>";
-    const size_t pos = prompt.find(imageToken);
-    if (pos != std::string::npos) {
-        prompt.replace(pos, imageToken.size(), visionMeta);
-    } else {
-        prompt = std::string(visionMeta) + prompt;
-    }
-
-    const std::string output = runLlamaCompletion(handle, prompt, maxTokens);
+    const std::string prompt = jstringToString(env, promptValue);
+    const std::string output = runMtmdMultimodalCompletion(
+            handle, rgbCopy.data(), width, height, prompt, maxTokens);
     return env->NewStringUTF(output.c_str());
 }
 
@@ -247,6 +389,7 @@ Java_com_example_ai_offline_LlamaCppEngine_nativeFree(
         JNIEnv * /*env*/, jobject /*thiz*/, jlong handlePtr) {
     auto *handle = reinterpret_cast<KavyaLlamaHandle *>(handlePtr);
     if (!handle) return;
+    if (handle->mtmdCtx) mtmd_free(handle->mtmdCtx);
     if (handle->model) llama_model_free(handle->model);
     delete handle;
 }

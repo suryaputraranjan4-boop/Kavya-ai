@@ -75,12 +75,23 @@ fun JarvisOverlayCanvas(
         label = "CursorRot"
     )
 
+    val mapper = ScreenAnnotationManager.coordinateMapper
     val rawClickPoint = currentStep?.clickPoint
         ?: activeInstruction?.clickPoint
         ?: effectiveBounds?.let { Pair(it.centerX(), it.centerY()) }
 
-    val targetX = (rawClickPoint?.first ?: 0).toFloat()
-    val targetY = (rawClickPoint?.second ?: 0).toFloat()
+    val clampedTargetPoint = if (effectiveBounds != null && rawClickPoint != null) {
+        mapper.toOverlayCanvasPoint(
+            screenX = rawClickPoint.first,
+            screenY = rawClickPoint.second,
+            targetCanvasRect = mapper.toOverlayCanvasRect(effectiveBounds)
+        )
+    } else {
+        Pair((rawClickPoint?.first ?: 0).toFloat(), (rawClickPoint?.second ?: 0).toFloat())
+    }
+
+    val targetX = clampedTargetPoint.first
+    val targetY = clampedTargetPoint.second
 
     // Smoothly animate pointer movement between explanation steps
     val animatedPointerX by animateFloatAsState(
@@ -105,11 +116,12 @@ fun JarvisOverlayCanvas(
         ?: plan?.instructions?.firstOrNull()?.label
         ?: ""
 
+    val isGuidanceMode = plan?.mode == JarvisMode.SHOWS_YOU_HOW
     val stepNum = currentStep?.stepNumber ?: 1
     val totalSteps = currentStep?.totalSteps ?: allSteps.size.coerceAtLeast(1)
     val shouldDim = currentStep?.dimUnrelatedAreas ?: false
     val shouldShowArrow = currentStep?.showArrow ?: true
-    val shouldShowPointer = currentStep?.showPointer ?: true
+    val shouldShowPointer = currentStep?.showPointer ?: isGuidanceMode
 
     Box(
         modifier = modifier
@@ -118,11 +130,12 @@ fun JarvisOverlayCanvas(
     ) {
         if (hasValidBounds && effectiveBounds != null) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val mapper = ScreenAnnotationManager.coordinateMapper
-                val clampedBounds = mapper.clampBoundsToScreen(
-                    bounds = effectiveBounds,
-                    screenWidth = size.width.toInt().coerceAtLeast(320),
-                    screenHeight = size.height.toInt().coerceAtLeast(480)
+                val canvasW = size.width.toInt().coerceAtLeast(320)
+                val canvasH = size.height.toInt().coerceAtLeast(480)
+                val clampedBounds = mapper.toOverlayCanvasRect(
+                    screenRect = effectiveBounds,
+                    canvasWidth = canvasW,
+                    canvasHeight = canvasH
                 )
 
                 // 1. Optional Spotlight Dimming around active element
@@ -138,10 +151,10 @@ fun JarvisOverlayCanvas(
                 if (allSteps.size > 1) {
                     for (step in allSteps) {
                         if (step.stepNumber != stepNum && step.bounds.width() > 0 && step.bounds.height() > 0) {
-                            val stepClamped = mapper.clampBoundsToScreen(
-                                bounds = step.bounds,
-                                screenWidth = size.width.toInt().coerceAtLeast(320),
-                                screenHeight = size.height.toInt().coerceAtLeast(480)
+                            val stepClamped = mapper.toOverlayCanvasRect(
+                                screenRect = step.bounds,
+                                canvasWidth = canvasW,
+                                canvasHeight = canvasH
                             )
                             HighlightBoxRenderer.drawInactiveStepOutline(
                                 drawScope = this,
@@ -163,7 +176,8 @@ fun JarvisOverlayCanvas(
                     theme = theme,
                     pulseProgress = pulseProgress,
                     scanlineProgress = scanlineProgress,
-                    coordinateMapper = mapper
+                    coordinateMapper = mapper,
+                    showStepNumberBadge = isGuidanceMode
                 )
 
                 // 4. Directional Arrow pointing at the highlighted box

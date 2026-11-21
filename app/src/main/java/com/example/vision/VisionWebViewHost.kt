@@ -55,9 +55,9 @@ class VisionWebViewController {
             put("arSupported", arSupported)
         }.toString()
 
-        val payloadLiteral = artifact.scenePayloadJson.ifBlank { "{}" }
+        val payloadQuoted = JSONObject.quote(artifact.scenePayloadJson.ifBlank { "{}" })
         val safeTech = JSONObject.quote(artifact.techId.wireId)
-        val js = "window.KavyaVision && window.KavyaVision.render($safeTech, $payloadLiteral, $optionsJson);"
+        val js = "(function(){try{var p=JSON.parse($payloadQuoted);if(window.KavyaVision){window.KavyaVision.render($safeTech,p,$optionsJson);}}catch(e){if(window.VisionJsBridge){window.VisionJsBridge.onError($safeTech,'PAYLOAD_PARSE_ERROR',String(e));}}})();"
         val view = webView
         if (view != null && isPageLoaded) {
             view.post { view.evaluateJavascript(js, null) }
@@ -66,10 +66,11 @@ class VisionWebViewController {
         }
     }
 
-    internal fun flushPending() {
-        val js = pendingRenderJs ?: return
+    internal fun flushPending(): Boolean {
+        val js = pendingRenderJs ?: return false
         pendingRenderJs = null
         webView?.post { webView?.evaluateJavascript(js, null) }
+        return true
     }
 
     fun requestExport(format: VisualizationExportFormat) {
@@ -100,21 +101,30 @@ fun VisionWebViewHost(
 ) {
     val context = LocalContext.current
     val currentOnEvent by rememberUpdatedState(onEvent)
+    val latestArtifact by rememberUpdatedState(artifact)
+    val latestQuality by rememberUpdatedState(quality)
+    val latestReducedMotion by rememberUpdatedState(reducedMotion)
+    val latestCesiumIonToken by rememberUpdatedState(cesiumIonToken)
+    val latestArSupported by rememberUpdatedState(arSupported)
     var isLoaded by remember { mutableStateOf(false) }
 
     val assetLoader = remember(context) {
         val filesRoot = File(context.filesDir, "visualizations").apply { mkdirs() }
+        val packagesRoot = VisionPackageManager.getCacheDirectory(context)
         WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
             .addPathHandler("/vision_files/", WebViewAssetLoader.InternalStoragePathHandler(context, filesRoot))
+            .addPathHandler("/vision_packages/", WebViewAssetLoader.InternalStoragePathHandler(context, packagesRoot))
             .build()
     }
 
-    val bridge = remember {
+    val bridge = remember(context) {
+        val techDownloadManager = VisionTechnologyDownloadManager.getInstance(context)
         object {
             @JavascriptInterface
             fun onEngineReady(techId: String, info: String) {
                 VisionTechId.fromWireId(techId)?.let { id ->
+                    techDownloadManager.recordLiveWebViewVerification(id, true, "WebView engine verified: $info")
                     controller.webView?.post {
                         currentOnEvent(VisionJsEvent.EngineReady(id, info))
                     }
@@ -124,6 +134,7 @@ fun VisionWebViewHost(
             @JavascriptInterface
             fun onRenderComplete(techId: String, metricsJson: String) {
                 VisionTechId.fromWireId(techId)?.let { id ->
+                    techDownloadManager.recordLiveWebViewVerification(id, true, "Live WebView render verified")
                     controller.webView?.post {
                         currentOnEvent(VisionJsEvent.RenderComplete(id, metricsJson))
                     }
@@ -133,6 +144,7 @@ fun VisionWebViewHost(
             @JavascriptInterface
             fun onError(techId: String, code: String, message: String) {
                 VisionTechId.fromWireId(techId)?.let { id ->
+                    techDownloadManager.recordLiveWebViewVerification(id, false, "$code: $message")
                     controller.webView?.post {
                         currentOnEvent(VisionJsEvent.RenderError(id, code, message))
                     }
@@ -159,7 +171,15 @@ fun VisionWebViewHost(
         }
     }
 
-    LaunchedEffect(artifact.artifactId, artifact.scenePayloadJson, artifact.techIdWire, quality, reducedMotion) {
+    LaunchedEffect(
+        artifact.artifactId,
+        artifact.scenePayloadJson,
+        artifact.techIdWire,
+        quality,
+        reducedMotion,
+        cesiumIonToken,
+        arSupported
+    ) {
         controller.render(
             artifact = artifact,
             quality = quality,
@@ -247,14 +267,16 @@ fun VisionWebViewHost(
                         override fun onPageFinished(view: WebView?, url: String?) {
                             controller.isPageLoaded = true
                             isLoaded = true
-                            controller.flushPending()
-                            controller.render(
-                                artifact = artifact,
-                                quality = quality,
-                                reducedMotion = reducedMotion,
-                                cesiumIonToken = cesiumIonToken,
-                                arSupported = arSupported
-                            )
+                            val flushed = controller.flushPending()
+                            if (!flushed) {
+                                controller.render(
+                                    artifact = latestArtifact,
+                                    quality = latestQuality,
+                                    reducedMotion = latestReducedMotion,
+                                    cesiumIonToken = latestCesiumIonToken,
+                                    arSupported = latestArSupported
+                                )
+                            }
                         }
                     }
                     controller.webView = this

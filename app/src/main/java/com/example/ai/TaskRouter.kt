@@ -111,8 +111,7 @@ object TaskRouter {
             "MODEL_CORRUPT" -> StructuredRoutingStatus.MODEL_CORRUPT
             else -> StructuredRoutingStatus.MODEL_NOT_INSTALLED
         }
-        val florenceHealthy = GemmaModelManager.getStorageProfile(context) == OfflineStorageProfile.EXPANDED &&
-            GemmaModelManager.verifyFlorence2Package(baseDir, verifyChecksums = false).isInstalledAndValid
+        val florenceHealthy = GemmaModelManager.verifyFlorence2Package(baseDir, verifyChecksums = false).isInstalledAndValid
         return Pair(smolStatus, florenceHealthy)
     }
 
@@ -186,18 +185,15 @@ object TaskRouter {
             prompt.contains("transfer", ignoreCase = true) ||
             prompt.contains("send", ignoreCase = true)
 
-        val storageProfile = GemmaModelManager.getStorageProfile(context)
         val smolReport = GemmaModelManager.verifySmolVlm2Package(modelBaseDir, verifyChecksums = false)
-        val florenceReport = if (storageProfile == OfflineStorageProfile.EXPANDED) {
-            GemmaModelManager.verifyFlorence2Package(modelBaseDir, verifyChecksums = false)
-        } else null
+        val florenceReport = GemmaModelManager.verifyFlorence2Package(modelBaseDir, verifyChecksums = false)
 
         // Build stepwise escalation sequence
         val escalation = mutableListOf(
             SignalEscalationStep.FRESH_SCREEN_OBSERVATION,
             SignalEscalationStep.ACCESSIBILITY_AND_OCR
         )
-        if (storageProfile == OfflineStorageProfile.EXPANDED && florenceReport?.isInstalledAndValid == true) {
+        if (florenceReport.isInstalledAndValid) {
             escalation.add(SignalEscalationStep.AUX_VISION_FLORENCE2)
         }
         escalation.add(SignalEscalationStep.LOCAL_GUI_GROUNDING_SMOLVLM2)
@@ -238,11 +234,7 @@ object TaskRouter {
                 val mappedStatus = when (smolReport.statusCode) {
                     "MMPROJ_MISSING" -> StructuredRoutingStatus.MMPROJ_MISSING
                     "MODEL_CORRUPT" -> StructuredRoutingStatus.MODEL_CORRUPT
-                    else -> if (!isNetworkAvailable && !hasOnlineCredentials) {
-                        StructuredRoutingStatus.MODEL_NOT_INSTALLED
-                    } else {
-                        StructuredRoutingStatus.MODEL_NOT_INSTALLED
-                    }
+                    else -> StructuredRoutingStatus.MODEL_NOT_INSTALLED
                 }
                 return TaskRoutingDecision(
                     taskType = TaskType.PHONE_AUTOMATION,
@@ -257,7 +249,7 @@ object TaskRouter {
                 )
             }
 
-            val auxModel = if (storageProfile == OfflineStorageProfile.EXPANDED && florenceReport?.isInstalledAndValid == true) {
+            val auxModel = if (florenceReport.isInstalledAndValid) {
                 GemmaModelManager.FLORENCE2_MANIFEST.modelId
             } else null
 

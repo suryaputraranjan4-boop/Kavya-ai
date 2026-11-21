@@ -185,24 +185,24 @@ object JarvisIntelligencePlanner {
             else -> 0.0f
         }
 
-        // Build multi-step VisualInstructions for each key screen section
-        sortedSections.forEachIndexed { idx, elem ->
+        // Build semantic section highlights for Screen Explanation Mode (not numbered action steps)
+        sortedSections.forEach { elem ->
             val cleanName = elem.displayLabel.take(40)
             val calloutLabel = when {
-                elem.type == SemanticElementType.INPUT_FIELD -> "Input field: $cleanName"
-                elem.isClickable || elem.type == SemanticElementType.ACTION_BUTTON -> "Tap here: $cleanName"
+                elem.type == SemanticElementType.INPUT_FIELD -> "Input: $cleanName"
+                elem.isClickable || elem.type == SemanticElementType.ACTION_BUTTON -> "Control: $cleanName"
                 elem.type == SemanticElementType.TITLE_HEADER -> "Header: $cleanName"
                 else -> "Section: $cleanName"
             }
             val spokenExplanation = when {
                 elem.type == SemanticElementType.TITLE_HEADER ->
-                    "Step ${idx + 1}: This is the '$cleanName' header at the top of $appName."
+                    "This header identifies '$cleanName' at the top of $appName."
                 elem.type == SemanticElementType.INPUT_FIELD ->
-                    "Step ${idx + 1}: Tap '$cleanName' here to type or search."
+                    "This input field allows entering or searching '$cleanName'."
                 elem.isClickable || elem.type == SemanticElementType.ACTION_BUTTON ->
-                    "Step ${idx + 1}: '$cleanName' is an interactive button. Tap here to open or activate '$cleanName'."
+                    "'$cleanName' is an interactive control available on this screen."
                 else ->
-                    "Step ${idx + 1}: This section displays '$cleanName'."
+                    "This section displays '$cleanName'."
             }
             instructions.add(
                 VisualInstruction(
@@ -222,13 +222,13 @@ object JarvisIntelligencePlanner {
                 type = VisualCardType.SUMMARY,
                 title = "Screen Overview ($appName)",
                 summary = if (hasAccessibilityData) {
-                    "Active screen in $appName focuses on '$headingText' with $actionCount interactive controls and ${sortedSections.size} highlighted sections."
+                    "Active screen in $appName focuses on '$headingText' with $actionCount interactive controls and ${sortedSections.size} key visible sections."
                 } else {
                     "Live visual frame captured from $appName. Analyzing visible content with Vision AI."
                 },
                 bullets = buildList {
-                    sortedSections.take(3).forEachIndexed { i, sec ->
-                        add("Step ${i + 1}: ${sec.displayLabel.take(36)} (${sec.type.name.replace("_", " ").lowercase()})")
+                    sortedSections.take(3).forEach { sec ->
+                        add("${sec.displayLabel.take(38)} (${sec.type.name.replace("_", " ").lowercase()})")
                     }
                     if (hasLiveFrame) {
                         add("Live MediaProjection frame active (${VisionPipeline.getFrameAgeMs()}ms age)")

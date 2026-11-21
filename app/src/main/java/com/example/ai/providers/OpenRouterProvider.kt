@@ -412,40 +412,45 @@ class OpenRouterProvider : AIProvider {
             .post(payload.toString().toRequestBody(mediaType))
             .build()
 
-        val response = RetrofitClient.okHttpClient.newCall(request).execute()
-        if (!response.isSuccessful) {
-            val err = handleError(response.code, response.body?.string())
-            response.close()
-            emit(err)
-            return@flow
-        }
+        try {
+            RetrofitClient.okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val err = handleError(response.code, response.body?.string())
+                    emit(err)
+                    return@flow
+                }
 
-        val stream = response.body?.byteStream()
-        if (stream != null) {
-            BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    val l = line?.trim() ?: continue
-                    if (l.startsWith("data:")) {
-                        val dataContent = l.removePrefix("data:").trim()
-                        if (dataContent == "[DONE]") {
-                            break
-                        }
-                        try {
-                            val json = JSONObject(dataContent)
-                            val choices = json.optJSONArray("choices")
-                            val first = choices?.optJSONObject(0)
-                            val delta = first?.optJSONObject("delta")
-                            val chunk = delta?.optString("content", "") ?: ""
-                            if (chunk.isNotEmpty()) {
-                                emit(chunk)
+                val stream = response.body?.byteStream()
+                if (stream != null) {
+                    BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            val l = line?.trim() ?: continue
+                            if (l.startsWith("data:")) {
+                                val dataContent = l.removePrefix("data:").trim()
+                                if (dataContent == "[DONE]") {
+                                    break
+                                }
+                                try {
+                                    val json = JSONObject(dataContent)
+                                    val choices = json.optJSONArray("choices")
+                                    val first = choices?.optJSONObject(0)
+                                    val delta = first?.optJSONObject("delta")
+                                    val chunk = delta?.optString("content", "") ?: ""
+                                    if (chunk.isNotEmpty()) {
+                                        emit(chunk)
+                                    }
+                                } catch (ignored: Exception) {}
                             }
-                        } catch (ignored: Exception) {}
+                        }
                     }
                 }
             }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            emit(handleError(-1, e.localizedMessage))
         }
-        response.close()
     }.flowOn(Dispatchers.IO)
 
     /**

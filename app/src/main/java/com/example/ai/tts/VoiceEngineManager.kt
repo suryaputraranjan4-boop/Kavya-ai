@@ -78,6 +78,9 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
     private val kavyaAiTts by lazy { com.example.ai.KavyaAI(appContext) }
     @Volatile private var androidSystemTts: android.speech.tts.TextToSpeech? = null
     @Volatile private var androidSystemTtsReady: Boolean = false
+    @Volatile private var systemTtsListenerRegistered: Boolean = false
+    private val systemTtsCompletions = java.util.concurrent.ConcurrentHashMap<String, CompletionOnce>()
+    private val activeSystemTtsUtterances = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val internalPlayer = GeminiAudioPlayer(
         appContext,
         onSpeakingStateChanged = { speaking -> updateSpeakingState(speaking) },
@@ -301,18 +304,60 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         completion: CompletionOnce?
     ): Boolean = withContext(Dispatchers.Main) {
         try {
-            val tts = androidSystemTts ?: kotlinx.coroutines.suspendCancellableCoroutine<android.speech.tts.TextToSpeech?> { cont ->
-                var created: android.speech.tts.TextToSpeech? = null
-                created = android.speech.tts.TextToSpeech(appContext) { status ->
-                    androidSystemTtsReady = (status == android.speech.tts.TextToSpeech.SUCCESS)
-                    if (cont.isActive) {
-                        cont.resumeWith(Result.success(if (androidSystemTtsReady) created else null))
+            val tts = androidSystemTts ?: kotlinx.coroutines.withTimeoutOrNull(4_000L) {
+                kotlinx.coroutines.suspendCancellableCoroutine<android.speech.tts.TextToSpeech?> { cont ->
+                    var created: android.speech.tts.TextToSpeech? = null
+                    created = android.speech.tts.TextToSpeech(appContext) { status ->
+                        androidSystemTtsReady = (status == android.speech.tts.TextToSpeech.SUCCESS)
+                        if (cont.isActive) {
+                            cont.resumeWith(Result.success(if (androidSystemTtsReady) created else null))
+                        }
                     }
+                    androidSystemTts = created
                 }
-                androidSystemTts = created
             } ?: return@withContext false
 
             if (!androidSystemTtsReady) return@withContext false
+
+            if (!systemTtsListenerRegistered) {
+                tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    override fun onStart(id: String?) {
+                        if (id != null) activeSystemTtsUtterances.add(id)
+                        updateSpeakingState(true)
+                    }
+
+                    override fun onDone(id: String?) {
+                        if (id != null) activeSystemTtsUtterances.remove(id)
+                        val cb = id?.let { systemTtsCompletions.remove(it) }
+                        if (activeSystemTtsUtterances.isEmpty() && !player.isSpeaking()) {
+                            updateSpeakingState(false)
+                        }
+                        if (cb != null) {
+                            scope.launch(Dispatchers.Main) { cb.invoke() }
+                        }
+                    }
+
+                    @Deprecated("Deprecated in API 21")
+                    override fun onError(id: String?) {
+                        if (id != null) activeSystemTtsUtterances.remove(id)
+                        val cb = id?.let { systemTtsCompletions.remove(it) }
+                        if (activeSystemTtsUtterances.isEmpty() && !player.isSpeaking()) {
+                            updateSpeakingState(false)
+                        }
+                        if (cb != null) {
+                            scope.launch(Dispatchers.Main) { cb.invoke() }
+                        }
+                    }
+                })
+                systemTtsListenerRegistered = true
+            }
+
+            if (!enqueue) {
+                activeSystemTtsUtterances.clear()
+                val flushed = systemTtsCompletions.values.toList()
+                systemTtsCompletions.clear()
+                flushed.forEach { cb -> scope.launch(Dispatchers.Main) { cb.invoke() } }
+            }
 
             val hasDevanagari = text.any { it in '\u0900'..'\u097F' }
             tts.language = if (hasDevanagari) java.util.Locale("hi", "IN") else java.util.Locale.US
@@ -320,26 +365,20 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
             tts.setPitch(pitch.coerceIn(0.6f, 1.5f))
 
             val utteranceId = "kavya_tts_${System.nanoTime()}"
-            tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-                override fun onStart(id: String?) {
-                    updateSpeakingState(true)
-                }
-
-                override fun onDone(id: String?) {
-                    updateSpeakingState(false)
-                    scope.launch(Dispatchers.Main) { completion?.invoke() }
-                }
-
-                @Deprecated("Deprecated in API 21")
-                override fun onError(id: String?) {
-                    updateSpeakingState(false)
-                    scope.launch(Dispatchers.Main) { completion?.invoke() }
-                }
-            })
+            activeSystemTtsUtterances.add(utteranceId)
+            if (completion != null) {
+                systemTtsCompletions[utteranceId] = completion
+            }
 
             val queueMode = if (enqueue) android.speech.tts.TextToSpeech.QUEUE_ADD else android.speech.tts.TextToSpeech.QUEUE_FLUSH
             val res = tts.speak(text, queueMode, null, utteranceId)
-            res == android.speech.tts.TextToSpeech.SUCCESS
+            if (res != android.speech.tts.TextToSpeech.SUCCESS) {
+                activeSystemTtsUtterances.remove(utteranceId)
+                systemTtsCompletions.remove(utteranceId)
+                false
+            } else {
+                true
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "Android system TTS fallback unavailable: ${t.message}")
             false
@@ -362,6 +401,8 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
         jobs.forEach { it.cancel() }
         activeSpeechJob = null
         player.stop()
+        activeSystemTtsUtterances.clear()
+        systemTtsCompletions.clear()
         try {
             androidSystemTts?.stop()
         } catch (_: Throwable) {}
@@ -374,6 +415,11 @@ class VoiceEngineManager private constructor(private val appContext: Context) {
 
     fun onTrimMemory(level: Int) {
         kokoroEngine.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            try {
+                indicTinyEngine.release()
+            } catch (_: Throwable) {}
+        }
     }
 
     private fun updateSpeakingState(speaking: Boolean) {

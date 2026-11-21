@@ -162,8 +162,8 @@ fun ScreenShareSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        dragHandle = { BottomSheetDefaults.DragHandle(color = OutlineVariant) },
-        containerColor = Surface,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = GlassBorder) },
+        containerColor = Color(0xF5121621),
         contentColor = TextPrimary,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         modifier = Modifier.testTag("screen_share_bottom_sheet")

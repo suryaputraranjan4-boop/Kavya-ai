@@ -414,7 +414,10 @@ class Gemma4E4BEngine private constructor() {
         enforceExactSizeAndSha256: Boolean = false
     ): Result<String> {
         val ctx = appContext ?: return Result.failure(IllegalStateException("MODEL_NOT_INSTALLED: No application context initialized."))
-        return loadSmolVlm2GuiEngine(context = ctx)
+        return loadSmolVlm2GuiEngine(
+            context = ctx,
+            verifyChecksums = enforceExactSizeAndSha256
+        )
     }
 
     /**
@@ -427,6 +430,7 @@ class Gemma4E4BEngine private constructor() {
         baseDir: File = GemmaModelManager.getModelDirectory(context),
         overrideAvailRamMb: Long? = null,
         overrideThermalStatus: Int? = null,
+        verifyChecksums: Boolean = false,
         customHealthCheckRunner: (suspend (File, File) -> Result<String>)? = null
     ): Result<String> = mutex.withLock {
         withContext(Dispatchers.IO) {
@@ -446,7 +450,7 @@ class Gemma4E4BEngine private constructor() {
             }
 
             // 2. Verify SmolVLM2 main GGUF + companion mmproj GGUF
-            val pkgReport = GemmaModelManager.verifySmolVlm2Package(baseDir, verifyChecksums = false)
+            val pkgReport = GemmaModelManager.verifySmolVlm2Package(baseDir, verifyChecksums = verifyChecksums)
             if (!pkgReport.isInstalledAndValid) {
                 GemmaModelManager.setStatus(GemmaModelStatus.ERROR, pkgReport.statusCode)
                 return@withContext Result.failure(IllegalStateException("${pkgReport.statusCode}: ${pkgReport.message}"))
@@ -476,7 +480,14 @@ class Gemma4E4BEngine private constructor() {
                     return@withContext Result.failure(IllegalStateException(msg))
                 }
                 GemmaModelManager.setStatus(GemmaModelStatus.HEALTH_CHECK)
-                val probeBitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+                val probeBitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply {
+                    val canvas = android.graphics.Canvas(this)
+                    canvas.drawColor(android.graphics.Color.WHITE)
+                    val paint = android.graphics.Paint().apply { color = android.graphics.Color.rgb(32, 96, 200) }
+                    canvas.drawRect(0f, 0f, 64f, 18f, paint)
+                    paint.color = android.graphics.Color.rgb(40, 40, 40)
+                    canvas.drawRect(10f, 28f, 54f, 44f, paint)
+                }
                 val probeFrame = try {
                     LlamaCppEngine.preprocessScreenshotForSmolVlm2(probeBitmap)
                 } finally {
@@ -533,13 +544,6 @@ class Gemma4E4BEngine private constructor() {
             // 1. Sequential memory governance: ALWAYS unload SmolVLM2 first!
             unloadSmolVlm2Internal()
             closeInternal()
-
-            val profile = GemmaModelManager.getStorageProfile(context)
-            if (profile != OfflineStorageProfile.EXPANDED) {
-                return@withContext Result.failure(
-                    IllegalStateException("STORAGE_INSUFFICIENT: Florence-2 auxiliary model requires EXPANDED storage profile.")
-                )
-            }
 
             val resources = inspectDeviceResources(context, overrideAvailRamMb, overrideThermalStatus)
             if (resources.isThermalThrottled) {
@@ -616,22 +620,24 @@ class Gemma4E4BEngine private constructor() {
                     arr[plane + i] = ((((px ushr 8) and 0xFF) / 255f) - 0.456f) / 0.224f
                     arr[2 * plane + i] = (((px and 0xFF) / 255f) - 0.406f) / 0.225f
                 }
-                val fb = java.nio.FloatBuffer.allocate(arr.size).apply {
-                    put(arr)
-                    rewind()
+                val dims = longArrayOf(1L, 3L, targetH.toLong(), targetW.toLong())
+                val inputTensor = if (tensorInfo?.type == ai.onnxruntime.OnnxJavaType.FLOAT16) {
+                    val bb = java.nio.ByteBuffer.allocateDirect(arr.size * 2)
+                        .order(java.nio.ByteOrder.nativeOrder())
+                    for (v in arr) bb.putShort(floatToFp16Bits(v))
+                    bb.rewind()
+                    ai.onnxruntime.OnnxTensor.createTensor(env, bb, dims, ai.onnxruntime.OnnxJavaType.FLOAT16)
+                } else {
+                    val fb = java.nio.FloatBuffer.allocate(arr.size).apply {
+                        put(arr)
+                        rewind()
+                    }
+                    ai.onnxruntime.OnnxTensor.createTensor(env, fb, dims)
                 }
                 val signals = mutableListOf<com.example.visual.VisionElementSignal>()
-                ai.onnxruntime.OnnxTensor.createTensor(
-                    env,
-                    fb,
-                    longArrayOf(1L, 3L, targetH.toLong(), targetW.toLong())
-                ).use { inputTensor ->
-                    visionSession.run(mapOf(inputEntry.key to inputTensor)).use { result ->
+                inputTensor.use { tensor ->
+                    visionSession.run(mapOf(inputEntry.key to tensor)).use { result ->
                         val outTensor = result.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor
-                        val outShape = outTensor?.info?.shape
-                        val outBuf = outTensor?.floatBuffer
-
-                        // Prefer full encoder-decoder grounding when tokenizer + encoder + decoder + embed_tokens exist
                         val decodedFromGraph = tryRunFlorenceEncoderDecoder(
                             env = env,
                             imageFeatures = outTensor,
@@ -639,63 +645,7 @@ class Gemma4E4BEngine private constructor() {
                             screenWidth = screenshot.width.coerceAtLeast(1),
                             screenHeight = screenshot.height.coerceAtLeast(1)
                         )
-                        if (decodedFromGraph.isNotEmpty()) {
-                            signals.addAll(decodedFromGraph)
-                        } else if (outBuf != null && outShape != null && outShape.size >= 2) {
-                            val totalFloats = outBuf.remaining()
-                            val feats = FloatArray(totalFloats).also { outBuf.get(it) }
-                            // Project spatial visual tokens (e.g. [1, N, D]) onto normalized grid cells
-                            val numTokens = outShape[1].toInt().coerceAtLeast(1)
-                            val dim = (totalFloats / numTokens).coerceAtLeast(1)
-                            val gridSide = kotlin.math.sqrt(numTokens.toFloat()).toInt().coerceIn(4, 24)
-                            val cellEnergies = FloatArray(gridSide * gridSide)
-                            var maxEnergy = 0f
-                            for (g in 0 until (gridSide * gridSide).coerceAtMost(numTokens)) {
-                                var energy = 0f
-                                val base = g * dim
-                                val step = (dim / 32).coerceAtLeast(1)
-                                var cnt = 0
-                                var idx = base
-                                while (idx < base + dim && idx < feats.size) {
-                                    energy += kotlin.math.abs(feats[idx])
-                                    cnt++
-                                    idx += step
-                                }
-                                val avg = if (cnt > 0) energy / cnt else 0f
-                                cellEnergies[g] = avg
-                                if (avg > maxEnergy) maxEnergy = avg
-                            }
-                            if (maxEnergy > 0f) {
-                                val topCells = cellEnergies.indices
-                                    .sortedByDescending { cellEnergies[it] }
-                                    .take(4)
-                                topCells.forEachIndexed { idx, cellIdx ->
-                                    val score = (cellEnergies[cellIdx] / maxEnergy).coerceIn(0.35f, 0.72f)
-                                    val row = cellIdx / gridSide
-                                    val col = cellIdx % gridSide
-                                    val bounds = com.example.visual.PrecisionCoordinateMapper.mapNormalizedBoxToDevice(
-                                        normLeft = (col.toFloat() / gridSide).coerceIn(0f, 1f),
-                                        normTop = (row.toFloat() / gridSide).coerceIn(0f, 1f),
-                                        normRight = ((col + 1).toFloat() / gridSide).coerceIn(0f, 1f),
-                                        normBottom = ((row + 1).toFloat() / gridSide).coerceIn(0f, 1f),
-                                        screenWidth = screenshot.width.coerceAtLeast(1),
-                                        screenHeight = screenshot.height.coerceAtLeast(1)
-                                    )
-                                    signals.add(
-                                        com.example.visual.VisionElementSignal(
-                                            label = "Visual Salient Region ${idx + 1} ($taskPrompt)",
-                                            roleHint = "aux_salient_region",
-                                            bounds = bounds,
-                                            confidence = score,
-                                            sourceSignal = com.example.visual.SignalSource.AUX_VISION_MODEL,
-                                            sourceModelId = GemmaModelManager.FLORENCE2_MANIFEST.modelId,
-                                            sourceModelRevision = GemmaModelManager.FLORENCE2_MANIFEST.pinnedRevision,
-                                            isConfidenceCalibrated = false
-                                        )
-                                    )
-                                }
-                            }
-                        }
+                        signals.addAll(decodedFromGraph)
                     }
                 }
                 Result.success(signals)
@@ -703,6 +653,239 @@ class Gemma4E4BEngine private constructor() {
                 throw cancelled
             } catch (t: Throwable) {
                 Result.failure(IllegalStateException("Florence-2 vision pass failed: ${t.message}", t))
+            }
+        }
+    }
+
+    private fun floatToFp16Bits(value: Float): Short {
+        val bits = java.lang.Float.floatToIntBits(value)
+        val sign = (bits ushr 16) and 0x8000
+        var exponent = ((bits ushr 23) and 0xFF) - 127 + 15
+        var mantissa = bits and 0x7FFFFF
+        if (exponent <= 0) {
+            if (exponent < -10) return sign.toShort()
+            mantissa = (mantissa or 0x800000) shr (1 - exponent)
+            return (sign or (mantissa shr 13)).toShort()
+        } else if (exponent >= 31) {
+            return (sign or 0x7C00).toShort()
+        }
+        return (sign or (exponent shl 10) or (mantissa shr 13)).toShort()
+    }
+
+    private fun fp16BitsToFloat(half: Short): Float {
+        val h = half.toInt() and 0xFFFF
+        val sign = (h and 0x8000) shl 16
+        val exp = (h ushr 10) and 0x1F
+        val mant = h and 0x03FF
+        return when (exp) {
+            0 -> {
+                if (mant == 0) {
+                    java.lang.Float.intBitsToFloat(sign)
+                } else {
+                    var m = mant
+                    var e = 127 - 14
+                    while ((m and 0x0400) == 0) {
+                        m = m shl 1
+                        e--
+                    }
+                    m = m and 0x03FF
+                    java.lang.Float.intBitsToFloat(sign or (e shl 23) or (m shl 13))
+                }
+            }
+            31 -> java.lang.Float.intBitsToFloat(sign or 0x7F800000 or (mant shl 13))
+            else -> java.lang.Float.intBitsToFloat(sign or ((exp + 112) shl 23) or (mant shl 13))
+        }
+    }
+
+    private fun extractOnnxFloats(tensor: ai.onnxruntime.OnnxTensor?): FloatArray? {
+        if (tensor == null) return null
+        tensor.floatBuffer?.let { fb ->
+            val dup = fb.duplicate()
+            return FloatArray(dup.remaining()).also { dup.get(it) }
+        }
+        if (tensor.info?.type == ai.onnxruntime.OnnxJavaType.FLOAT16) {
+            val bb = tensor.byteBuffer?.duplicate()?.order(java.nio.ByteOrder.nativeOrder()) ?: return null
+            val count = bb.remaining() / 2
+            val out = FloatArray(count)
+            for (i in 0 until count) out[i] = fp16BitsToFloat(bb.short)
+            return out
+        }
+        return null
+    }
+
+    private fun concatSequenceEmbeds(
+        env: OrtEnvironment,
+        imageFeatures: ai.onnxruntime.OnnxTensor,
+        textEmbeds: ai.onnxruntime.OnnxTensor,
+        targetType: ai.onnxruntime.OnnxJavaType
+    ): ai.onnxruntime.OnnxTensor? {
+        val imgShape = (imageFeatures.info as? ai.onnxruntime.TensorInfo)?.shape ?: return null
+        val txtShape = (textEmbeds.info as? ai.onnxruntime.TensorInfo)?.shape ?: return null
+        if (imgShape.size < 3 || txtShape.size < 3) return null
+        val imgSeq = imgShape[1].coerceAtLeast(0L)
+        val txtSeq = txtShape[1].coerceAtLeast(0L)
+        val hiddenDim = txtShape[2].coerceAtLeast(1L)
+        if (imgShape[2] != hiddenDim) return null
+        val imgFloats = extractOnnxFloats(imageFeatures) ?: return null
+        val txtFloats = extractOnnxFloats(textEmbeds) ?: return null
+        val totalSeq = imgSeq + txtSeq
+        val dims = longArrayOf(1L, totalSeq, hiddenDim)
+        val combined = FloatArray(imgFloats.size + txtFloats.size)
+        System.arraycopy(imgFloats, 0, combined, 0, imgFloats.size)
+        System.arraycopy(txtFloats, 0, combined, imgFloats.size, txtFloats.size)
+        return if (targetType == ai.onnxruntime.OnnxJavaType.FLOAT16) {
+            val bb = java.nio.ByteBuffer.allocateDirect(combined.size * 2)
+                .order(java.nio.ByteOrder.nativeOrder())
+            for (v in combined) bb.putShort(floatToFp16Bits(v))
+            bb.rewind()
+            ai.onnxruntime.OnnxTensor.createTensor(env, bb, dims, ai.onnxruntime.OnnxJavaType.FLOAT16)
+        } else {
+            val fb = java.nio.FloatBuffer.wrap(combined)
+            ai.onnxruntime.OnnxTensor.createTensor(env, fb, dims)
+        }
+    }
+
+    private fun tokenizeFlorenceBpePrompt(
+        tokJson: org.json.JSONObject,
+        taskPrompt: String,
+        tokenToId: Map<String, Long>,
+        bosId: Long,
+        eosId: Long
+    ): LongArray {
+        val addedTokens = mutableListOf<String>()
+        val addedArr = tokJson.optJSONArray("added_tokens")
+        if (addedArr != null) {
+            for (i in 0 until addedArr.length()) {
+                val c = addedArr.optJSONObject(i)?.optString("content").orEmpty()
+                if (c.isNotEmpty() && c != "<s>" && c != "</s>" && c != "<pad>" && c != "<unk>") {
+                    addedTokens.add(c)
+                }
+            }
+        }
+        addedTokens.sortByDescending { it.length }
+
+        val bpeRanks = HashMap<Pair<String, String>, Int>()
+        val mergesArr = tokJson.optJSONObject("model")?.optJSONArray("merges")
+        if (mergesArr != null) {
+            for (i in 0 until mergesArr.length()) {
+                val line = mergesArr.optString(i)
+                val sp = line.indexOf(' ')
+                if (sp > 0 && sp < line.length - 1) {
+                    bpeRanks[line.substring(0, sp) to line.substring(sp + 1)] = i
+                }
+            }
+        }
+
+        val byteEncoder = buildGpt2ByteToUnicodeMap()
+        val ids = mutableListOf(bosId)
+        var cursor = 0
+        while (cursor < taskPrompt.length) {
+            val matchedSpecial = addedTokens.firstOrNull { taskPrompt.startsWith(it, startIndex = cursor) }
+            if (matchedSpecial != null) {
+                tokenToId[matchedSpecial]?.let { ids.add(it) }
+                cursor += matchedSpecial.length
+                continue
+            }
+            val nextSpecialIdx = addedTokens
+                .mapNotNull { sp -> taskPrompt.indexOf(sp, startIndex = cursor).takeIf { it >= 0 } }
+                .minOrNull() ?: taskPrompt.length
+            val chunk = taskPrompt.substring(cursor, nextSpecialIdx)
+            val preTokens = Regex("""\s*\S+|\s+""").findAll(chunk).map { it.value }
+            for (piece in preTokens) {
+                val encodedChars = piece.toByteArray(Charsets.UTF_8)
+                    .map { b -> (byteEncoder[b.toInt() and 0xFF] ?: '?').toString() }
+                var word = encodedChars
+                while (word.size > 1 && bpeRanks.isNotEmpty()) {
+                    var bestPair: Pair<String, String>? = null
+                    var bestRank = Int.MAX_VALUE
+                    for (j in 0 until word.size - 1) {
+                        val pair = word[j] to word[j + 1]
+                        val rank = bpeRanks[pair] ?: Int.MAX_VALUE
+                        if (rank < bestRank) {
+                            bestRank = rank
+                            bestPair = pair
+                        }
+                    }
+                    if (bestPair == null || bestRank == Int.MAX_VALUE) break
+                    val merged = mutableListOf<String>()
+                    var k = 0
+                    while (k < word.size) {
+                        if (k < word.size - 1 && word[k] == bestPair.first && word[k + 1] == bestPair.second) {
+                            merged.add(bestPair.first + bestPair.second)
+                            k += 2
+                        } else {
+                            merged.add(word[k])
+                            k++
+                        }
+                    }
+                    word = merged
+                }
+                for (sub in word) {
+                    val tid = tokenToId[sub] ?: tokenToId["<unk>"] ?: continue
+                    ids.add(tid)
+                }
+            }
+            cursor = nextSpecialIdx
+        }
+        ids.add(eosId)
+        return ids.toLongArray()
+    }
+
+    private fun buildGpt2ByteToUnicodeMap(): Map<Int, Char> {
+        val bs = mutableListOf<Int>()
+        for (b in 33..126) bs.add(b)
+        for (b in 161..172) bs.add(b)
+        for (b in 174..255) bs.add(b)
+        val cs = bs.toMutableList()
+        var n = 0
+        for (b in 0..255) {
+            if (b !in bs) {
+                bs.add(b)
+                cs.add(256 + n)
+                n++
+            }
+        }
+        return bs.indices.associate { bs[it] to cs[it].toChar() }
+    }
+
+    private fun createZeroTensorForInfo(
+        env: OrtEnvironment,
+        tensorInfo: ai.onnxruntime.TensorInfo,
+        resolvedShape: LongArray
+    ): ai.onnxruntime.OnnxTensor {
+        val total = resolvedShape.fold(1L) { acc, d -> acc * d.coerceAtLeast(1L) }.toInt()
+        return when (tensorInfo.type) {
+            ai.onnxruntime.OnnxJavaType.FLOAT16 -> {
+                val byteBuf = java.nio.ByteBuffer.allocateDirect(total * 2)
+                    .order(java.nio.ByteOrder.nativeOrder())
+                ai.onnxruntime.OnnxTensor.createTensor(
+                    env,
+                    byteBuf,
+                    resolvedShape,
+                    ai.onnxruntime.OnnxJavaType.FLOAT16
+                )
+            }
+            ai.onnxruntime.OnnxJavaType.INT64 -> {
+                ai.onnxruntime.OnnxTensor.createTensor(
+                    env,
+                    java.nio.LongBuffer.wrap(LongArray(total)),
+                    resolvedShape
+                )
+            }
+            ai.onnxruntime.OnnxJavaType.BOOL -> {
+                ai.onnxruntime.OnnxTensor.createTensor(
+                    env,
+                    java.nio.ByteBuffer.wrap(ByteArray(total)),
+                    resolvedShape,
+                    ai.onnxruntime.OnnxJavaType.BOOL
+                )
+            }
+            else -> {
+                ai.onnxruntime.OnnxTensor.createTensor(
+                    env,
+                    java.nio.FloatBuffer.wrap(FloatArray(total)),
+                    resolvedShape
+                )
             }
         }
     }
@@ -753,19 +936,11 @@ class Gemma4E4BEngine private constructor() {
 
             val bosId = tokenToId["<s>"] ?: 0L
             val eosId = tokenToId["</s>"] ?: 2L
-            val promptIds = mutableListOf<Long>().apply {
-                add(bosId)
-                taskPrompt.split(Regex("\\s+")).filter { it.isNotBlank() }.forEach { word ->
-                    val exact = tokenToId[word] ?: tokenToId["\u0120$word"] ?: tokenToId[word.lowercase()]
-                    if (exact != null) add(exact)
-                }
-                add(eosId)
-            }
+            val promptIds = tokenizeFlorenceBpePrompt(tokJson, taskPrompt, tokenToId, bosId, eosId)
 
-            // Encode text tokens with embed_tokens -> concat with image_features -> text_encoder
             val idsTensor = ai.onnxruntime.OnnxTensor.createTensor(
                 env,
-                java.nio.LongBuffer.wrap(promptIds.toLongArray()),
+                java.nio.LongBuffer.wrap(promptIds),
                 longArrayOf(1L, promptIds.size.toLong())
             )
             val textEmbedsResult = idsTensor.use { t ->
@@ -773,85 +948,181 @@ class Gemma4E4BEngine private constructor() {
                 embedTokens.run(mapOf(inName to t))
             }
             val decodedBuilder = StringBuilder()
+            val byteDecoder = buildGpt2ByteToUnicodeMap().entries.associate { (k, v) -> v to k.toByte() }
+            val generatedTokenPieces = mutableListOf<Byte>()
             textEmbedsResult.use { embOut ->
                 val textEmbTensor = embOut.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor ?: return emptyList()
                 val encInputs = mutableMapOf<String, ai.onnxruntime.OnnxTensor>()
-                for (name in textEncoder.inputInfo.keys) {
+                val ownedEncTensors = mutableListOf<ai.onnxruntime.OnnxTensor>()
+                val hasSeparateImageInput = textEncoder.inputInfo.keys.any { it.contains("image", ignoreCase = true) }
+                val imgSeqLen = ((imageFeatures.info as? ai.onnxruntime.TensorInfo)?.shape?.getOrNull(1) ?: 0L).coerceAtLeast(0L)
+                var effectiveSeqLen = promptIds.size.toLong()
+                for ((name, info) in textEncoder.inputInfo) {
+                    val ti = info.info as? ai.onnxruntime.TensorInfo
                     when {
-                        name.contains("image", ignoreCase = true) -> encInputs[name] = imageFeatures
-                        name.contains("embed", ignoreCase = true) -> encInputs[name] = textEmbTensor
+                        name.contains("image", ignoreCase = true) -> {
+                            encInputs[name] = imageFeatures
+                            effectiveSeqLen = (imgSeqLen + promptIds.size).coerceAtLeast(1L)
+                        }
+                        name.contains("inputs_embeds", ignoreCase = true) || name.contains("embed", ignoreCase = true) -> {
+                            if (!hasSeparateImageInput) {
+                                val targetType = ti?.type ?: ai.onnxruntime.OnnxJavaType.FLOAT
+                                val merged = concatSequenceEmbeds(env, imageFeatures, textEmbTensor, targetType)
+                                if (merged != null) {
+                                    ownedEncTensors.add(merged)
+                                    encInputs[name] = merged
+                                    effectiveSeqLen = (imgSeqLen + promptIds.size).coerceAtLeast(1L)
+                                } else {
+                                    encInputs[name] = textEmbTensor
+                                }
+                            } else {
+                                encInputs[name] = textEmbTensor
+                            }
+                        }
                     }
                 }
-                if (encInputs.isEmpty()) return emptyList()
-                textEncoder.run(encInputs).use { encOut ->
-                    val encHidden = encOut.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor ?: return emptyList()
-                    var currentId = bosId
-                    val maxSteps = 48
-                    for (step in 0 until maxSteps) {
-                        val stepTensor = ai.onnxruntime.OnnxTensor.createTensor(
+                for ((name, _) in textEncoder.inputInfo) {
+                    if (name.contains("attention_mask", ignoreCase = true)) {
+                        val mask = LongArray(effectiveSeqLen.toInt().coerceAtLeast(1)) { 1L }
+                        val t = ai.onnxruntime.OnnxTensor.createTensor(
                             env,
-                            java.nio.LongBuffer.wrap(longArrayOf(currentId)),
-                            longArrayOf(1L, 1L)
+                            java.nio.LongBuffer.wrap(mask),
+                            longArrayOf(1L, effectiveSeqLen.coerceAtLeast(1L))
                         )
-                        val stepEmbedRes = stepTensor.use { st ->
-                            val embIn = embedTokens.inputInfo.keys.firstOrNull() ?: return emptyList()
-                            embedTokens.run(mapOf(embIn to st))
-                        }
-                        var nextId = eosId
-                        stepEmbedRes.use { se ->
-                            val stepEmbTensor = se.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor ?: return emptyList()
-                            val decInputs = mutableMapOf<String, ai.onnxruntime.OnnxTensor>()
-                            for ((k, info) in decoder.inputInfo) {
-                                when {
-                                    k.contains("encoder_hidden", ignoreCase = true) -> decInputs[k] = encHidden
-                                    k.contains("inputs_embeds", ignoreCase = true) -> decInputs[k] = stepEmbTensor
-                                    k.contains("use_cache", ignoreCase = true) -> {
-                                        decInputs[k] = ai.onnxruntime.OnnxTensor.createTensor(env, booleanArrayOf(false))
-                                    }
-                                    info.info is ai.onnxruntime.TensorInfo && k.contains("encoder_attention_mask", ignoreCase = true) -> {
-                                        val hiddenShape = (encHidden.info as? ai.onnxruntime.TensorInfo)?.shape
-                                        val seqLen = hiddenShape?.getOrNull(1)?.toInt()?.coerceAtLeast(1) ?: 1
-                                        val ones = LongArray(seqLen) { 1L }
-                                        decInputs[k] = ai.onnxruntime.OnnxTensor.createTensor(
-                                            env,
-                                            java.nio.LongBuffer.wrap(ones),
-                                            longArrayOf(1L, seqLen.toLong())
-                                        )
-                                    }
-                                }
+                        ownedEncTensors.add(t)
+                        encInputs[name] = t
+                    }
+                }
+                if (encInputs.isEmpty()) {
+                    ownedEncTensors.forEach { runCatching { it.close() } }
+                    return emptyList()
+                }
+                try {
+                    textEncoder.run(encInputs).use { encOut ->
+                        val encHidden = encOut.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor ?: return emptyList()
+                        val hiddenShape = (encHidden.info as? ai.onnxruntime.TensorInfo)?.shape
+                        val encSeqLen = hiddenShape?.getOrNull(1)?.coerceAtLeast(1L) ?: 1L
+                        val historyIds = mutableListOf(bosId)
+                        val maxSteps = 64
+                        for (step in 0 until maxSteps) {
+                            val stepArr = historyIds.toLongArray()
+                            val stepTensor = ai.onnxruntime.OnnxTensor.createTensor(
+                                env,
+                                java.nio.LongBuffer.wrap(stepArr),
+                                longArrayOf(1L, stepArr.size.toLong())
+                            )
+                            val stepEmbedRes = stepTensor.use { st ->
+                                val embIn = embedTokens.inputInfo.keys.firstOrNull() ?: return emptyList()
+                                embedTokens.run(mapOf(embIn to st))
                             }
-                            if (!decInputs.containsKey("inputs_embeds") || decInputs.size < 2) {
-                                return emptyList()
-                            }
-                            decoder.run(decInputs).use { decOut ->
-                                val logitsTensor = decOut.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor
-                                val logitShape = logitsTensor?.info?.shape
-                                val buf = logitsTensor?.floatBuffer
-                                if (buf != null && logitShape != null && logitShape.size >= 3) {
-                                    val vocabSize = logitShape.last().toInt().coerceAtLeast(1)
-                                    val total = buf.remaining()
-                                    if (total >= vocabSize) {
-                                        val offset = total - vocabSize
-                                        val arrLogits = FloatArray(total).also { buf.get(it) }
-                                        var bestIdx = 0
-                                        var bestVal = Float.NEGATIVE_INFINITY
-                                        for (v in 0 until vocabSize) {
-                                            val lv = arrLogits[offset + v]
-                                            if (lv > bestVal) {
-                                                bestVal = lv
-                                                bestIdx = v
+                            var nextId = eosId
+                            stepEmbedRes.use { se ->
+                                val stepEmbTensor = se.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor ?: return emptyList()
+                                val decInputs = mutableMapOf<String, ai.onnxruntime.OnnxTensor>()
+                                val ownedDecTensors = mutableListOf<ai.onnxruntime.OnnxTensor>()
+                                try {
+                                    for ((k, info) in decoder.inputInfo) {
+                                        val ti = info.info as? ai.onnxruntime.TensorInfo ?: continue
+                                        when {
+                                            k.contains("encoder_hidden", ignoreCase = true) -> decInputs[k] = encHidden
+                                            k.contains("inputs_embeds", ignoreCase = true) -> decInputs[k] = stepEmbTensor
+                                            k.contains("input_ids", ignoreCase = true) -> decInputs[k] = stepTensor.takeIf { false } ?: run {
+                                                val t = ai.onnxruntime.OnnxTensor.createTensor(
+                                                    env,
+                                                    java.nio.LongBuffer.wrap(stepArr),
+                                                    longArrayOf(1L, stepArr.size.toLong())
+                                                )
+                                                ownedDecTensors.add(t)
+                                                t
+                                            }
+                                            k.contains("use_cache", ignoreCase = true) -> {
+                                                val t = ai.onnxruntime.OnnxTensor.createTensor(env, booleanArrayOf(false))
+                                                ownedDecTensors.add(t)
+                                                decInputs[k] = t
+                                            }
+                                            k.contains("encoder_attention_mask", ignoreCase = true) -> {
+                                                val ones = LongArray(encSeqLen.toInt()) { 1L }
+                                                val t = ai.onnxruntime.OnnxTensor.createTensor(
+                                                    env,
+                                                    java.nio.LongBuffer.wrap(ones),
+                                                    longArrayOf(1L, encSeqLen)
+                                                )
+                                                ownedDecTensors.add(t)
+                                                decInputs[k] = t
+                                            }
+                                            k.contains("past_key_values", ignoreCase = true) -> {
+                                                val fixedShape = ti.shape.mapIndexed { idx, d ->
+                                                    when {
+                                                        d <= 0L -> if (idx == 0) 1L else 0L
+                                                        else -> d
+                                                    }
+                                                }.toLongArray()
+                                                if (fixedShape.isNotEmpty() && fixedShape[0] <= 0L) fixedShape[0] = 1L
+                                                val t = createZeroTensorForInfo(env, ti, fixedShape)
+                                                ownedDecTensors.add(t)
+                                                decInputs[k] = t
                                             }
                                         }
-                                        nextId = bestIdx.toLong()
+                                    }
+                                    if (!decInputs.containsKey("inputs_embeds") && !decInputs.containsKey("input_ids")) {
+                                        return emptyList()
+                                    }
+                                    decoder.run(decInputs).use { decOut ->
+                                        val logitsTensor = decOut.firstOrNull()?.value as? ai.onnxruntime.OnnxTensor
+                                        val logitShape = logitsTensor?.info?.shape
+                                        if (logitsTensor != null && logitShape != null && logitShape.size >= 3) {
+                                            val vocabSize = logitShape.last().toInt().coerceAtLeast(1)
+                                            val floats: FloatArray? = extractOnnxFloats(logitsTensor)
+                                            if (floats != null && floats.size >= vocabSize) {
+                                                val offset = floats.size - vocabSize
+                                                var bestIdx = 0
+                                                var bestVal = Float.NEGATIVE_INFINITY
+                                                for (v in 0 until vocabSize) {
+                                                    val lv = floats[offset + v]
+                                                    if (lv > bestVal) {
+                                                        bestVal = lv
+                                                        bestIdx = v
+                                                    }
+                                                }
+                                                nextId = bestIdx.toLong()
+                                            }
+                                        }
+                                    }
+                                } finally {
+                                    ownedDecTensors.forEach { runCatching { it.close() } }
+                                }
+                            }
+                            if (nextId == eosId) break
+                            val rawTok = idToToken[nextId].orEmpty()
+                            if (rawTok.startsWith("<loc_") && rawTok.endsWith(">")) {
+                                if (generatedTokenPieces.isNotEmpty()) {
+                                    decodedBuilder.append(String(generatedTokenPieces.toByteArray(), Charsets.UTF_8))
+                                    generatedTokenPieces.clear()
+                                }
+                                decodedBuilder.append(rawTok)
+                            } else {
+                                for (ch in rawTok) {
+                                    val b = byteDecoder[ch]
+                                    if (b != null) {
+                                        generatedTokenPieces.add(b)
+                                    } else {
+                                        if (generatedTokenPieces.isNotEmpty()) {
+                                            decodedBuilder.append(String(generatedTokenPieces.toByteArray(), Charsets.UTF_8))
+                                            generatedTokenPieces.clear()
+                                        }
+                                        decodedBuilder.append(ch)
                                     }
                                 }
                             }
+                            historyIds.add(nextId)
                         }
-                        if (nextId == eosId) break
-                        val tokText = idToToken[nextId].orEmpty().replace("\u0120", " ")
-                        decodedBuilder.append(tokText)
-                        currentId = nextId
+                        if (generatedTokenPieces.isNotEmpty()) {
+                            decodedBuilder.append(String(generatedTokenPieces.toByteArray(), Charsets.UTF_8))
+                            generatedTokenPieces.clear()
+                        }
                     }
+                } finally {
+                    ownedEncTensors.forEach { runCatching { it.close() } }
                 }
             }
 
@@ -868,6 +1139,8 @@ class Gemma4E4BEngine private constructor() {
                     isConfidenceCalibrated = true
                 )
             }
+        } catch (c: CancellationException) {
+            throw c
         } catch (_: Throwable) {
             emptyList()
         }
