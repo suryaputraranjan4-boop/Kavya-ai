@@ -238,6 +238,13 @@ fun KavyaSideMenu(
                             onClick = { navigateTo(navController, drawerState, scope, "visual_action_control") }
                         )
                         DrawerItemGlass(
+                            icon = Icons.Default.SmartToy,
+                            label = "Agents",
+                            isSelected = currentRoute == "agents_workspace",
+                            testTag = "drawer_item_agents",
+                            onClick = { navigateTo(navController, drawerState, scope, "agents_workspace") }
+                        )
+                        DrawerItemGlass(
                             icon = Icons.Default.Hub,
                             label = "Integrations Hub",
                             isSelected = currentRoute == "kucp_dashboard",

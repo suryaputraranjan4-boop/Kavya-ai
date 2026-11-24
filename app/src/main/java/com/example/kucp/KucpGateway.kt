@@ -12,6 +12,7 @@ import com.example.kucp.catalog.KucpIntegrationCatalog
 import com.example.kucp.discovery.CustomConnectorBuilder
 import com.example.kucp.discovery.IntegrationDiscoveryEngine
 import com.example.kucp.model.AuditEvent
+import com.example.kucp.model.CatalogRefreshReport
 import com.example.kucp.model.ConnectorDefinition
 import com.example.kucp.model.ConnectorDraft
 import com.example.kucp.model.ConnectorHealth
@@ -134,6 +135,9 @@ class KucpGateway private constructor(
     private val _auditEvents = MutableStateFlow<List<AuditEvent>>(emptyList())
     val auditEvents: StateFlow<List<AuditEvent>> = _auditEvents.asStateFlow()
 
+    private val _catalogReport = MutableStateFlow(KucpIntegrationCatalog.computeCatalogStats())
+    val catalogReport: StateFlow<CatalogRefreshReport> = _catalogReport.asStateFlow()
+
     val connectors: StateFlow<List<ConnectorDefinition>> = toolRegistry.connectors
     val tools: StateFlow<List<ToolDescriptor>> = toolRegistry.tools
     val health: StateFlow<Map<String, ConnectorHealth>> = toolRegistry.health
@@ -204,6 +208,59 @@ class KucpGateway private constructor(
     // =========================================================================
 
     fun getMarketplaceTemplates(): List<MarketplaceTemplate> = KucpIntegrationCatalog.templates
+
+    /**
+     * Safely refreshes catalog metadata against installed connectors without deleting
+     * user-connected integrations, wiping credentials, or resetting Connected status.
+     */
+    suspend fun refreshCatalogMetadata(): CatalogRefreshReport {
+        val installed = toolRegistry.connectors.value
+        val updatedIds = mutableListOf<String>()
+        var preservedConnected = 0
+
+        for (conn in installed) {
+            if (conn.status == ConnectorStatus.CONNECTED || conn.status == ConnectorStatus.PARTIALLY_AUTHORIZED) {
+                preservedConnected++
+            }
+            val tpl = KucpIntegrationCatalog.findTemplateByCanonicalId(conn.canonicalServiceId)
+                ?: KucpIntegrationCatalog.templates.firstOrNull { conn.id.contains(it.id.removePrefix("tpl_"), ignoreCase = true) }
+                ?: continue
+
+            val mergedAuth = conn.authConfig.copy(
+                oauthAuthorizeUrl = conn.authConfig.oauthAuthorizeUrl.ifBlank { tpl.oauthAuthorizeUrl },
+                oauthTokenUrl = conn.authConfig.oauthTokenUrl.ifBlank { tpl.oauthTokenUrl },
+                oauthRevokeUrl = conn.authConfig.oauthRevokeUrl.ifBlank { tpl.oauthRevokeUrl }
+            )
+            val refreshed = conn.copy(
+                canonicalServiceId = conn.canonicalServiceId.ifBlank { tpl.canonicalServiceId },
+                ecosystemSources = tpl.ecosystemSources.ifEmpty { conn.ecosystemSources },
+                docsUrl = tpl.docsUrl.ifBlank { conn.docsUrl },
+                restrictions = tpl.restrictions.ifBlank { conn.restrictions },
+                webhookSupported = tpl.webhookSupported || conn.webhookSupported,
+                implementationState = tpl.implementationState,
+                authConfig = mergedAuth
+            )
+            if (refreshed != conn) {
+                saveConnectorAndTools(refreshed, toolRegistry.getToolsForConnector(conn.id))
+                updatedIds += conn.id
+            }
+        }
+
+        val baseStats = KucpIntegrationCatalog.computeCatalogStats().copy(
+            updatedIds = updatedIds,
+            preservedConnectedCount = preservedConnected
+        )
+        _catalogReport.value = baseStats
+        recordAudit(
+            "catalog",
+            "",
+            "CATALOG_METADATA_REFRESH",
+            "SUCCESS",
+            ToolRiskLevel.LOW,
+            "Catalog synced: ${baseStats.uniqueCanonicalCount} canonical services, ${updatedIds.size} updated, $preservedConnected active connections preserved"
+        )
+        return baseStats
+    }
 
     suspend fun installMarketplaceTemplate(
         template: MarketplaceTemplate,
@@ -334,14 +391,83 @@ class KucpGateway private constructor(
         val conn = toolRegistry.getConnector(connectorId)
             ?: return Result.failure(IllegalArgumentException("Connector not found."))
         val session = oauthManager.createPkceSession(conn)
-        return oauthManager.buildAuthorizationUri(conn, session).map { uri -> session to uri }
+        return oauthManager.buildAuthorizationUri(conn, session).map { uri ->
+            scope.launch {
+                saveConnectorAndTools(
+                    conn.copy(status = ConnectorStatus.AWAITING_AUTHORIZATION),
+                    toolRegistry.getToolsForConnector(connectorId)
+                )
+            }
+            session to uri
+        }
     }
 
     suspend fun completeOAuthCallback(callbackUri: Uri): OAuthTokenResult {
         val res = oauthManager.handleCallbackAndExchangeCode(appContext, callbackUri) { cid -> toolRegistry.getConnector(cid) }
-        val stateConnId = callbackUri.getQueryParameter("state").orEmpty()
-        recordAudit(stateConnId.ifBlank { "oauth" }, "", "OAUTH_PKCE_EXCHANGE", if (res.success) "SUCCESS" else "FAILED", ToolRiskLevel.MEDIUM, res.error ?: "OAuth PKCE token stored in vault")
+        val resolvedConnId = res.connectorId.ifBlank { callbackUri.getQueryParameter("state").orEmpty() }
+        if (res.success && res.connectorId.isNotBlank()) {
+            toolRegistry.getConnector(res.connectorId)?.let { conn ->
+                val now = System.currentTimeMillis()
+                val requestedScopes = conn.authConfig.scopes
+                val partial = requestedScopes.isNotEmpty() &&
+                    res.grantedScopes.isNotEmpty() &&
+                    !res.grantedScopes.containsAll(requestedScopes)
+                val newStatus = if (partial) ConnectorStatus.PARTIALLY_AUTHORIZED else ConnectorStatus.CONNECTED
+                val updated = conn.copy(
+                    status = newStatus,
+                    grantedScopes = res.grantedScopes.ifEmpty { conn.grantedScopes },
+                    connectedAccountLabel = res.accountLabel.ifBlank { conn.connectedAccountLabel },
+                    lastSyncedAtMs = now,
+                    authConfig = conn.authConfig.copy(
+                        tokenExpiresAtMs = if (res.expiresInSec > 0L) now + res.expiresInSec * 1000L else conn.authConfig.tokenExpiresAtMs,
+                        hasRefreshToken = res.hasRefreshToken || conn.authConfig.hasRefreshToken,
+                        lastRotatedAtMs = now
+                    )
+                )
+                saveConnectorAndTools(updated, toolRegistry.getToolsForConnector(conn.id))
+                toolRegistry.updateHealth(conn.id, true, 1L, newStatus)
+            }
+        }
+        recordAudit(
+            resolvedConnId.ifBlank { "oauth" },
+            "",
+            "OAUTH_PKCE_EXCHANGE",
+            if (res.success) "SUCCESS" else "FAILED",
+            ToolRiskLevel.MEDIUM,
+            res.error ?: "OAuth PKCE token stored in vault (${res.grantedScopes.size} scopes)"
+        )
         return res
+    }
+
+    /**
+     * Revokes OAuth tokens at the provider (when oauthRevokeUrl is supported), wipes all
+     * encrypted credentials for the connector, clears account identity, and marks REVOKED.
+     */
+    suspend fun disconnectAndRevokeAccount(connectorId: String): Result<Unit> {
+        val conn = toolRegistry.getConnector(connectorId)
+            ?: return Result.failure(IllegalArgumentException("Connector '$connectorId' not found."))
+        val revokeRes = oauthManager.revokeProviderToken(appContext, conn)
+        KucpCredentialVault.revokeAllForConnector(appContext, connectorId)
+        val updated = conn.copy(
+            status = ConnectorStatus.REVOKED,
+            connectedAccountLabel = "",
+            grantedScopes = emptyList(),
+            authConfig = conn.authConfig.copy(
+                tokenExpiresAtMs = 0L,
+                hasRefreshToken = false
+            )
+        )
+        saveConnectorAndTools(updated, toolRegistry.getToolsForConnector(connectorId))
+        toolRegistry.updateHealth(connectorId, false, 0L, ConnectorStatus.REVOKED, "Account disconnected & credentials revoked")
+        recordAudit(
+            connectorId,
+            "",
+            "ACCOUNT_DISCONNECT_REVOKE",
+            if (revokeRes.isSuccess) "SUCCESS" else "LOCAL_WIPED_REMOTE_WARN",
+            ToolRiskLevel.HIGH,
+            revokeRes.exceptionOrNull()?.message ?: "Revoked provider token and cleared local credential vault"
+        )
+        return revokeRes
     }
 
     // =========================================================================
@@ -504,31 +630,75 @@ class KucpGateway private constructor(
             )
         }
 
-        val result = when (connector.protocol) {
-            ConnectorProtocol.ANDROID_NATIVE -> AndroidNativeIntegrationProvider.execute(appContext, tool, request)
-            ConnectorProtocol.MCP -> mcpRuntime.execute(appContext, connector, tool, request)
-            ConnectorProtocol.GRAPHQL -> graphqlRuntime.execute(appContext, connector, tool, request)
-            ConnectorProtocol.PLUGIN -> {
-                val pEntity = _plugins.value.firstOrNull { "plugin_${it.pluginId}" == connector.id }
-                if (pEntity == null) {
-                    ToolInvocationResult(request.requestId, connector.id, tool.toolId, false, errorCode = "PLUGIN_MISSING", errorMessage = "Plugin not found.")
-                } else {
-                    val manifest = json.decodeFromString<PluginManifest>(pEntity.manifestJson)
-                    pluginRuntime.executePluginTool(manifest, tool, request)
+        if (connector.status == ConnectorStatus.UNSUPPORTED) {
+            return ToolInvocationResult(
+                requestId = request.requestId,
+                connectorId = connector.id,
+                toolId = tool.toolId,
+                success = false,
+                errorCode = "UNSUPPORTED_PROVIDER",
+                errorMessage = connector.restrictions.ifBlank { "${connector.name} has no official public API for third-party apps." }
+            )
+        }
+
+        suspend fun dispatchProtocolCall(activeConnector: ConnectorDefinition): ToolInvocationResult {
+            return when (activeConnector.protocol) {
+                ConnectorProtocol.ANDROID_NATIVE -> AndroidNativeIntegrationProvider.execute(appContext, tool, request)
+                ConnectorProtocol.MCP -> mcpRuntime.execute(appContext, activeConnector, tool, request)
+                ConnectorProtocol.GRAPHQL -> graphqlRuntime.execute(appContext, activeConnector, tool, request)
+                ConnectorProtocol.PLUGIN -> {
+                    val pEntity = _plugins.value.firstOrNull { "plugin_${it.pluginId}" == activeConnector.id }
+                    if (pEntity == null) {
+                        ToolInvocationResult(request.requestId, activeConnector.id, tool.toolId, false, errorCode = "PLUGIN_MISSING", errorMessage = "Plugin not found.")
+                    } else {
+                        val manifest = json.decodeFromString<PluginManifest>(pEntity.manifestJson)
+                        pluginRuntime.executePluginTool(manifest, tool, request)
+                    }
                 }
+                ConnectorProtocol.WEBHOOK, ConnectorProtocol.WEBSOCKET, ConnectorProtocol.A2A, ConnectorProtocol.GRPC, ConnectorProtocol.CUSTOM_SDK ->
+                    realtimeRuntime.execute(appContext, activeConnector, tool, request)
+                ConnectorProtocol.REST, ConnectorProtocol.OPENAPI, ConnectorProtocol.OAUTH2_OIDC ->
+                    restRuntime.execute(appContext, activeConnector, tool, request)
             }
-            ConnectorProtocol.WEBHOOK, ConnectorProtocol.WEBSOCKET, ConnectorProtocol.A2A, ConnectorProtocol.GRPC, ConnectorProtocol.CUSTOM_SDK ->
-                realtimeRuntime.execute(appContext, connector, tool, request)
-            ConnectorProtocol.REST, ConnectorProtocol.OPENAPI, ConnectorProtocol.OAUTH2_OIDC ->
-                restRuntime.execute(appContext, connector, tool, request)
+        }
+
+        var result = dispatchProtocolCall(connector)
+
+        // Automatic OAuth refresh retry on HTTP 401 when a refresh token is available
+        if (!result.success && result.statusCode == 401 && connector.authConfig.hasRefreshToken) {
+            val refreshRes = oauthManager.refreshTokenIfPossible(appContext, connector)
+            if (refreshRes.success) {
+                val now = System.currentTimeMillis()
+                val refreshedConn = connector.copy(
+                    status = ConnectorStatus.CONNECTED,
+                    lastSyncedAtMs = now,
+                    authConfig = connector.authConfig.copy(
+                        tokenExpiresAtMs = now + refreshRes.expiresInSec * 1000L,
+                        lastRotatedAtMs = now
+                    )
+                )
+                saveConnectorAndTools(refreshedConn, toolRegistry.getToolsForConnector(connector.id))
+                result = dispatchProtocolCall(refreshedConn)
+            } else {
+                saveConnectorAndTools(
+                    connector.copy(status = ConnectorStatus.NEEDS_RECONNECTION),
+                    toolRegistry.getToolsForConnector(connector.id)
+                )
+                toolRegistry.updateHealth(connector.id, false, result.durationMs, ConnectorStatus.NEEDS_RECONNECTION, refreshRes.error)
+            }
         }
 
         securityGateway.recordOutcome(connector.id, result.success)
+        val statusOverride = when {
+            result.statusCode == 429 -> ConnectorStatus.RATE_LIMITED
+            result.statusCode == 401 -> ConnectorStatus.NEEDS_RECONNECTION
+            else -> null
+        }
         toolRegistry.updateHealth(
             connectorId = connector.id,
             success = result.success,
             latencyMs = result.durationMs,
-            statusOverride = if (result.statusCode == 429) ConnectorStatus.RATE_LIMITED else null,
+            statusOverride = statusOverride,
             error = result.errorMessage
         )
         recordAudit(

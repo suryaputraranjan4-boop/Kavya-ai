@@ -70,10 +70,16 @@ internal fun KucpStatusChip(text: String, color: Color) {
 
 internal fun statusColor(status: ConnectorStatus): Color = when (status) {
     ConnectorStatus.CONNECTED -> SuccessGreen
-    ConnectorStatus.TEMPLATE -> TextSecondary
-    ConnectorStatus.CONFIGURED -> AccentCyan
-    ConnectorStatus.DEGRADED, ConnectorStatus.RATE_LIMITED -> AccentYellow
-    ConnectorStatus.ERROR, ConnectorStatus.REVOKED -> Error
+    ConnectorStatus.PARTIALLY_AUTHORIZED -> PrimaryLight
+    ConnectorStatus.TEMPLATE, ConnectorStatus.AVAILABLE -> TextSecondary
+    ConnectorStatus.CONFIGURED, ConnectorStatus.CONNECTING -> AccentCyan
+    ConnectorStatus.SETUP_REQUIRED,
+    ConnectorStatus.AWAITING_AUTHORIZATION,
+    ConnectorStatus.NEEDS_RECONNECTION,
+    ConnectorStatus.TEMPORARILY_UNAVAILABLE,
+    ConnectorStatus.DEGRADED,
+    ConnectorStatus.RATE_LIMITED -> AccentYellow
+    ConnectorStatus.ERROR, ConnectorStatus.REVOKED, ConnectorStatus.UNSUPPORTED -> Error
     ConnectorStatus.DISCONNECTED -> TextTertiary
 }
 

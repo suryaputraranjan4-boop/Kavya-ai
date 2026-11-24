@@ -158,6 +158,36 @@ class AlarmReceiver : BroadcastReceiver() {
                     )
                 )
             }
+
+            // Execute agentic / monitoring / workflow schedules via UnifiedAgentOrchestrator
+            val upperType = schedule.scheduleType.uppercase(java.util.Locale.ROOT)
+            val isAgenticSchedule = upperType.startsWith("MONITOR_POLL_") ||
+                upperType.startsWith("INTERVAL_") ||
+                upperType.startsWith("AGENT_") ||
+                upperType == "MONTHLY" ||
+                (schedule.promptOrAction.isNotBlank() &&
+                    !schedule.promptOrAction.equals(schedule.title, ignoreCase = true) &&
+                    schedule.promptOrAction.length > 20)
+
+            if (isAgenticSchedule) {
+                try {
+                    val run = com.example.agent.UnifiedAgentOrchestrator
+                        .getInstance(context)
+                        .executeScheduledTask(schedule)
+                    val summaryNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+                        .setSmallIcon(R.drawable.ic_launcher_foreground)
+                        .setContentTitle("Kavya Agent Task: $title")
+                        .setContentText(run.finalSummary.replace(Regex("\\s+"), " ").take(160))
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(run.finalSummary.take(500)))
+                        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                        .setContentIntent(openPendingIntent)
+                        .setAutoCancel(true)
+                        .build()
+                    notificationManager?.notify(notifId + 10, summaryNotification)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Scheduled agent execution failed for ${schedule.id}: ${e.message}", e)
+                }
+            }
         }
     }
 

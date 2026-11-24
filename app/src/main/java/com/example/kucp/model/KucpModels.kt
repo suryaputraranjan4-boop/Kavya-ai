@@ -31,13 +31,39 @@ enum class AuthSchemeType(val displayName: String) {
 }
 
 @Serializable
+enum class EcosystemSource(val label: String) {
+    CLAUDE_DIRECTORY("Claude Directory"),
+    CHATGPT_CONNECTED_APPS("ChatGPT Connected Apps"),
+    GEMINI_CONNECTED_APPS("Gemini Connected Apps"),
+    OFFICIAL_MCP("Official Remote MCP"),
+    OFFICIAL_API("Official Public API"),
+    ANDROID_NATIVE("Android Native API")
+}
+
+@Serializable
+enum class ConnectorImplementationState(val label: String) {
+    IMPLEMENTED("Implemented"),
+    SETUP_REQUIRED("Setup / Credentials Required"),
+    ANDROID_INTENT_ONLY("Android Intent / OS API Only"),
+    BLOCKED_NO_PUBLIC_API("Blocked (No Public API / Restricted)")
+}
+
+@Serializable
 enum class ConnectorStatus(val label: String) {
     TEMPLATE("Template (Not Connected)"),
+    AVAILABLE("Available"),
+    SETUP_REQUIRED("Setup Required"),
+    AWAITING_AUTHORIZATION("Awaiting Authorization"),
+    CONNECTING("Connecting"),
     CONFIGURED("Configured (Untested)"),
     CONNECTED("Connected"),
+    PARTIALLY_AUTHORIZED("Partially Authorized"),
+    NEEDS_RECONNECTION("Needs Reconnection"),
+    TEMPORARILY_UNAVAILABLE("Temporarily Unavailable"),
     DEGRADED("Degraded"),
     RATE_LIMITED("Rate Limited"),
     DISCONNECTED("Disconnected"),
+    UNSUPPORTED("Unsupported"),
     REVOKED("Revoked"),
     ERROR("Error")
 }
@@ -61,6 +87,8 @@ enum class ConnectorCategory(val label: String) {
     AI_ML("AI & Agents"),
     AUTOMATION("Automation"),
     DESIGN_MEDIA("Design & Media"),
+    BUSINESS_CRM_FINANCE("Business, CRM & Finance"),
+    RESEARCH_KNOWLEDGE("Research & Knowledge"),
     DATABASES("Databases"),
     SMART_HOME("Smart Home & IoT"),
     ANDROID_SYSTEM("Android Native"),
@@ -148,7 +176,16 @@ data class ConnectorDefinition(
     val enabled: Boolean = true,
     val rollbackSnapshotJson: String = "",
     val createdAtMs: Long = System.currentTimeMillis(),
-    val updatedAtMs: Long = System.currentTimeMillis()
+    val updatedAtMs: Long = System.currentTimeMillis(),
+    val canonicalServiceId: String = "",
+    val ecosystemSources: List<EcosystemSource> = emptyList(),
+    val connectedAccountLabel: String = "",
+    val grantedScopes: List<String> = emptyList(),
+    val webhookSupported: Boolean = false,
+    val pollingIntervalMinutes: Int = 0,
+    val restrictions: String = "",
+    val implementationState: ConnectorImplementationState = ConnectorImplementationState.SETUP_REQUIRED,
+    val lastSyncedAtMs: Long = 0L
 )
 
 @Serializable
@@ -322,7 +359,36 @@ data class MarketplaceTemplate(
     val defaultAuthScheme: AuthSchemeType,
     val defaultScopes: List<String> = emptyList(),
     val defaultTools: List<ToolDescriptor> = emptyList(),
-    val setupNotes: String = ""
+    val setupNotes: String = "",
+    val canonicalServiceId: String = id,
+    val ecosystemSources: List<EcosystemSource> = emptyList(),
+    val readOperations: List<String> = emptyList(),
+    val writeOperations: List<String> = emptyList(),
+    val webhookSupported: Boolean = false,
+    val pollingSupported: Boolean = true,
+    val restrictions: String = "",
+    val implementationState: ConnectorImplementationState = ConnectorImplementationState.SETUP_REQUIRED,
+    val oauthAuthorizeUrl: String = "",
+    val oauthTokenUrl: String = "",
+    val oauthRevokeUrl: String = "",
+    val defaultHeaders: Map<String, String> = emptyMap()
+)
+
+@Serializable
+data class CatalogRefreshReport(
+    val refreshedAtMs: Long = System.currentTimeMillis(),
+    val claudeSourceCount: Int = 0,
+    val chatGptSourceCount: Int = 0,
+    val geminiSourceCount: Int = 0,
+    val totalRawListings: Int = 0,
+    val uniqueCanonicalCount: Int = 0,
+    val implementedCount: Int = 0,
+    val setupRequiredCount: Int = 0,
+    val blockedCount: Int = 0,
+    val addedIds: List<String> = emptyList(),
+    val removedIds: List<String> = emptyList(),
+    val updatedIds: List<String> = emptyList(),
+    val preservedConnectedCount: Int = 0
 )
 
 @Serializable

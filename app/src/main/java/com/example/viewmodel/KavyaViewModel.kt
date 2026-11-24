@@ -1454,6 +1454,27 @@ class KavyaViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                // 4. Unified Dynamic Agent Orchestrator (parallel research, connected services, explicit agents, recurring schedules)
+                if (recursionDepth == 0 && !isFastChat && cleanResponse.isBlank()) {
+                    val unifiedOrchestrator = com.example.agent.UnifiedAgentOrchestrator.getInstance(getApplication())
+                    val route = unifiedOrchestrator.classifyRequest(prompt)
+                    if (route != com.example.agent.OrchestrationRoute.DIRECT_CHAT) {
+                        val runSummary = unifiedOrchestrator.orchestrateFromChat(
+                            prompt = prompt,
+                            chatId = chatId.hashCode().toLong(),
+                            androidAgent = androidAgent,
+                            forcedRoute = route,
+                            onStatusUpdate = { status ->
+                                _latestKavyaCaption.value = status
+                                _messages.value = _messages.value.map { msg ->
+                                    if (msg.id == loadingMsgId) msg.copy(text = status, isLoading = true) else msg
+                                }
+                            }
+                        )
+                        cleanResponse = runSummary.finalSummary
+                    }
+                }
+
                 // 5. Fallback to Gemini AI streaming with semantic memory retrieval
                 if (cleanResponse.isBlank()) {
                     val historyEntities = _messages.value

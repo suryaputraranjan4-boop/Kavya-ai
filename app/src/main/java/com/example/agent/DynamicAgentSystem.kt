@@ -11,6 +11,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
 
 /**
@@ -391,14 +393,28 @@ object DynamicGoalDecomposer {
 class DynamicGoalOrchestrator(
     private val context: Context,
     private val androidAgent: AndroidAgent,
-    private val appDatabase: AppDatabase = AppDatabase.getDatabase(context)
+    private val appDatabase: AppDatabase = AppDatabase.getDatabase(context),
+    private val toolGateway: UniversalToolGateway = UniversalToolGateway.getInstance(context)
 ) {
     companion object {
         private const val TAG = "GoalOrchestrator"
+
+        private val EXCLUSIVE_UI_TOOLS = setOf(
+            "open_app", "close_app", "tap", "type_text", "scroll",
+            "swipe", "press_back", "read_screen", "screenshot", "switch_app"
+        )
     }
+
+    private val maxConcurrency: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+    private val concurrencySemaphore = kotlinx.coroutines.sync.Semaphore(maxConcurrency)
+    private val exclusiveUiMutex = kotlinx.coroutines.sync.Mutex()
+    private val stateMutex = kotlinx.coroutines.sync.Mutex()
 
     private val _activeGoal = MutableStateFlow<GoalDefinition?>(null)
     val activeGoal: StateFlow<GoalDefinition?> = _activeGoal.asStateFlow()
+
+    private val _liveAgents = MutableStateFlow<List<DynamicAgent>>(emptyList())
+    val liveAgents: StateFlow<List<DynamicAgent>> = _liveAgents.asStateFlow()
 
     private val _executionLogs = MutableStateFlow<List<String>>(emptyList())
     val executionLogs: StateFlow<List<String>> = _executionLogs.asStateFlow()
@@ -406,7 +422,10 @@ class DynamicGoalOrchestrator(
     private var activeJob: Job? = null
 
     /**
-     * Starts execution of a GoalDefinition.
+     * Starts DAG-aware execution of a GoalDefinition.
+     * Independent tasks whose dependencies are satisfied execute concurrently in bounded parallel waves,
+     * while exclusive Android UI/accessibility tools are automatically serialized via exclusiveUiMutex.
+     * Temporary agents are created on demand and released when the goal finishes.
      */
     suspend fun executeGoal(
         goal: GoalDefinition,
@@ -414,152 +433,240 @@ class DynamicGoalOrchestrator(
     ): GoalExecutionResult = withContext(Dispatchers.IO) {
         _activeGoal.value = goal
         goal.status = GoalStatus.EXECUTING
-        log("Starting Goal [${goal.goalId}]: '${goal.finalGoal}' with ${goal.tasks.size} dynamic tasks")
+        log("Starting Goal [${goal.goalId}]: '${goal.finalGoal}' with ${goal.tasks.size} dynamic tasks (maxParallel=$maxConcurrency)")
         onMilestone("Goal started: ${goal.finalGoal}")
 
-        // Persist to Room
+        // Spawn temporary dynamic agents for this goal
+        val tempAgents = goal.tasks.map { task ->
+            DynamicAgent(
+                agentId = task.assignedAgentId,
+                assignedTaskId = task.taskId,
+                taskObjective = task.description,
+                requiredInputs = task.parameters,
+                availableTools = listOf(task.toolName),
+                dependencies = task.dependencies,
+                expectedOutput = task.expectedOutput,
+                executionStatus = if (task.dependencies.isEmpty()) AgentStatus.READY else AgentStatus.WAITING_DEPENDENCY
+            )
+        }
+        _liveAgents.value = tempAgents
+
         persistGoalToDb(goal)
 
-        val taskOutputs = mutableMapOf<String, String>()
+        val taskOutputs = java.util.concurrent.ConcurrentHashMap<String, String>()
         val tasksById = goal.tasks.associateBy { it.taskId }
+        val completedIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        var approvalNeededTask: GoalTaskNode? = null
+        var failedTaskNode: GoalTaskNode? = null
 
-        for (task in goal.tasks) {
-            // Check cancellation
-            if (goal.status == GoalStatus.CANCELLED || goal.status == GoalStatus.PAUSED) {
-                log("Goal execution stopped (Status: ${goal.status})")
-                return@withContext GoalExecutionResult(
-                    goalId = goal.goalId,
-                    success = false,
-                    finalGoal = goal.finalGoal,
-                    summary = "Execution stopped by user",
-                    completedTasks = taskOutputs.size,
-                    totalTasks = goal.tasks.size,
-                    outputs = taskOutputs
-                )
-            }
-
-            // Verify dependencies
-            val depsSatisfied = task.dependencies.all { depId ->
-                tasksById[depId]?.status == TaskNodeStatus.COMPLETED
-            }
-
-            if (!depsSatisfied) {
-                task.status = TaskNodeStatus.BLOCKED
-                log("Task [${task.taskId}] blocked: Dependencies not satisfied: ${task.dependencies}")
-                continue
-            }
-
-            // Check if task requires user approval (Requirement 14: Safety & User Confirmation)
-            if (task.requiresApproval) {
-                goal.status = GoalStatus.WAITING_APPROVAL
-                task.status = TaskNodeStatus.NEEDS_USER_INPUT
-                log("Task [${task.taskId}] requires user confirmation before proceeding with external action.")
-                onMilestone("Awaiting your confirmation for: ${task.description}")
-                return@withContext GoalExecutionResult(
-                    goalId = goal.goalId,
-                    success = false,
-                    finalGoal = goal.finalGoal,
-                    summary = "Awaiting user approval for ${task.description}",
-                    completedTasks = taskOutputs.size,
-                    totalTasks = goal.tasks.size,
-                    outputs = taskOutputs,
-                    needsApprovalFor = task
-                )
-            }
-
-            // Execute task through assigned agent
-            task.status = TaskNodeStatus.RUNNING
-            log("${task.assignedAgentId} starting '${task.description}' using tool '${task.toolName}'")
-            onMilestone("${task.assignedAgentId}: ${task.description}")
-
-            val toolResult = KavyaToolRegistry.executeTool(
-                name = task.toolName,
-                parameters = task.parameters,
-                context = context,
-                androidAgent = androidAgent
-            )
-
-            if (toolResult.success) {
-                task.status = TaskNodeStatus.COMPLETED
-                task.output = toolResult.data
-                task.verificationStatus = "VERIFIED_PASS"
-                taskOutputs[task.taskId] = toolResult.data
-                log("${task.assignedAgentId} COMPLETED [${task.taskId}]: ${toolResult.data.take(80)}")
-                updateTaskStepInDb(goal.goalId, task)
-            } else {
-                task.error = toolResult.error
-                task.retryCount++
-                log("${task.assignedAgentId} FAILED [${task.taskId}]: ${toolResult.error}")
-
-                // Failure Recovery Strategy
-                if (task.retryCount <= task.maxRetries) {
-                    log("Retrying task [${task.taskId}] (Attempt ${task.retryCount} of ${task.maxRetries})...")
-                    task.status = TaskNodeStatus.READY
-                    val retryResult = KavyaToolRegistry.executeTool(
-                        name = task.toolName,
-                        parameters = task.parameters,
-                        context = context,
-                        androidAgent = androidAgent
-                    )
-                    if (retryResult.success) {
-                        task.status = TaskNodeStatus.COMPLETED
-                        task.output = retryResult.data
-                        task.verificationStatus = "VERIFIED_PASS_AFTER_RETRY"
-                        taskOutputs[task.taskId] = retryResult.data
-                        log("${task.assignedAgentId} COMPLETED after retry: [${task.taskId}]")
-                        updateTaskStepInDb(goal.goalId, task)
-                    } else {
-                        task.status = TaskNodeStatus.FAILED
-                        goal.status = GoalStatus.FAILED
-                        updateTaskStepInDb(goal.goalId, task)
-                        return@withContext GoalExecutionResult(
-                            goalId = goal.goalId,
-                            success = false,
-                            finalGoal = goal.finalGoal,
-                            summary = "Task '${task.description}' failed: ${retryResult.error}",
-                            completedTasks = taskOutputs.size,
-                            totalTasks = goal.tasks.size,
-                            outputs = taskOutputs,
-                            failedTask = task
-                        )
-                    }
-                } else {
-                    task.status = TaskNodeStatus.FAILED
-                    goal.status = GoalStatus.FAILED
-                    updateTaskStepInDb(goal.goalId, task)
+        try {
+            while (completedIds.size < goal.tasks.size) {
+                if (goal.status == GoalStatus.CANCELLED || goal.status == GoalStatus.PAUSED || !isActive) {
+                    log("Goal execution stopped (Status: ${goal.status})")
                     return@withContext GoalExecutionResult(
                         goalId = goal.goalId,
                         success = false,
                         finalGoal = goal.finalGoal,
-                        summary = "Task '${task.description}' failed: ${toolResult.error}",
-                        completedTasks = taskOutputs.size,
+                        summary = "Execution stopped by user",
+                        completedTasks = completedIds.size,
                         totalTasks = goal.tasks.size,
-                        outputs = taskOutputs,
-                        failedTask = task
+                        outputs = taskOutputs.toMap()
                     )
                 }
+
+                val remaining = goal.tasks.filter { it.taskId !in completedIds && it.status != TaskNodeStatus.FAILED && it.status != TaskNodeStatus.BLOCKED }
+                if (remaining.isEmpty()) break
+
+                val readyWave = remaining.filter { task ->
+                    task.dependencies.all { depId -> tasksById[depId]?.status == TaskNodeStatus.COMPLETED }
+                }
+
+                if (readyWave.isEmpty()) {
+                    remaining.forEach { t ->
+                        t.status = TaskNodeStatus.BLOCKED
+                        updateAgentStatus(t.taskId, AgentStatus.CANCELLED, "Blocked by unmet dependencies")
+                        log("Task [${t.taskId}] blocked: Dependencies not satisfied: ${t.dependencies}")
+                    }
+                    break
+                }
+
+                // Check approval gate before dispatching wave
+                val gated = readyWave.firstOrNull { it.requiresApproval }
+                if (gated != null) {
+                    goal.status = GoalStatus.WAITING_APPROVAL
+                    gated.status = TaskNodeStatus.NEEDS_USER_INPUT
+                    updateAgentStatus(gated.taskId, AgentStatus.WAITING_DEPENDENCY, "Awaiting user approval")
+                    log("Task [${gated.taskId}] requires user confirmation before proceeding with external action.")
+                    onMilestone("Awaiting your confirmation for: ${gated.description}")
+                    approvalNeededTask = gated
+                    break
+                }
+
+                if (readyWave.size > 1) {
+                    log("Executing parallel wave of ${readyWave.size} independent tasks: ${readyWave.joinToString { it.taskId }}")
+                }
+
+                // Execute all ready tasks in this wave concurrently (bounded by Semaphore)
+                val waveOutcomes = coroutineScope {
+                    readyWave.map { task ->
+                        async(Dispatchers.IO) {
+                            concurrencySemaphore.withPermit {
+                                executeSingleTaskNode(goal, task, completedIds, taskOutputs, onMilestone)
+                            }
+                        }
+                    }.awaitAll()
+                }
+
+                val firstFailure = waveOutcomes.firstOrNull { !it.second }?.first
+                if (firstFailure != null) {
+                    failedTaskNode = firstFailure
+                    goal.status = GoalStatus.FAILED
+                    break
+                }
+            }
+
+            if (approvalNeededTask != null) {
+                return@withContext GoalExecutionResult(
+                    goalId = goal.goalId,
+                    success = false,
+                    finalGoal = goal.finalGoal,
+                    summary = "Awaiting user approval for ${approvalNeededTask!!.description}",
+                    completedTasks = completedIds.size,
+                    totalTasks = goal.tasks.size,
+                    outputs = taskOutputs.toMap(),
+                    needsApprovalFor = approvalNeededTask
+                )
+            }
+
+            if (failedTaskNode != null) {
+                return@withContext GoalExecutionResult(
+                    goalId = goal.goalId,
+                    success = false,
+                    finalGoal = goal.finalGoal,
+                    summary = "Task '${failedTaskNode!!.description}' failed: ${failedTaskNode!!.error}",
+                    completedTasks = completedIds.size,
+                    totalTasks = goal.tasks.size,
+                    outputs = taskOutputs.toMap(),
+                    failedTask = failedTaskNode
+                )
+            }
+
+            goal.status = GoalStatus.COMPLETED
+            goal.completedAt = System.currentTimeMillis()
+            persistGoalFinalStatus(goal, completedIds.size, "All ${goal.tasks.size} tasks verified and executed successfully.", null)
+            log("Goal [${goal.goalId}] successfully completed all ${goal.tasks.size} tasks!")
+            onMilestone("Goal completed successfully.")
+
+            GoalExecutionResult(
+                goalId = goal.goalId,
+                success = true,
+                finalGoal = goal.finalGoal,
+                summary = "All ${goal.tasks.size} tasks verified and executed successfully.",
+                completedTasks = completedIds.size,
+                totalTasks = goal.tasks.size,
+                outputs = taskOutputs.toMap()
+            )
+        } finally {
+            // Temporary agents are always released once the goal finishes or pauses
+            if (goal.status != GoalStatus.EXECUTING) {
+                _liveAgents.value = emptyList()
+            }
+        }
+    }
+
+    private suspend fun executeSingleTaskNode(
+        goal: GoalDefinition,
+        task: GoalTaskNode,
+        completedIds: MutableSet<String>,
+        taskOutputs: MutableMap<String, String>,
+        onMilestone: (String) -> Unit
+    ): Pair<GoalTaskNode, Boolean> {
+        task.status = TaskNodeStatus.RUNNING
+        updateAgentStatus(task.taskId, AgentStatus.RUNNING)
+        log("${task.assignedAgentId} starting '${task.description}' using tool '${task.toolName}'")
+        onMilestone("${task.assignedAgentId}: ${task.description}")
+
+        val isExclusiveUi = task.toolName.lowercase() in EXCLUSIVE_UI_TOOLS
+
+        suspend fun runViaGateway(attempt: Int): GatewayToolResult {
+            val idempKey = "${goal.goalId}_${task.taskId}"
+            return if (isExclusiveUi) {
+                exclusiveUiMutex.withLock {
+                    toolGateway.execute(
+                        toolIdOrName = task.toolName,
+                        arguments = task.parameters,
+                        context = context,
+                        androidAgent = androidAgent,
+                        taskId = goal.goalId,
+                        agentId = task.assignedAgentId,
+                        idempotencyKey = idempKey,
+                        userConfirmed = !task.requiresApproval
+                    )
+                }
+            } else {
+                toolGateway.execute(
+                    toolIdOrName = task.toolName,
+                    arguments = task.parameters,
+                    context = context,
+                    androidAgent = androidAgent,
+                    taskId = goal.goalId,
+                    agentId = task.assignedAgentId,
+                    idempotencyKey = idempKey,
+                    userConfirmed = !task.requiresApproval
+                )
             }
         }
 
-        goal.status = GoalStatus.COMPLETED
-        goal.completedAt = System.currentTimeMillis()
-        log("Goal [${goal.goalId}] successfully completed all ${goal.tasks.size} tasks!")
-        onMilestone("Goal completed successfully.")
+        var result = runViaGateway(0)
+        if (!result.isSuccess && task.retryCount < task.maxRetries) {
+            task.retryCount++
+            task.status = TaskNodeStatus.READY
+            updateAgentStatus(task.taskId, AgentStatus.RETRYING, result.errorDetails)
+            log("Retrying task [${task.taskId}] (Attempt ${task.retryCount} of ${task.maxRetries})...")
+            result = runViaGateway(task.retryCount)
+        }
 
-        GoalExecutionResult(
-            goalId = goal.goalId,
-            success = true,
-            finalGoal = goal.finalGoal,
-            summary = "All ${goal.tasks.size} tasks verified and executed successfully.",
-            completedTasks = taskOutputs.size,
-            totalTasks = goal.tasks.size,
-            outputs = taskOutputs
-        )
+        if (result.isSuccess) {
+            task.status = TaskNodeStatus.COMPLETED
+            task.output = result.structuredOutput
+            task.verificationStatus = if (task.retryCount > 0) "VERIFIED_PASS_AFTER_RETRY" else "VERIFIED_PASS"
+            taskOutputs[task.taskId] = result.structuredOutput
+            completedIds.add(task.taskId)
+            updateAgentStatus(task.taskId, AgentStatus.COMPLETED, verification = task.verificationStatus)
+            log("${task.assignedAgentId} COMPLETED [${task.taskId}]: ${result.structuredOutput.take(80)}")
+            updateTaskStepInDb(goal.goalId, task, completedIds.size, goal.tasks.indexOf(task) + 1)
+            return task to true
+        } else {
+            task.status = TaskNodeStatus.FAILED
+            task.error = result.errorDetails ?: "Tool execution failed"
+            updateAgentStatus(task.taskId, AgentStatus.FAILED, task.error)
+            log("${task.assignedAgentId} FAILED [${task.taskId}]: ${task.error}")
+            updateTaskStepInDb(goal.goalId, task, completedIds.size, goal.tasks.indexOf(task) + 1)
+            return task to false
+        }
+    }
+
+    private suspend fun updateAgentStatus(
+        taskId: String,
+        status: AgentStatus,
+        error: String? = null,
+        verification: String? = null
+    ) = stateMutex.withLock {
+        _liveAgents.value = _liveAgents.value.map { agent ->
+            if (agent.assignedTaskId == taskId) {
+                agent.copy(
+                    executionStatus = status,
+                    errorStatus = error ?: agent.errorStatus,
+                    verificationResult = verification ?: agent.verificationResult
+                )
+            } else agent
+        }
     }
 
     fun stopCurrentExecution(reason: String = "User requested stop") {
         log("Stopping current execution: $reason")
         _activeGoal.value?.status = GoalStatus.CANCELLED
+        _liveAgents.value = emptyList()
         activeJob?.cancel()
     }
 
@@ -611,18 +718,61 @@ class DynamicGoalOrchestrator(
         }
     }
 
-    private suspend fun updateTaskStepInDb(goalId: String, taskNode: GoalTaskNode) = withContext(Dispatchers.IO) {
+    private suspend fun updateTaskStepInDb(
+        goalId: String,
+        taskNode: GoalTaskNode,
+        completedCount: Int,
+        stepIndex: Int
+    ) = withContext(Dispatchers.IO) {
         try {
+            val now = System.currentTimeMillis()
+            appDatabase.taskDao().updateStep(
+                DurableTaskStepEntity(
+                    id = taskNode.taskId,
+                    taskId = goalId,
+                    stepIndex = stepIndex.coerceAtLeast(1),
+                    title = taskNode.description,
+                    actionType = taskNode.toolName,
+                    targetApp = taskNode.parameters["app_name"] ?: taskNode.parameters["target"],
+                    param = taskNode.parameters.toString(),
+                    status = taskNode.status.name,
+                    expectedState = taskNode.expectedOutput,
+                    actualState = taskNode.output,
+                    result = taskNode.output,
+                    failureReason = taskNode.error,
+                    timestamp = now
+                )
+            )
             appDatabase.taskDao().updateTaskProgress(
                 taskId = goalId,
-                status = taskNode.status.name,
-                currentStepIndex = 1,
-                updatedAt = System.currentTimeMillis(),
+                status = if (taskNode.status == TaskNodeStatus.FAILED) GoalStatus.FAILED.name else GoalStatus.EXECUTING.name,
+                currentStepIndex = completedCount,
+                updatedAt = now,
                 result = taskNode.output,
                 error = taskNode.error
             )
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update step: ${e.message}")
+        }
+    }
+
+    private suspend fun persistGoalFinalStatus(
+        goal: GoalDefinition,
+        completedCount: Int,
+        summary: String,
+        error: String?
+    ) = withContext(Dispatchers.IO) {
+        try {
+            appDatabase.taskDao().updateTaskProgress(
+                taskId = goal.goalId,
+                status = goal.status.name,
+                currentStepIndex = completedCount,
+                updatedAt = System.currentTimeMillis(),
+                result = summary,
+                error = error
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to finalize goal in DB: ${e.message}")
         }
     }
 }

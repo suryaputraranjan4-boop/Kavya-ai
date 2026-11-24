@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.util.Calendar
+import java.util.TimeZone
 import java.util.UUID
 
 /**
@@ -62,6 +63,60 @@ class SchedulerEngine(
         return@withContext schedule
     }
 
+    /**
+     * Creates an advanced recurring schedule or monitoring trigger (MONTHLY, INTERVAL_<N>M,
+     * MONITOR_POLL_<N>M, DAILY, WEEKLY, WEEKDAYS, ONE_TIME) with timezone/DST awareness.
+     */
+    suspend fun createAdvancedSchedule(
+        title: String,
+        promptOrAction: String,
+        scheduleType: String,
+        hour: Int = 9,
+        minute: Int = 0,
+        dayOfWeek: Int? = null,
+        timeZoneId: String = TimeZone.getDefault().id
+    ): ScheduledTaskEntity = withContext(Dispatchers.IO) {
+        val normalizedDay = dayOfWeek ?: -1
+        val nextRun = calculateNextRunTimestamp(
+            scheduleType = scheduleType,
+            hour = hour,
+            minute = minute,
+            dayOfWeek = normalizedDay,
+            timeZoneId = timeZoneId
+        )
+        val schedule = ScheduledTaskEntity(
+            id = UUID.randomUUID().toString(),
+            title = title,
+            promptOrAction = promptOrAction,
+            scheduleType = scheduleType,
+            hour = hour,
+            minute = minute,
+            dayOfWeek = normalizedDay,
+            isActive = true,
+            nextRunTimestamp = nextRun
+        )
+        taskDao.insertScheduledTask(schedule)
+        scheduleSystemAlarm(schedule)
+        Log.d(TAG, "Created advanced schedule ${schedule.id} ($scheduleType, tz=$timeZoneId, next=$nextRun)")
+        schedule
+    }
+
+    /**
+     * Immediately runs a persisted schedule through UnifiedAgentOrchestrator and updates lastRunTimestamp.
+     */
+    suspend fun runScheduleNow(scheduleId: String): com.example.agent.OrchestrationRunSummary? = withContext(Dispatchers.IO) {
+        val schedule = taskDao.getScheduledTaskById(scheduleId) ?: return@withContext null
+        val now = System.currentTimeMillis()
+        val summary = com.example.agent.UnifiedAgentOrchestrator.getInstance(context).executeScheduledTask(schedule)
+        val next = if (schedule.scheduleType != "ONE_TIME") {
+            calculateNextRunTimestamp(schedule.scheduleType, schedule.hour, schedule.minute, schedule.dayOfWeek)
+        } else {
+            schedule.nextRunTimestamp
+        }
+        taskDao.updateScheduledTaskRunTimes(schedule.id, now, next)
+        summary
+    }
+
     suspend fun toggleActive(scheduleId: String, isActive: Boolean) = withContext(Dispatchers.IO) {
         taskDao.toggleScheduledTaskActive(scheduleId, isActive)
         val schedule = taskDao.getScheduledTaskById(scheduleId)
@@ -100,32 +155,63 @@ class SchedulerEngine(
         scheduleType: String,
         hour: Int,
         minute: Int,
-        dayOfWeek: Int
+        dayOfWeek: Int,
+        timeZoneId: String = TimeZone.getDefault().id,
+        nowMs: Long = System.currentTimeMillis()
     ): Long {
-        val calendar = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, hour)
-            set(Calendar.MINUTE, minute)
+        val tz = TimeZone.getTimeZone(timeZoneId.ifBlank { TimeZone.getDefault().id })
+        val upper = scheduleType.trim().uppercase(java.util.Locale.ROOT)
+
+        // Interval or monitoring poll schedules: INTERVAL_<N>M or MONITOR_POLL_<N>M
+        val intervalMatch = Regex("^(?:INTERVAL|MONITOR_POLL)_(\\d+)M$").find(upper)
+        if (intervalMatch != null) {
+            val minutes = intervalMatch.groupValues[1].toLongOrNull()?.coerceIn(1L, 43_200L) ?: 60L
+            return nowMs + minutes * 60_000L
+        }
+
+        val calendar = Calendar.getInstance(tz).apply {
+            timeInMillis = nowMs
+            set(Calendar.HOUR_OF_DAY, hour.coerceIn(0, 23))
+            set(Calendar.MINUTE, minute.coerceIn(0, 59))
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
         }
 
-        val now = System.currentTimeMillis()
-        if (scheduleType == "ONE_TIME" || scheduleType == "DAILY") {
-            if (calendar.timeInMillis <= now) {
-                calendar.add(Calendar.DAY_OF_YEAR, 1)
+        when {
+            upper == "ONE_TIME" || upper == "DAILY" || upper == "AGENT_DAILY" -> {
+                if (calendar.timeInMillis <= nowMs) {
+                    calendar.add(Calendar.DAY_OF_YEAR, 1)
+                }
             }
-        } else if (scheduleType == "WEEKDAYS") {
-            while (
-                calendar.timeInMillis <= now ||
-                calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY ||
-                calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY
-            ) {
-                calendar.add(Calendar.DAY_OF_YEAR, 1)
+            upper == "WEEKDAYS" -> {
+                while (
+                    calendar.timeInMillis <= nowMs ||
+                    calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY ||
+                    calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY
+                ) {
+                    calendar.add(Calendar.DAY_OF_YEAR, 1)
+                }
             }
-        } else if (scheduleType == "WEEKLY" && dayOfWeek > 0) {
-            calendar.set(Calendar.DAY_OF_WEEK, dayOfWeek)
-            if (calendar.timeInMillis <= now) {
-                calendar.add(Calendar.WEEK_OF_YEAR, 1)
+            (upper == "WEEKLY" || upper == "AGENT_WEEKLY") -> {
+                if (dayOfWeek in Calendar.SUNDAY..Calendar.SATURDAY) {
+                    calendar.set(Calendar.DAY_OF_WEEK, dayOfWeek)
+                }
+                if (calendar.timeInMillis <= nowMs) {
+                    calendar.add(Calendar.WEEK_OF_YEAR, 1)
+                }
+            }
+            upper == "MONTHLY" || upper == "AGENT_MONTHLY" -> {
+                if (dayOfWeek in 1..28) {
+                    calendar.set(Calendar.DAY_OF_MONTH, dayOfWeek)
+                }
+                if (calendar.timeInMillis <= nowMs) {
+                    calendar.add(Calendar.MONTH, 1)
+                }
+            }
+            else -> {
+                if (calendar.timeInMillis <= nowMs) {
+                    calendar.add(Calendar.DAY_OF_YEAR, 1)
+                }
             }
         }
         return calendar.timeInMillis

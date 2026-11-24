@@ -81,12 +81,13 @@ class OfflineSpeechRecognizer private constructor(private val appContext: Contex
         private const val TOKEN_SOT = 50258L
         private const val TOKEN_EOT = 50257L
         private const val TOKEN_LANG_EN = 50259L
+        private const val TOKEN_LANG_JA = 50266L
         private const val TOKEN_LANG_HI = 50276L
         private const val TOKEN_TRANSCRIBE = 50359L
         private const val TOKEN_NO_TIMESTAMPS = 50363L
 
         private val SUPPORTED_WHISPER_LANG_PREFIXES = setOf(
-            "en", "hi", "hinglish", "hi-in", "hi-latn", "en-us", "en-in", "en-gb", "auto", ""
+            "en", "hi", "ja", "jpn", "japanese", "ja-jp", "hinglish", "hi-in", "hi-latn", "en-us", "en-in", "en-gb", "auto", ""
         )
 
         @Volatile
@@ -350,6 +351,7 @@ class OfflineSpeechRecognizer private constructor(private val appContext: Contex
     private fun buildInitialTokens(languageHint: String): List<Long> {
         val norm = languageHint.lowercase(Locale.ROOT)
         val langToken = when {
+            norm.startsWith("ja") || norm == "jpn" || norm == "japanese" -> TOKEN_LANG_JA
             norm.startsWith("en") -> TOKEN_LANG_EN
             norm.startsWith("hi") && !norm.contains("latn") && norm != "hinglish" -> TOKEN_LANG_HI
             else -> TOKEN_LANG_HI // Multilingual Whisper decodes Devanagari + Latin Hinglish cleanly

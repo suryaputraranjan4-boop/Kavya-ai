@@ -58,6 +58,7 @@ fun AppNavGraph(
         composable("debug_dashboard") { DebugDashboardScreen(onBack = { navController.popBackStack() }) }
         composable("visual_action_control") { VisualActionControlScreen(navController, viewModel) }
         composable("jarvis_intelligence") { JarvisScreenIntelligenceScreen(navController, viewModel) }
+        composable("agents_workspace") { AgentsWorkspaceScreen(navController, viewModel) }
         composable("kucp_dashboard") { KucpDashboardScreen(navController, viewModel) }
         composable("help_support") { HelpSupportScreen(navController) }
     }

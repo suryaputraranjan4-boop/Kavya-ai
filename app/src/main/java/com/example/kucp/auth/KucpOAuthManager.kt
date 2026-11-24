@@ -33,7 +33,9 @@ data class OAuthTokenResult(
     val expiresInSec: Long = 0L,
     val hasRefreshToken: Boolean = false,
     val grantedScopes: List<String> = emptyList(),
-    val error: String? = null
+    val error: String? = null,
+    val connectorId: String = "",
+    val accountLabel: String = ""
 )
 
 /**
@@ -183,15 +185,18 @@ class KucpOAuthManager(
                 if (refresh.isNotBlank()) KucpCredentialVault.saveCredential(context, connector.id, "oauth_refresh", refresh)
                 if (idToken.isNotBlank()) KucpCredentialVault.saveCredential(context, connector.id, "oidc_id_token", idToken)
 
+                val accountLabel = extractAccountLabelFromIdToken(idToken)
                 OAuthTokenResult(
                     success = true,
                     expiresInSec = expiresIn,
                     hasRefreshToken = refresh.isNotBlank(),
-                    grantedScopes = scopes
+                    grantedScopes = scopes,
+                    connectorId = connector.id,
+                    accountLabel = accountLabel
                 )
             }
         } catch (e: Exception) {
-            OAuthTokenResult(false, error = SecretRedactor.redact(e.message))
+            OAuthTokenResult(false, error = SecretRedactor.redact(e.message), connectorId = connector.id)
         }
     }
 
@@ -227,11 +232,12 @@ class KucpOAuthManager(
                 OAuthTokenResult(
                     success = true,
                     expiresInSec = json.optLong("expires_in", 3600L),
-                    hasRefreshToken = true
+                    hasRefreshToken = true,
+                    connectorId = connector.id
                 )
             }
         } catch (e: Exception) {
-            OAuthTokenResult(false, error = SecretRedactor.redact(e.message))
+            OAuthTokenResult(false, error = SecretRedactor.redact(e.message), connectorId = connector.id)
         }
     }
 
@@ -260,5 +266,62 @@ class KucpOAuthManager(
         KucpCredentialVault.revokeCredential(context, connectorId, "oauth_access")
         KucpCredentialVault.revokeCredential(context, connectorId, "oauth_refresh")
         KucpCredentialVault.revokeCredential(context, connectorId, "oidc_id_token")
+    }
+
+    /**
+     * Revokes the OAuth token at the provider's RFC 7009 revocation endpoint when configured,
+     * and unconditionally wipes all locally cached tokens from KucpCredentialVault.
+     */
+    suspend fun revokeProviderToken(context: Context, connector: ConnectorDefinition): Result<Unit> = withContext(Dispatchers.IO) {
+        val revokeUrl = connector.authConfig.oauthRevokeUrl
+        val refreshToken = KucpCredentialVault.getCredential(context, connector.id, "oauth_refresh")
+        val accessToken = KucpCredentialVault.getCredential(context, connector.id, "oauth_access")
+        val tokenToRevoke = refreshToken.ifBlank { accessToken }
+
+        var remoteFailure: Throwable? = null
+        if (revokeUrl.isNotBlank() && tokenToRevoke.isNotBlank()) {
+            val urlCheck = SsrfPolicyValidator.validateUrl(revokeUrl, connector.isLocalDevAllowed, emptyList())
+            if (urlCheck.allowed) {
+                try {
+                    val form = FormBody.Builder()
+                        .add("token", tokenToRevoke)
+                        .apply {
+                            if (connector.authConfig.oauthClientId.isNotBlank()) {
+                                add("client_id", connector.authConfig.oauthClientId)
+                            }
+                            val cs = KucpCredentialVault.getCredential(context, connector.id, "oauth_client_secret")
+                            if (cs.isNotBlank()) add("client_secret", cs)
+                        }
+                        .build()
+                    val req = Request.Builder()
+                        .url(revokeUrl)
+                        .header("Accept", "application/json")
+                        .post(form)
+                        .build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful && resp.code != 400) {
+                            remoteFailure = IllegalStateException("Provider revocation HTTP ${resp.code}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    remoteFailure = e
+                }
+            }
+        }
+        revokeLocalTokens(context, connector.id)
+        if (remoteFailure != null) Result.failure(remoteFailure!!) else Result.success(Unit)
+    }
+
+    private fun extractAccountLabelFromIdToken(idToken: String): String {
+        if (idToken.isBlank()) return ""
+        return try {
+            val parts = idToken.split('.')
+            if (parts.size < 2) return ""
+            val payloadBytes = Base64.decode(parts[1], Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            val json = JSONObject(String(payloadBytes, Charsets.UTF_8))
+            json.optString("email").ifBlank { json.optString("preferred_username").ifBlank { json.optString("sub") } }
+        } catch (_: Exception) {
+            ""
+        }
     }
 }
