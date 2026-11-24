@@ -25,14 +25,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         com.example.kucp.storage.KucpWebhookEntity::class,
         com.example.kucp.storage.KucpWorkflowEntity::class,
         com.example.kucp.storage.KucpWorkflowRunEntity::class,
-        com.example.kucp.storage.KucpAuditEventEntity::class,
-        com.example.dubbing.DubbingProjectEntity::class,
-        com.example.dubbing.DubbingDialogueEntity::class,
-        com.example.dubbing.DubbingCharacterEntity::class,
-        com.example.dubbing.DubbingDictionaryEntryEntity::class,
-        com.example.dubbing.DubbingTranslationMemoryEntity::class
+        com.example.kucp.storage.KucpAuditEventEntity::class
     ],
-    version = 7,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -42,7 +37,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun evolutionDao(): com.example.evolution.EvolutionDao
     abstract fun taskDao(): TaskDao
     abstract fun kucpDao(): com.example.kucp.storage.KucpDao
-    abstract fun dubbingDao(): com.example.dubbing.DubbingDao
 
     companion object {
         @Volatile
@@ -110,22 +104,6 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATION_6_7 = object : Migration(6, 7) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("CREATE TABLE IF NOT EXISTS dubbing_projects (projectId TEXT NOT NULL PRIMARY KEY, animeTitle TEXT NOT NULL, episodeTitle TEXT NOT NULL, originalVideoPath TEXT NOT NULL, extractedAudioWavPath TEXT NOT NULL, backgroundMusicSfxWavPath TEXT NOT NULL, separatedVocalStemWavPath TEXT NOT NULL, mixedDubAudioWavPath TEXT NOT NULL, exportedVideoPath TEXT NOT NULL, durationMs INTEGER NOT NULL, videoWidth INTEGER NOT NULL, videoHeight INTEGER NOT NULL, frameRate REAL NOT NULL, audioSampleRate INTEGER NOT NULL, audioChannels INTEGER NOT NULL, currentStage TEXT NOT NULL, lastCompletedStage TEXT NOT NULL, statusMessage TEXT NOT NULL, lastError TEXT, qcPassed INTEGER NOT NULL, qcSummaryJson TEXT NOT NULL, separationMethod TEXT NOT NULL, createdAtMs INTEGER NOT NULL, updatedAtMs INTEGER NOT NULL)")
-                db.execSQL("CREATE TABLE IF NOT EXISTS dubbing_dialogues (recordId TEXT NOT NULL PRIMARY KEY, projectId TEXT NOT NULL, globalSequenceNumber INTEGER NOT NULL, globalDialogueId TEXT NOT NULL, characterId TEXT NOT NULL, speakerProfileId TEXT NOT NULL, originalJapaneseText TEXT NOT NULL, translatedHinglishText TEXT NOT NULL, startTimeMs INTEGER NOT NULL, endTimeMs INTEGER NOT NULL, spokenDurationMs INTEGER NOT NULL, internalPauseCount INTEGER NOT NULL, internalPauseTotalMs INTEGER NOT NULL, emotion TEXT NOT NULL, isOverlapping INTEGER NOT NULL, overlapsWithDialogueIds TEXT NOT NULL, trackIndex INTEGER NOT NULL, confidence REAL NOT NULL, isUncertainTranscript INTEGER NOT NULL, generatedAudioPath TEXT NOT NULL, generatedAudioDurationMs INTEGER NOT NULL, speedMultiplierApplied REAL NOT NULL, timingDriftMs INTEGER NOT NULL, generationSignature TEXT NOT NULL, processingStatus TEXT NOT NULL, qcStatus TEXT NOT NULL, errorDetail TEXT, updatedAtMs INTEGER NOT NULL)")
-                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_dubbing_dialogues_projectId_globalSequenceNumber ON dubbing_dialogues (projectId, globalSequenceNumber)")
-                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_dubbing_dialogues_projectId_globalDialogueId ON dubbing_dialogues (projectId, globalDialogueId)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS index_dubbing_dialogues_projectId_characterId ON dubbing_dialogues (projectId, characterId)")
-                db.execSQL("CREATE TABLE IF NOT EXISTS dubbing_characters (profileId TEXT NOT NULL PRIMARY KEY, projectId TEXT NOT NULL, characterId TEXT NOT NULL, characterName TEXT NOT NULL, visualDescription TEXT NOT NULL, personalityTraits TEXT NOT NULL, respectRegister TEXT NOT NULL, pitchMeanHz REAL NOT NULL, spectralCentroidHz REAL NOT NULL, embeddingVectorJson TEXT NOT NULL, referenceSampleWavPath TEXT NOT NULL, referenceSampleDurationMs INTEGER NOT NULL, referenceValidated INTEGER NOT NULL, referenceQualityScore REAL NOT NULL, basePitchMultiplier REAL NOT NULL, baseSpeedMultiplier REAL NOT NULL, sampleFrameTimestampMs INTEGER NOT NULL)")
-                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_dubbing_characters_projectId_characterId ON dubbing_characters (projectId, characterId)")
-                db.execSQL("CREATE TABLE IF NOT EXISTS dubbing_dictionary (entryId TEXT NOT NULL PRIMARY KEY, projectId TEXT NOT NULL, sourceTerm TEXT NOT NULL, preferredHinglishTerm TEXT NOT NULL, category TEXT NOT NULL, notes TEXT NOT NULL, updatedAtMs INTEGER NOT NULL)")
-                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_dubbing_dictionary_projectId_sourceTerm ON dubbing_dictionary (projectId, sourceTerm)")
-                db.execSQL("CREATE TABLE IF NOT EXISTS dubbing_translation_memory (memoryId TEXT NOT NULL PRIMARY KEY, projectId TEXT NOT NULL, characterId TEXT NOT NULL, normalizedJapanese TEXT NOT NULL, approvedHinglish TEXT NOT NULL, emotion TEXT NOT NULL, updatedAtMs INTEGER NOT NULL)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS index_dubbing_translation_memory_normalizedJapanese ON dubbing_translation_memory (normalizedJapanese)")
-            }
-        }
-
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -133,7 +111,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "kavya_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance
